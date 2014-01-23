@@ -1,0 +1,165 @@
+(in-package :graph-db)
+
+(defgeneric %map-index-list (fn il &key collect-p))
+
+(defstruct (index-list
+             (:constructor %make-index-list)
+             (:print-function
+              (lambda (il s d)
+                (declare (ignore d))
+                (format s "#<INDEX-LIST (HEAD ~A)>"
+                        (index-list-head il)))))
+  heap
+  (cache (make-hash-table :weakness :value :synchronized t))
+  head
+  (lock (make-rw-lock))
+  dirty-p)
+
+(defmethod flags-as-int ((il index-list))
+  (let ((flags 0))
+    (when (index-list-dirty-p il)
+      (setq flags (dpb 1 (byte 1 0) flags)))
+    flags))
+
+(defmethod deserialize-pcons ((il index-list) (address integer))
+  ;; FIXME: using the cache causes the systenm to hang; not sure why yet
+  ;;(or (and *cache-enabled* (gethash address (index-list-cache il)))
+  ;;(setf (gethash address (index-list-cache il))
+  (let ((pcons (get-pcons-buffer)))
+    (setf (%pcons-car pcons) (get-bytes (index-list-heap il) address 16)
+          (%pcons-cdr pcons) (deserialize-uint64
+                              (index-list-heap il) (+ 16 address))
+          (%pcons-deleted-p pcons) (ldb-test (byte 1 0)
+                                             (get-byte (index-list-heap il)
+                                                       (+ 24 address))))
+    pcons))
+
+(defmethod serialize-index-list ((mf mapped-file) (il index-list) (offset integer))
+  (declare (type word offset))
+  ;; flags: dirty-p
+  (let ((flags (flags-as-int il)))
+    ;;(dbg "SETTING BYTE ~A FLAGS ~A" offset flags)
+    (set-byte mf offset flags))
+  (incf offset)
+  ;; head
+  ;;(dbg "SETTING BYTES ~A HEAD ~A" offset (index-list-head il))
+  (setq offset (serialize-uint64 mf (index-list-head il) offset))
+  ;;(dbg "RETURNING OFFSET ~A" offset)
+  offset)
+
+(defmethod deserialize-index-list ((mf mapped-file) (offset integer))
+  (let ((il (%make-index-list))
+        (flags (get-byte mf offset)))
+    (setf (index-list-dirty-p il) (ldb-test (byte 1 0) flags)
+          (index-list-head il) (deserialize-uint64 mf (incf offset))
+          (index-list-heap il) (heap *graph*))
+    il))
+
+(defmethod %map-index-list (fn (il index-list) &key collect-p include-deleted-p)
+  (let ((address (index-list-head il)) (result nil))
+    (loop
+       until (eq address 0) do
+         (let ((pcons (deserialize-pcons il address)))
+           (when (or include-deleted-p
+                     (not (%pcons-deleted-p pcons)))
+             (if collect-p
+                 (push (funcall fn pcons) result)
+                 (funcall fn pcons)))
+           (setq address (%pcons-cdr pcons))))
+    (nreverse result)))
+
+(defmethod map-index-list (fn (il index-list) &key collect-p include-deleted-p)
+  (%map-index-list (lambda (pcons)
+                     (funcall fn (%pcons-car pcons)))
+                   il
+                   :collect-p collect-p
+                   :include-deleted-p include-deleted-p))
+
+(defmethod %il-nth ((n integer) (il index-list))
+  (let ((counter 0))
+    (%map-index-list (lambda (id)
+                       (when (= counter n)
+                         (return-from %il-nth id))
+                       (incf counter))
+                     il)
+    nil))
+
+(defmethod index-list-push ((uuid array) (il index-list))
+  (let ((pcons (get-pcons-buffer)))
+    (setf (%pcons-car pcons) uuid
+          (%pcons-cdr pcons) (index-list-head il)
+          (%pcons-deleted-p pcons) nil)
+    (let ((address (serialize-pcons pcons (index-list-heap il))))
+      ;; Cache it
+      ;;(setf (gethash address (index-list-cache il)) pcons)
+      ;; Update index-list values
+      ;;(dbg "OLD HEAD: ~A" (index-list-head il))
+      (sb-ext:cas (index-list-head il)
+                  (index-list-head il)
+                  address)
+      ;;(dbg "NEW HEAD: ~A" (index-list-head il))
+      il)))
+
+(defun make-index-list (heap &rest uuids)
+  (let ((il (%make-index-list :heap heap))
+        (addresses nil))
+    (handler-case
+        (let ((prev 0))
+          (dolist (id (nreverse uuids))
+            (let* ((uuid-address (allocate heap (+ 16 8 1))))
+              (push uuid-address addresses)
+              ;;(dbg "Serializing UUID:~A to ADDR:~A" id uuid-address)
+              ;; id
+              (dotimes (i 16)
+                (set-byte heap (+ i uuid-address) (aref id i)))
+              ;; next pointer
+              (serialize-uint64 heap prev (+ 16 uuid-address))
+              ;; flags: deleted-p
+              (set-byte heap (+ 24 uuid-address) 0)
+              (let ((pcons (get-pcons-buffer)))
+                (setf (%pcons-car pcons) id
+                      (%pcons-cdr pcons) uuid-address
+                      (%pcons-deleted-p pcons) nil)
+                (setf (gethash uuid-address (index-list-cache il))
+                      pcons)
+              (setq prev uuid-address))))
+          (setf (index-list-head il) prev)
+          il)
+      (error (c)
+        (dolist (address (nreverse addresses))
+          (free heap address))
+        (error c)))))
+
+(defmethod delete-index-list ((il index-list))
+  (dolist (addr (let ((address (index-list-head il)))
+                  (loop
+                     until (eq address 0)
+                     collecting
+                     (deserialize-uint64
+                      (index-list-heap il) (+ 16 address)))))
+    (free (index-list-heap il) addr))
+  (free (index-list-heap il) (index-list-head il))
+  (clrhash (index-list-cache il))
+  (setf (index-list-head il) 0)
+  nil)
+
+(defmethod remove-from-index-list ((uuid array) (il index-list) &key remove-all-p)
+  (let ((address (index-list-head il)) (prev nil))
+    (loop until (eq address 0) do
+         (let ((pcons (deserialize-pcons il address)))
+           (unless (%pcons-deleted-p pcons)
+             (let ((id (%pcons-car pcons))
+                   (next (%pcons-cdr pcons)))
+               (if (uuid-array-equal id uuid)
+                   (progn ;; remove it!
+                     (mark-pcons-deleted pcons (index-list-heap il) address)
+                     (setf (index-list-dirty-p il) t)
+                     (setq address next)
+                     (unless remove-all-p
+                       ;; Only remove the first one!
+                       (return)))
+                   ;; otherwise, just advance
+                   (setq prev address
+                         address next))))))
+    il))
+

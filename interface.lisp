@@ -1,0 +1,27 @@
+(in-package :graph-db)
+
+(defgeneric copy (node)
+  (:method (thing)
+    (error "Cannot save ~S of type ~S" thing (type-of thing)))
+  (:method ((vertex vertex))
+    (copy-vertex vertex))
+  (:method ((edge edge))
+    (copy-edge edge)))
+
+(defgeneric mark-deleted (node)
+  (:method (thing)
+    (error "Cannot delete ~S of type ~S" thing (type-of thing)))
+  (:method ((vertex vertex))
+    (delete-vertex vertex))
+  (:method ((edge edge))
+    (delete-edge edge)))
+
+(defgeneric save (node &key graph)
+  (:method (thing &key graph)
+    (declare (ignore graph))
+    (error "Cannot save ~S of type ~S" thing (type-of thing)))
+  (:method ((vertex vertex) &key (graph *graph*))
+    (save-vertex vertex :graph graph))
+  (:method ((edge edge) &key (graph *graph*))
+    (save-edge edge :graph graph)))
+
