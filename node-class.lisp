@@ -75,21 +75,21 @@
 
 (defmethod direct-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  (dbg "direct-slot-definition-class for ~A" class)
+  ;;(dbg "direct-slot-definition-class for ~A" class)
   (find-class 'node-direct-slot-definition))
 
 (defmethod effective-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  (dbg "effective-slot-definition-class for ~A" class)
+  ;;(dbg "effective-slot-definition-class for ~A" class)
   (find-class 'node-effective-slot-definition))
 
 (defmethod compute-effective-slot-definition :around
     ((class node-class) slot-name direct-slots)
   "Ensure inheritance from direct slot definition of persistent, indexed,
    and ephemeral properties."
-  (dbg "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
+  ;;(dbg "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
   (let ((slot (call-next-method)))
-    (dbg "  SLOT: ~A" slot)
+    ;;(dbg "  SLOT: ~A" slot)
     (cond ((or (meta-p slot) (some 'meta-p direct-slots))
            (setf (slot-value slot 'meta) t)
            (setf (slot-value slot 'persistent) nil))

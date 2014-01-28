@@ -107,12 +107,14 @@
       (setq slot-specs
             (mapcar (lambda (spec)
                       (let ((s1
-                             (if (find :accessor spec)
-                                 spec
-                                 (append spec (list :accessor (first spec))))))
+                             (if (listp spec)
+                                 (if (find :accessor spec)
+                                     spec
+                                     (append spec (list :accessor (first spec))))
+                                 (list spec :accessor spec))))
                         (if (find :initarg s1)
                             s1
-                            (append s1 (list :initarg (intern (symbol-name (first spec)) :keyword))))))
+                            (append s1 (list :initarg (intern (symbol-name (first s1)) :keyword))))))
                     slot-specs))
       `(let* ((,meta
                (make-node-type
@@ -126,6 +128,9 @@
          (defclass ,name (,@parent-types)
            (,@slot-specs)
            (:metaclass node-class))
+         ;; FIXME: why is this necessary when inheriting from another node subclass?
+         (unless (sb-mop:class-finalized-p (find-class ',name))
+           (sb-mop:finalize-inheritance (find-class ',name)))
          (defgeneric ,predicate (thing)
            (:method ((thing ,name)) t)
            (:method (thing) nil))
@@ -133,29 +138,33 @@
            ,(if (eql (last1 parent-types) 'edge)
                 `(lookup-edge id)
                 `(lookup-vertex id)))
-         ,(let ((slots (mapcar
-                        (lambda (slot-name)
-                          `(cons ,(intern (symbol-name slot-name) :keyword)
-                                 ,slot-name))
-                        (data-slots (find-class name))))
-                (keys (data-slots (find-class name))))
-               (when (eql (last1 parent-types) 'edge)
-                 (push '(weight 1.0) keys)
-                 (push 'from keys)
-                 (push 'to keys))
-               `(defun ,constructor (&key (graph *graph*) id deleted-p revision
-                                     ,@keys)
-                  ,(if (eql (last1 parent-types) 'edge)
-                       `(make-edge (node-type-id
-                                    (lookup-node-type-by-name ',name :edge))
-                                   from to weight (list ,@slots)
-                                   :id id :revision revision :deleted-p deleted-p
-                                   :graph graph)
-                       `(make-vertex (node-type-id
-                                      (lookup-node-type-by-name ',name :vertex))
-                                     (list ,@slots)
+         ,(let ((args (if (eql (last1 parent-types) 'edge)
+                          '(&rest make-args
+                            &key (graph *graph*) id deleted-p revision from to weight &allow-other-keys)
+                          '(&rest make-args
+                            &key (graph *graph*) id deleted-p revision &allow-other-keys))))
+               `(defun ,constructor ,args
+                  (let ((slots (remove-if
+                                'null
+                                (mapcar
+                                 (lambda (slot-name)
+                                   (let ((key (intern (symbol-name slot-name) :keyword)))
+                                     (let ((pos (position key make-args)))
+                                       (when pos
+                                         (cons key (nth (1+ pos) make-args))))))
+                                 (data-slots (find-class ',name))))))
+                    ,(if (eql (last1 parent-types) 'edge)
+                         `(make-edge (node-type-id
+                                      (lookup-node-type-by-name ',name :edge))
+                                     from to weight
+                                     slots ;(list ,@slots)
                                      :id id :revision revision :deleted-p deleted-p
-                                     :graph graph))))
+                                     :graph graph)
+                         `(make-vertex (node-type-id
+                                        (lookup-node-type-by-name ',name :vertex))
+                                       slots ;(list ,@slots)
+                                       :id id :revision revision :deleted-p deleted-p
+                                       :graph graph)))))
          ,(when (eql (last1 parent-types) 'edge)
                 (let ((functor-name (intern (format nil "~A/2" name))))
                   `(def-global-prolog-functor ,functor-name (from to cont)
