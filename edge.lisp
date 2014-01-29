@@ -339,9 +339,7 @@
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex)
-;;  (dbg "map-edges(fn: ~A~% graph: ~A~% collect-p: ~A~% edge-type: ~A~% vertex: ~A~% direction: ~A~% include-deleted-p: ~A~% to-vertex: ~A~% from-vertex: ~A)"
-;;       fn graph collect-p edge-type vertex direction
-;;       include-deleted-p to-vertex from-vertex)
+  ;; FIXME: need to handle subclasses when edge-type is specified
   (let ((result nil))
     (cond ((and edge-type to-vertex from-vertex)
            (let ((type-meta (or (and (integerp edge-type)

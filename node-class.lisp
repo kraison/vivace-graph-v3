@@ -104,6 +104,22 @@
       )
     slot))
 
+(defmethod find-all-subclasses ((class class))
+  (dbg "Finding subclasses for ~A" class)
+  (let ((result nil))
+    (labels ((find-them (class)
+               (let ((subclasses (sb-mop:class-direct-subclasses class)))
+                 (dbg "Found subclasses for ~A: ~A" class subclasses)
+                 (dolist (subclass subclasses)
+                   (unless (find subclass result)
+                     (push subclass result)
+                     (find-them subclass))))))
+      (find-them class)
+      result)))
+
+(defmethod find-all-subclass-names ((class class))
+  (mapcar 'class-name (find-all-subclasses class)))
+
 (defclass node ()
   ((id :accessor id :initform +null-key+ :initarg :id :meta t
        :type (simple-array (unsigned-byte 8) (16)) :persistent nil)

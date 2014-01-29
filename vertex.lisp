@@ -229,34 +229,51 @@
       (log-txn graph :delete v)
       nil)))
 
-(defun map-vertices (fn graph &key collect-p vertex-type include-deleted-p)
+(defun map-vertices (fn graph &key collect-p vertex-type include-deleted-p (include-subclasses-p t))
   (let ((result nil))
-    (if vertex-type
-        (let* ((type-meta (or (and (integerp vertex-type)
-                                   (lookup-node-type-by-id vertex-type :vertex))
-                              (lookup-node-type-by-name vertex-type :vertex)))
-               (vertex-type-id (node-type-id type-meta)))
-          (when vertex-type-id
-            (let ((index-list (get-type-index-list (vertex-index graph) vertex-type-id)))
-              (map-index-list (lambda (id)
-                                (let ((vertex (lookup-vertex id :graph graph)))
-                                  (when (and (written-p vertex)
-                                             (or include-deleted-p
-                                                 (not (deleted-p vertex))))
-                                    (if collect-p
-                                        (push (funcall fn vertex) result)
-                                        (funcall fn vertex)))))
-                              index-list))))
-        (map-lhash #'(lambda (pair)
-                       (let ((vertex (cdr pair)))
-                         (when (and (written-p vertex)
-                                    (or include-deleted-p
-                                        (not (deleted-p vertex))))
-                           (setf (id vertex) (car pair))
-                           (if collect-p
-                               (push (funcall fn vertex) result)
-                               (funcall fn vertex)))))
-                   (vertex-table *graph*)))
+    (flet ((map-it (vertex-type)
+             (let* ((type-meta (or (and (integerp vertex-type)
+                                        (lookup-node-type-by-id vertex-type :vertex))
+                                   (lookup-node-type-by-name vertex-type :vertex)))
+                    (vertex-type-id (node-type-id type-meta)))
+               (when vertex-type-id
+                 (let ((index-list (get-type-index-list (vertex-index graph) vertex-type-id)))
+                   (map-index-list (lambda (id)
+                                     (let ((vertex (lookup-vertex id :graph graph)))
+                                       (when (and (written-p vertex)
+                                                  (or include-deleted-p
+                                                      (not (deleted-p vertex))))
+                                         (if collect-p
+                                             (push (funcall fn vertex) result)
+                                             (funcall fn vertex)))))
+                                   index-list))))))
+      (cond ((and vertex-type include-subclasses-p)
+             (let ((vertex-class
+                    (find-class
+                     (if (integerp vertex-type)
+                         (let ((node-type (lookup-node-type-by-id vertex-type :vertex)))
+                           (if node-type
+                               (node-type-name node-type)
+                               (error "Unknown node-type ~A" vertex-type)))
+                         vertex-type))))
+               (if vertex-class
+                   (let ((all-classes (nconc (list vertex-type)
+                                             (find-all-subclass-names vertex-class))))
+                     (mapcan #'map-it all-classes))
+                   (error "Unable to find-class for vertex-type ~A" vertex-type))))
+            (vertex-type
+             (map-it vertex-type))
+            (t
+             (map-lhash #'(lambda (pair)
+                            (let ((vertex (cdr pair)))
+                              (when (and (written-p vertex)
+                                         (or include-deleted-p
+                                             (not (deleted-p vertex))))
+                                (setf (id vertex) (car pair))
+                                (if collect-p
+                                    (push (funcall fn vertex) result)
+                                    (funcall fn vertex)))))
+                        (vertex-table *graph*)))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))
