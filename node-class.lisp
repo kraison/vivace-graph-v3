@@ -105,11 +105,11 @@
     slot))
 
 (defmethod find-all-subclasses ((class class))
-  (dbg "Finding subclasses for ~A" class)
+  ;;(dbg "Finding subclasses for ~A" class)
   (let ((result nil))
     (labels ((find-them (class)
                (let ((subclasses (sb-mop:class-direct-subclasses class)))
-                 (dbg "Found subclasses for ~A: ~A" class subclasses)
+                 ;;(dbg "Found subclasses for ~A: ~A" class subclasses)
                  (dolist (subclass subclasses)
                    (unless (find subclass result)
                      (push subclass result)
@@ -119,6 +119,17 @@
 
 (defmethod find-all-subclass-names ((class class))
   (mapcar 'class-name (find-all-subclasses class)))
+
+(defmethod find-graph-parent-classes ((class node-class))
+  (let ((classes
+         (remove-if (lambda (class)
+                      (or (eq (class-name class) 'vertex)
+                          (eq (class-name class) 'edge)
+                          (eq (class-name class) 'primitive-node)))
+                    (sb-mop:class-direct-superclasses class))))
+    (remove-duplicates
+     (nconc classes
+            (mapcan 'find-graph-parent-classes classes)))))
 
 (defclass node ()
   ((id :accessor id :initform +null-key+ :initarg :id :meta t

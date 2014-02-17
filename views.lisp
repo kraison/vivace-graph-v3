@@ -301,10 +301,12 @@
 
 (defmethod add-to-views ((graph graph) (node node))
   "Add node to indices for its class's named views"
-  (let ((class-name (class-name (class-of node))))
-    (when (lookup-view-group class-name graph)
-      (with-write-locked-view-group (class-name graph)
-        (%add-to-views graph node class-name)))))
+  (dolist (class (append (list (class-of node))
+                         (find-graph-parent-classes (class-of node))))
+    (let ((class-name (class-name class)))
+      (when (lookup-view-group class-name graph)
+        (with-write-locked-view-group (class-name graph)
+          (%add-to-views graph node class-name))))))
 
 (defmethod %remove-from-views ((graph graph) (node node) (class-name symbol))
   (dolist (view-name (lookup-views graph class-name))
@@ -314,10 +316,12 @@
 
 (defmethod remove-from-views ((graph graph) (node node))
   "Remove node from indices for its class's named views"
-  (let ((class-name (class-name (class-of node))))
-    (when (lookup-view-group class-name graph)
-      (with-write-locked-view-group (class-name graph)
-        (%remove-from-views graph node class-name)))))
+  (dolist (class (append (list (class-of node))
+                         (find-graph-parent-classes (class-of node))))
+    (let ((class-name (class-name class)))
+      (when (lookup-view-group class-name graph)
+        (with-write-locked-view-group (class-name graph)
+          (%remove-from-views graph node class-name))))))
 
 (defmethod %update-in-views ((graph graph) (new-node node) (old-node node)
                              (class-name symbol))
@@ -328,10 +332,12 @@
 
 (defmethod update-in-views ((graph graph) (new-node node) (old-node node))
   "Add node to indices for its class's named views"
-  (let ((class-name (class-name (class-of new-node))))
-    (when (lookup-view-group class-name graph)
-      (with-write-locked-view-group (class-name graph)
-        (%update-in-views graph new-node old-node class-name)))))
+  (dolist (class (append (list (class-of new-node))
+                         (find-graph-parent-classes (class-of new-node))))
+    (let ((class-name (class-name class)))
+      (when (lookup-view-group class-name graph)
+        (with-write-locked-view-group (class-name graph)
+          (%update-in-views graph new-node old-node class-name))))))
 
 (defun view-key-equal (key1 key2)
   (equal (first key1) (first key2)))
