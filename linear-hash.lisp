@@ -598,10 +598,10 @@
 
 (defun %lhash-insert (lhash key val)
   (let ((bucket (hash lhash (read-lhash-level lhash) key)) (split-p nil))
-        (with-locked-hash-bucket (lhash bucket)
-          (setq split-p
-                (add-to-bucket lhash (%lhash-table lhash)
-                               (bucket-offset lhash bucket) key val)))
+    (with-locked-hash-bucket (lhash bucket)
+      (setq split-p
+            (add-to-bucket lhash (%lhash-table lhash)
+                           (bucket-offset lhash bucket) key val)))
     split-p))
 
 (defun lhash-insert (lhash key val)

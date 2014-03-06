@@ -159,6 +159,18 @@
   (let ((view-group (lookup-view-group class-name graph)))
     (gethash view-name (view-group-table view-group))))
 
+(defmethod all-views ((graph graph))
+  (let ((views nil))
+    (dolist (class-name (all-node-types graph))
+      (when (lookup-view-group class-name graph)
+        (let ((view-group (gethash class-name (views graph))))
+          (when view-group
+            (sb-ext:with-locked-hash-table ((view-group-table view-group))
+              (loop for view-name being the hash-keys in (view-group-table view-group)
+                   do
+                   (push (cons class-name view-name) views)))))))
+    views))
+
 (defmethod lookup-views ((graph graph) (class-name symbol))
   (when (lookup-view-group class-name graph)
     (let ((view-group (gethash class-name (views graph))))
@@ -202,9 +214,9 @@
   "Add node to view."
   (compile-view-code view)
   (let ((*view-rv* nil))
-    (log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
+    ;;(log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
     (funcall (view-map-fn view) node)
-    (log:debug "VIEW-RV: ~S" *view-rv*)
+    ;;(log:debug "VIEW-RV: ~S" *view-rv*)
     (mapcar (lambda (rv)
               (destructuring-bind (key val) rv
                 ;;(log:debug "VIEW: Adding ~S:~S to ~S" key val (view-skip-list view))
@@ -215,7 +227,7 @@
                   (let* ((agg-key (list key +null-key+))
                          (agg-node
                           (find-in-skip-list (view-skip-list view) agg-key)))
-                    (log:debug "REDUCE: ADDING TO SL: ~S -> ~S" agg-key agg-node)
+                    ;;(log:debug "REDUCE: ADDING TO SL: ~S -> ~S" agg-key agg-node)
                     (if agg-node
                         (let ((agg-val
                                (funcall (view-reduce-fn view)
@@ -228,7 +240,7 @@
                   (let* ((agg-key (list +reduce-master-key+ +max-key+))
                          (agg-node
                           (find-in-skip-list (view-skip-list view) agg-key)))
-                    (log:debug "REDUCE: ADDING TO SL: ~S -> ~S" agg-key agg-node)
+                    ;;(log:debug "REDUCE: ADDING TO SL: ~S -> ~S" agg-key agg-node)
                     (if agg-node
                         (let ((agg-val
                                (funcall (view-reduce-fn view)
@@ -384,6 +396,13 @@
             (t
              (error "~S is not a subtype of either edge or vertex!" class-name)))
       view)))
+
+(defmethod regenerate-all-views ((graph graph))
+  (map nil
+       (lambda (pair)
+         (destructuring-bind (class-name . view-name) pair
+           (regenerate-view graph class-name view-name)))
+       (all-views graph)))
 
 (defmethod map-view (fn (class-name symbol) (view-name symbol)
                      &key (graph *graph*) key start-key end-key count skip

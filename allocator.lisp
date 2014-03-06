@@ -157,6 +157,7 @@
     :include-free-p t)))
 
 (defun set-memory-pointer (memory pointer)
+  (setf (memory-pointer memory) pointer)
   (let ((n-bytes 8) (offset +memory-memory-pointer-offset+))
     (dotimes (i n-bytes)
       (set-byte (memory-mmap memory) offset (ldb (byte 8 0) pointer))
@@ -277,10 +278,10 @@
                    (when (> additional-memory-needed 0)
                      (grow-memory memory additional-memory-needed))
                    (setq current-pointer (memory-pointer memory))
-                   (sb-ext:atomic-incf
-                       (memory-pointer memory)
-                       (+ +memory-header-size+ size))
-                   (set-memory-pointer memory (memory-pointer memory))
+                   (set-memory-pointer memory
+                                       (+ (memory-pointer memory)
+                                          +memory-header-size+
+                                          size))
                    (let ((block-begin
                           (serialize-header (memory-mmap memory)
                                             current-pointer

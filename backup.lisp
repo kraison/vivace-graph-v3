@@ -90,12 +90,12 @@
             (case (car plist)
               (:v (progn
                     (setf (nth 4 plist) (transform-to-byte-vector (nth 4 plist)))
-                    (apply 'make-vertex (rest plist))))
+                    (apply '%%unsafe-make-vertex (rest plist))))
               (:e (progn
                     (setf (nth 2 plist) (transform-to-byte-vector (nth 2 plist)))
                     (setf (nth 3 plist) (transform-to-byte-vector (nth 3 plist)))
                     (setf (nth 7 plist) (transform-to-byte-vector (nth 7 plist)))
-                    (apply 'make-edge (rest plist))))
+                    (apply '%%unsafe-make-edge (rest plist))))
               (otherwise
                (log:error "RESTORE: Unknown input: ~S" plist))))))
       (dbg "RESTORE TOOK ~A SECONDS" (- (get-universal-time) start))
@@ -161,3 +161,4 @@
       (loop until (notany 'thread-alive-p threads) do (sleep 1))
       (dbg "RESTORE TOOK ~A SECONDS" (- (get-universal-time) start))
       graph)))
+

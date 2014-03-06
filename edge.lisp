@@ -237,9 +237,13 @@
                           (log:error "EDGE: Removing ~A from views" e)
                           (%remove-from-views graph e class-name)
                           (setf (views-written-p e) nil)
-                          (save-node-flags (edge-table graph) e)))))
+                          (save-node-flags (edge-table graph) e)
+                          (error c)))))
                   (finalize-node e (edge-table graph) graph)))
             (log-txn graph :add e))
+        (duplicate-key-error (c)
+          (log:error "EDGE: ~A Problem creating edge: ~A"  (id e) c)
+          (error c))
         (error (c)
           (log:error "EDGE: ~A Problem creating edge: ~A"  (id e) c)
           (rollback-edge graph e)
@@ -249,6 +253,8 @@
 
 (defun make-edge (type from to weight data &key id revision deleted-p
                   (graph *graph*))
+  (when (stringp id)
+    (setq id (read-id-array-from-string id)))
   (typecase from
     (string (setq from (read-id-array-from-string from)))
     (vertex (setq from (id from))))
@@ -334,8 +340,14 @@
 
 (defmethod active-edge-p ((edge edge) &key (graph *graph*))
   (and (not (deleted-p edge))
-       (not (deleted-p (lookup-vertex (from edge) :graph graph)))
-       (not (deleted-p (lookup-vertex (to edge) :graph graph)))))
+       (let ((from (lookup-vertex (from edge) :graph graph)))
+         (if (vertex-p from)
+             (not (deleted-p from))
+             nil))
+       (let ((to (lookup-vertex (to edge) :graph graph)))
+         (if (vertex-p to)
+             (not (deleted-p to))
+             nil))))
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex)

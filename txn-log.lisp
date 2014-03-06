@@ -173,13 +173,20 @@
             ((eq plist :eof))
           ;;(let ((action (caddr plist)) (plist (cdddr plist)))
           (let ((action (cadddr plist)) (plist (cddddr plist)))
-            (execute-tx-action action plist)))))))
+            (%%unsafe-execute-tx-action action plist)))))))
 
 (defmethod replay ((graph graph) txn-dir package-name)
   (multiple-value-bind (snapshot date) (find-newest-snapshot txn-dir)
     (restore graph snapshot :package-name package-name)
     (dolist (txn-log-file (find-txn-logs txn-dir date))
       (replay-txn-file graph txn-log-file))
+    (dbg "Generating graph views.")
+    (map nil
+         (lambda (pair)
+           (destructuring-bind (class-name . view-name) pair
+             (regenerate-view graph class-name view-name)))
+         (all-views graph))
+    (dbg "Checking data integrity.")
     (or (check-data-integrity graph)
         graph)))
 
