@@ -200,7 +200,7 @@
 
 (defmethod %%unsafe-save-edge ((edge edge) &key (graph *graph*))
   (%%unsafe-save-node edge (edge-table graph) :graph graph)
-  new)
+  edge)
 
 (defmethod %%unsafe-delete-edge ((edge edge) &key (graph *graph*))
   (let ((e (copy-edge edge)))
@@ -253,7 +253,7 @@
 
 (defmethod %%unsafe-save-vertex ((vertex vertex) &key (graph *graph*))
   (%%unsafe-save-node vertex (vertex-table graph) :graph graph)
-  new)
+  vertex)
 
 (defmethod %%unsafe-delete-vertex ((vertex vertex) &key (graph *graph*))
   (let ((v (copy-vertex vertex)))
