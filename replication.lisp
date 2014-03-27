@@ -13,6 +13,7 @@
   host thread txn-id queue stream socket)
 
 (defmethod start-replication ((graph graph) &key package)
+  (declare (ignore package))
   ;;noop
   )
 
