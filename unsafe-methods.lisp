@@ -200,7 +200,7 @@
 
 (defmethod %%unsafe-save-edge ((edge edge) &key (graph *graph*))
   (%%unsafe-save-node edge (edge-table graph) :graph graph)
-  new)
+  edge)
 
 (defmethod %%unsafe-delete-edge ((edge edge) &key (graph *graph*))
   (let ((e (copy-edge edge)))
@@ -253,7 +253,7 @@
 
 (defmethod %%unsafe-save-vertex ((vertex vertex) &key (graph *graph*))
   (%%unsafe-save-node vertex (vertex-table graph) :graph graph)
-  new)
+  vertex)
 
 (defmethod %%unsafe-delete-vertex ((vertex vertex) &key (graph *graph*))
   (let ((v (copy-vertex vertex)))
@@ -261,67 +261,65 @@
     (%%unsafe-save-node v (vertex-table graph) :graph graph)
     nil))
 
-(defun %%unsafe-execute-tx-action (action plist)
-  (let* ((subtype (cond ((subtypep (car plist) 'vertex) :vertex)
-                        ((subtypep (car plist) 'edge) :edge)
-                        (t (error "Unknown graph type ~A" (car plist))))))
-    (case action
-      (:add
-       (case subtype
-         (:vertex
-          (setf (nth 2 plist) (transform-to-byte-vector (nth 2 plist)))
-          (%%unsafe-make-vertex (nth 0 plist)
-                                (nth 1 plist)
-                                :id (nth 2 plist)
-                                :revision (nth 3 plist)
-                                :deleted-p (nth 4 plist)))
-         (:edge
-          (setf (nth 1 plist) (transform-to-byte-vector (nth 1 plist)))
-          (setf (nth 2 plist) (transform-to-byte-vector (nth 2 plist)))
-          (setf (nth 5 plist) (transform-to-byte-vector (nth 5 plist)))
-          (%%unsafe-make-edge (nth 0 plist)
-                              (nth 1 plist)
-                              (nth 2 plist)
-                              (nth 3 plist)
-                              (nth 4 plist)
-                              :id (nth 5 plist)
-                              :revision (nth 6 plist)
-                              :deleted-p (nth 7 plist)))))
-      (:delete
-       (case subtype
-         (:vertex
-          (let ((vertex (lookup-vertex (transform-to-byte-vector
-                                        (nth 2 plist)))))
-            (if vertex
-                (%%unsafe-delete-vertex vertex)
-                (log:error "DELETE on unknown vertex ~A" (nth 2 plist)))))
-         (:edge
-          (let ((edge (lookup-vertex (transform-to-byte-vector
-                                      (nth 5 plist)))))
-            (if edge
-                (%%unsafe-delete-edge edge)
-                (log:error "DELETE on unknown edge ~A" (nth 5 plist)))))))
-      (:modify
-       (case subtype
-         (:vertex
-          (let ((vertex (lookup-vertex (transform-to-byte-vector
-                                        (nth 2 plist)))))
-            (if vertex
-                (let ((new-vertex (copy vertex)))
-                  (setf (data new-vertex) (nth 1 plist))
-                  (%%unsafe-save-vertex new-vertex))
-                (log:error "MODIFY on unknown vertex ~A" (nth 2 plist)))))
-         (:edge
-          (let ((edge (lookup-edge (transform-to-byte-vector
-                                    (nth 5 plist)))))
-            (if edge
-                (let ((new-edge (copy edge)))
-                  (setf (weight new-edge) (nth 3 plist))
-                  (setf (data new-edge) (nth 4 plist))
-                  (%%unsafe-save-edge new-edge))
-                (log:error "MODIFY on unknown edge ~A" (nth 5 plist)))))))
-      (otherwise
-       (dbg "Unknown input: ~S" plist)
-       (log:error "Unknown input: ~S" plist)
-       (error "Unknown input: ~S" plist)))))
+(defun %%unsafe-execute-tx-action (action tx)
+  (let* ((type (first tx))
+         (subtype (cond ((subtypep type 'vertex) :vertex)
+                        ((subtypep type 'edge) :edge)
+                        (t (error "Unknown graph type ~A" type)))))
+    (case subtype
+      (:vertex
+       (destructuring-bind (type data id revision deleted-p)
+           tx
+         (setf id (transform-to-byte-vector id))
+         (case action
+           (:add
+            (%%unsafe-make-vertex type data
+                                  :id id
+                                  :revision revision
+                                  :deleted-p deleted-p))
+           (:delete
+            (let ((vertex (lookup-vertex id)))
+              (if vertex
+                  (%%unsafe-delete-vertex vertex)
+                  (log:error "DELETE on unknown vertex ~A" id))))
+           (:modify
+            (let ((vertex (lookup-vertex id)))
+              (if vertex
+                  (let ((new-vertex (copy vertex)))
+                    (setf (data new-vertex) data)
+                    (%%unsafe-save-vertex new-vertex))
+                  (log:error "MODIFY on unknown vertex ~A" id))))
+           (otherwise
+            (dbg "Unknown input: ~S" tx)
+            (log:error "Unknown input: ~S" tx)
+            (error "Unknown input: ~S" tx)))))
+      (:edge
+       (destructuring-bind (type from to weight data id revision deleted-p)
+           tx
+         (setf id (transform-to-byte-vector id))
+         (case action
+           (:add
+            (setf from (transform-to-byte-vector from))
+            (setf to (transform-to-byte-vector to))
+            (%%unsafe-make-edge type from to weight data
+                                :id id
+                                :revision revision
+                                :deleted-p deleted-p))
+           (:delete
+            (let ((edge (lookup-edge id)))
+              (if edge
+                  (%%unsafe-delete-edge edge)
+                  (log:error "DELETE on unknown edge ~A" id))))
+           (:modify
+            (let ((edge (lookup-edge id)))
+              (if edge
+                  (let ((new-edge (copy edge)))
+                    (setf (weight new-edge) weight)
+                    (setf (data new-edge) data)
+                    (%%unsafe-save-edge new-edge))
+                  (log:error "MODIFY on unknown edge ~A" id))))
+           (otherwise
+            (dbg "Unknown input: ~S" tx)
+            (log:error "Unknown input: ~S" tx)
+            (error "Unknown input: ~S" tx))))))))
 

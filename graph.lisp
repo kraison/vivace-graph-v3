@@ -1,7 +1,13 @@
 (in-package :graph-db)
 
 (defun make-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package)
+                   replication-key package replay-txn-dir)
+  (when (and replay-txn-dir (not slave-p))
+    (error ":REPLAY-TXN-DIR is only for slave graphs"))
+  (when (and (or slave-p master-p) (not replication-port))
+    (error ":REPLICATION-PORT is required for master and slave graphs"))
+  (when (and slave-p (not master-host))
+    (error ":MASTER-HOST required for slave graphs"))
   (let* ((path (first (directory (ensure-directories-exist location))))
          (dirty-file (format nil "~A/.dirty" location)))
     (unless (probe-file path)
@@ -51,7 +57,14 @@
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph))
       (when slave-p
-        (setf (master-host graph) master-host))
+        (setf (master-host graph) master-host)
+        (when replay-txn-dir
+          (let ((*graph* graph))
+            (multiple-value-bind (replayed-graph txn-id)
+                (replay graph replay-txn-dir package)
+              (declare (ignore replayed-graph))
+              (setf (master-txn-id graph) txn-id)
+              (write-last-txn-id graph)))))
       (start-replication graph :package package)
       graph)))
 
@@ -120,8 +133,7 @@
   (remhash (graph-name graph) *graphs*)
   (when snapshot-p
     (dbg "Snapshotting ~A" graph)
-    (snapshot graph))
-  (close-txn-log graph)
+    (snapshot graph :closing-graph-p t))
   (when (type-index-p (vertex-index graph))
     (dbg "Closing ~A" (vertex-index graph))
     (close-type-index (vertex-index graph)))

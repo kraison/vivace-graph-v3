@@ -3,6 +3,15 @@
 (defvar *stop-repl-listener* nil)
 (defvar *slave-session* nil)
 
+;;; Catching EPIPE: ugh. But I don't think there's a better way on
+;;; SBCL
+(defun broken-pipe-error-p (condition)
+  (equalp (last (simple-condition-format-arguments condition))
+          '("Broken pipe")))
+
+(deftype broken-pipe-error ()
+  '(satisfies broken-pipe-error-p))
+
 (defstruct (replication-session
              (:conc-name repl-)
              (:print-function
@@ -13,6 +22,7 @@
   host thread txn-id queue stream socket)
 
 (defmethod start-replication ((graph graph) &key package)
+  (declare (ignore package))
   ;;noop
   )
 
@@ -28,12 +38,15 @@
   (with-recursive-lock-held ((slaves-lock graph))
     (pushnew thread (slaves graph))))
 
-(defmethod end-slave-session ((graph master-graph))
+(defmethod end-slave-session ((graph master-graph) &key abort)
   (when (replication-session-p *slave-session*)
     (when (and (streamp (repl-stream *slave-session*))
-               (open-stream-p (repl-stream *slave-session*)))
-      (force-output (repl-stream *slave-session*))
-      (close (repl-stream *slave-session*))))
+               (open-stream-p (repl-stream *slave-session*))
+               (not abort))
+      (handler-case
+          (force-output (repl-stream *slave-session*))
+        (broken-pipe-error () nil))
+      (close (repl-stream *slave-session*) :abort abort)))
   (remove-slave graph (current-thread)))
 
 (defmethod auth-slave ((graph master-graph))
@@ -81,9 +94,12 @@
                            *slave-session* response)))
                 (setf (repl-txn-id *slave-session*)
                       (subseq txn 0 3)))))))
+    (broken-pipe-error ()
+      (log:error "broken pipe on slave ~A" *slave-session*)
+      (end-slave-session graph :abort t))
     (error (c)
       (log:error "cannot stream txns to slave: ~A" c)
-      (end-slave-session graph)
+      (end-slave-session graph :abort t)
       (error "streaming error: ~A" c)))
   (log:debug "DONE STREAMING TO SLAVE ~A" *slave-session*))
 
@@ -112,7 +128,21 @@
                           (not (open-stream-p (repl-stream *slave-session*)))))
                    (cond ((and (eql txn :eof)
                                (equal current-txn-file (txn-file graph)))
-                          (sleep 0.1))
+                          (let* ((sock (repl-socket *slave-session*))
+                                 (stream (repl-stream *slave-session*))
+                                 (ready (usocket:wait-for-input sock
+                                                                :timeout 0.1
+                                                                :ready-only t)))
+                            (when ready
+                              (let ((response (read stream)))
+                                (case response
+                                  (:quit
+                                   (log:debug "GOT :QUIT FROM SLAVE")
+                                   (end-slave-session graph)
+                                   (return-from repl-slave-loop :slave-quit))
+                                  (t
+                                   (error "Bad response from slave ~A: ~A"
+                                          *slave-session* response)))))))
                          ((eql txn :eof)
                           (sb-ext:wait-for (and (txn-file graph)
                                                 (probe-file (txn-file graph))))
@@ -136,11 +166,17 @@
                             (format (repl-stream *slave-session*) "~S~%" txn)
                             (force-output (repl-stream *slave-session*))
                             (let ((response (read (repl-stream *slave-session*))))
-                              (unless (eql response :ack)
-                                (error "Bad response from slave ~A: ~A"
-                                       *slave-session* response)))
-                            (setf (repl-txn-id *slave-session*)
-                                  (subseq txn 0 3))))))))))
+                              (case response
+                                (:ack
+                                 (setf (repl-txn-id *slave-session*)
+                                       (subseq txn 0 3)))
+                                (:quit
+                                 (log:debug "GOT :QUIT FROM SLAVE")
+                                 (end-slave-session graph)
+                                 (return-from repl-slave-loop :slave-quit))
+                                (t
+                                 (error "Bad response from slave ~A: ~A"
+                                        *slave-session* response))))))))))))
       (sb-int:closed-stream-error (c)
         (log:error "~A got ~A. Quitting" *slave-session* c)
         (format (repl-stream *slave-session*) ":STREAM-ERROR~%")
@@ -170,6 +206,11 @@
                (auth-slave graph)
                (add-slave graph (current-thread))
                (repl-slave-loop graph :graph-db))
+           (broken-pipe-error ()
+             (log:error "Broken pipe on slave ~A. Killing session."
+                        *slave-session*)
+             (end-slave-session graph :abort t)
+             (setq *slave-session* nil))
            (error (c)
              (log:error "REPL-ACCEPT-HANDLER for ~A got error: ~A. Killing session." *slave-session* c)
              (end-slave-session graph)

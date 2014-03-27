@@ -269,24 +269,24 @@
   (with-write-lock ((memory-lock memory))
     (let ((pointer
            (or
-            (get-chunk-of-size memory size)
+            ;;(get-chunk-of-size memory size)
             (let ((current-pointer nil))
-                 (let ((additional-memory-needed
-                        ;; size plus 8 bytes for header
-                        (- (+ +memory-header-size+ size)
-                           (- (memory-size memory) (memory-pointer memory)))))
-                   (when (> additional-memory-needed 0)
-                     (grow-memory memory additional-memory-needed))
-                   (setq current-pointer (memory-pointer memory))
-                   (set-memory-pointer memory
-                                       (+ (memory-pointer memory)
-                                          +memory-header-size+
-                                          size))
-                   (let ((block-begin
-                          (serialize-header (memory-mmap memory)
-                                            current-pointer
-                                            size)))
-                     block-begin))))))
+              (let ((additional-memory-needed
+                     ;; size plus 8 bytes for header
+                     (- (+ +memory-header-size+ size)
+                        (- (memory-size memory) (memory-pointer memory)))))
+                (when (> additional-memory-needed 0)
+                  (grow-memory memory additional-memory-needed))
+                (setq current-pointer (memory-pointer memory))
+                (set-memory-pointer memory
+                                    (+ (memory-pointer memory)
+                                       +memory-header-size+
+                                       size))
+                (let ((block-begin
+                       (serialize-header (memory-mmap memory)
+                                         current-pointer
+                                         size)))
+                  block-begin))))))
       (unless (>= pointer (memory-data-offset memory))
         (log:error "SEGV: Tried to allocate at unsafe position ~S in ~S" pointer memory)
         (error "Tried to allocate at unsafe position ~S in ~S" pointer memory))

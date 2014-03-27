@@ -57,7 +57,7 @@
 
 (defgeneric init-schema (graph))
 (defgeneric update-schema (graph-or-name))
-(defgeneric snapshot (graph))
+(defgeneric snapshot (graph &key closing-graph-p))
 (defgeneric init-txn-log (graph))
 (defgeneric scan-for-unindexed-nodes (graph))
 (defgeneric start-replication (graph &key package))

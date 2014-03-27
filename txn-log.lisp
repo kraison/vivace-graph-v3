@@ -22,6 +22,12 @@
   (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
     (values sec msec (sb-ext:atomic-incf (aref *next-txn-id* 0)))))
 
+(defun snapshot-file-txn-id (snapshot-file)
+  "Return the highest txn id associated with SNAPSHOT-FILE."
+  ;; If this is too coarse, the snapshot process could store a fine
+  ;; txn-id as part of the snapshot data.
+  (values (universal-to-unix-time (file-write-date snapshot-file)) 0 0))
+
 (defmethod init-txn-log ((graph graph))
   (with-recursive-lock-held ((txn-lock graph))
     (let ((file (loop
@@ -67,10 +73,12 @@
                        (data edge) (id edge) (revision edge) (deleted-p edge))))
         (format (txn-log graph) "~S" txn)))))
 
-(defmethod snapshot ((graph graph))
+(defmethod snapshot ((graph graph) &key closing-graph-p include-deleted-p)
   (let ((count nil))
     (with-recursive-lock-held ((txn-lock graph))
-      (let ((problems (check-data-integrity graph)))
+      (let ((problems (check-data-integrity graph
+                                            :include-deleted-p
+                                            include-deleted-p)))
         (if problems
             (return-from snapshot
               (values :data-integrity-issues
@@ -80,8 +88,11 @@
               (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
                 (let ((snap-file (format nil "~A/txn-log/snap-~D.~6,'0D"
                                          (location graph) sec msec)))
-                  (setq count (backup graph snap-file))))
-              (init-txn-log graph)
+                  (setq count (backup graph
+                                      snap-file
+                                      :include-deleted-p include-deleted-p))))
+              (unless closing-graph-p
+                (init-txn-log graph))
               count))))))
 
 (defun find-newest-snapshot (dir)
@@ -91,7 +102,8 @@
                                                       (file-namestring file)))
                                      (cl-fad:list-directory dir))
                       '> :key 'file-write-date))))
-    (values file (file-write-date file))))
+    (when file
+      (values file (file-write-date file)))))
 
 (defun find-txn-logs (dir date)
   (sort
@@ -101,94 +113,94 @@
               (cl-fad:list-directory dir))
    '< :key 'file-write-date))
 
-(defun execute-tx-action (action plist)
-  (let* ((subtype (cond ((subtypep (car plist) 'vertex) :vertex)
-                        ((subtypep (car plist) 'edge) :edge)
-                        (t (error "Unknown graph type ~A" (car plist))))))
-    (case action
-      (:add
-       (case subtype
-         (:vertex
-          (setf (nth 2 plist) (transform-to-byte-vector (nth 2 plist)))
-          (make-vertex (nth 0 plist)
-                       (nth 1 plist)
-                       :id (nth 2 plist)
-                       :revision (nth 3 plist)
-                       :deleted-p (nth 4 plist)))
-         (:edge
-          (setf (nth 1 plist) (transform-to-byte-vector (nth 1 plist)))
-          (setf (nth 2 plist) (transform-to-byte-vector (nth 2 plist)))
-          (setf (nth 5 plist) (transform-to-byte-vector (nth 5 plist)))
-          (make-edge (nth 0 plist)
-                     (nth 1 plist)
-                     (nth 2 plist)
-                     (nth 3 plist)
-                     (nth 4 plist)
-                     :id (nth 5 plist)
-                     :revision (nth 6 plist)
-                     :deleted-p (nth 7 plist)))))
-      (:delete
-       (case subtype
-         (:vertex
-          (let ((vertex (lookup-vertex (transform-to-byte-vector
-                                        (nth 2 plist)))))
-            (if vertex
-                (mark-deleted vertex)
-                (log:error "DELETE on unknown vertex ~A" (nth 2 plist)))))
-         (:edge
-          (let ((edge (lookup-vertex (transform-to-byte-vector
-                                      (nth 5 plist)))))
-            (if edge
-                (mark-deleted edge)
-                (log:error "DELETE on unknown edge ~A" (nth 5 plist)))))))
-      (:modify
-       (case subtype
-         (:vertex
-          (let ((vertex (lookup-vertex (transform-to-byte-vector
-                                        (nth 2 plist)))))
-            (if vertex
-                (let ((new-vertex (copy vertex)))
-                  (setf (data new-vertex) (nth 1 plist))
-                  (save new-vertex))
-                (log:error "MODIFY on unknown vertex ~A" (nth 2 plist)))))
-         (:edge
-          (let ((edge (lookup-edge (transform-to-byte-vector
-                                    (nth 5 plist)))))
+(defun execute-tx-action (action tx)
+  (let* ((type (first tx))
+         (subtype (cond ((subtypep type 'vertex) :vertex)
+                        ((subtypep type 'edge) :edge)
+                        (t (error "Unknown graph type ~A" type)))))
+    (case subtype
+      (:vertex
+       (destructuring-bind (type data id revision deleted-p)
+           tx
+         (setf id (transform-to-byte-vector id))
+         (case action
+           (:add
+            (make-vertex type data
+                         :id id
+                         :revision revision
+                         :deleted-p deleted-p))
+           (:delete
+            (let ((vertex (lookup-vertex id)))
+              (if vertex
+                  (mark-deleted vertex)
+                  (log:error "DELETE on unknown vertex ~A" id))))
+           (:modify
+            (let ((vertex (lookup-vertex id)))
+              (if vertex
+                  (let ((new-vertex (copy vertex)))
+                    (setf (data new-vertex) data)
+                    (save new-vertex))
+                  (log:error "MODIFY on unknown vertex ~A" id)))))))
+      (:edge
+       (destructuring-bind (type from to weight data id revision deleted-p)
+           tx
+         (setf id (transform-to-byte-vector id))
+         (case action
+           (:add
+            (setf from (transform-to-byte-vector from))
+            (setf to (transform-to-byte-vector to))
+            (make-edge type from to weight data
+                       :id id
+                       :revision revision
+                       :deleted-p deleted-p))
+           (:delete
+            (let ((edge (lookup-edge id)))
+              (if edge
+                  (mark-deleted edge)
+                  (log:error "DELETE on unknown edge ~A" id))))
+           (:modify
+            (let ((edge (lookup-edge id)))
             (if edge
                 (let ((new-edge (copy edge)))
-                  (setf (weight new-edge) (nth 3 plist))
-                  (setf (data new-edge) (nth 4 plist))
+                  (setf (weight new-edge) weight)
+                  (setf (data new-edge) data)
                   (save new-edge))
-                (log:error "MODIFY on unknown edge ~A" (nth 5 plist)))))))
-      (otherwise
-       (dbg "Unknown input: ~S" plist)
-       (log:error "Unknown input: ~S" plist)))))
+                (log:error "MODIFY on unknown edge ~A" id))))))))))
 
 (defmethod replay-txn-file ((graph graph) file)
-  (let ((*graph* graph))
+  (let ((*graph* graph)
+        (last-txn-id nil))
     (let ((*readtable* (copy-readtable)))
       (local-time:enable-read-macros)
       (with-open-file (in file)
         (do ((plist (read in nil :eof) (read in nil :eof)))
-            ((eq plist :eof))
+            ((eq plist :eof) last-txn-id)
           ;;(let ((action (caddr plist)) (plist (cdddr plist)))
           (let ((action (cadddr plist)) (plist (cddddr plist)))
-            (%%unsafe-execute-tx-action action plist)))))))
+            (%%unsafe-execute-tx-action action plist))
+          (setf last-txn-id (subseq plist 0 3)))))))
 
 (defmethod replay ((graph graph) txn-dir package-name)
-  (multiple-value-bind (snapshot date) (find-newest-snapshot txn-dir)
-    (restore graph snapshot :package-name package-name)
-    (dolist (txn-log-file (find-txn-logs txn-dir date))
-      (replay-txn-file graph txn-log-file))
-    (dbg "Generating graph views.")
-    (map nil
-         (lambda (pair)
-           (destructuring-bind (class-name . view-name) pair
-             (regenerate-view graph class-name view-name)))
-         (all-views graph))
-    (dbg "Checking data integrity.")
-    (or (check-data-integrity graph)
-        graph)))
+  (let ((last-txn-id nil))
+    (multiple-value-bind (snapshot date) (find-newest-snapshot txn-dir)
+      (if snapshot
+          (progn
+            (restore graph snapshot :package-name package-name)
+            (setf last-txn-id (snapshot-file-txn-id snapshot)))
+          (setq date 0))
+      (dolist (txn-log-file (find-txn-logs txn-dir date))
+        (dbg "Restoring txn-log file ~A" txn-log-file)
+        (setf last-txn-id (replay-txn-file graph txn-log-file)))
+      (dbg "Generating graph views.")
+      (map nil
+           (lambda (pair)
+             (destructuring-bind (class-name . view-name) pair
+               (regenerate-view graph class-name view-name)))
+           (all-views graph))
+      (dbg "Checking data integrity.")
+      (values (or (check-data-integrity graph)
+                  graph)
+              last-txn-id))))
 
 (defmethod execute-tx ((graph graph) fn timeout max-tries)
   ;; FIXME: implement
