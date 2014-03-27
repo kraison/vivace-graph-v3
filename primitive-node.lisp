@@ -1,6 +1,6 @@
 (in-package :graph-db)
 
-(defconstant +node-header-size+ 15)
+(alexandria:define-constant +node-header-size+ 15)
 
 (defgeneric node-p (thing)
   (:method ((thing node)) t)

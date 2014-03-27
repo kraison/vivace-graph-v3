@@ -1,12 +1,12 @@
 (in-package :graph-db)
 
-(defconstant +memory-magic-byte-offset+ 0)
-(defconstant +memory-storage-version-offset+ 1)
-(defconstant +memory-memory-pointer-offset+ 2)
-(defconstant +memory-bins-offset+ 10)
-(defconstant +memory-bin-count+ 128)
-(defconstant +memory-usable-offset+ 1034) ;; (+ 2 8 (* 8 128))
-(defconstant +memory-header-size+ 8)
+(alexandria:define-constant +memory-magic-byte-offset+ 0)
+(alexandria:define-constant +memory-storage-version-offset+ 1)
+(alexandria:define-constant +memory-memory-pointer-offset+ 2)
+(alexandria:define-constant +memory-bins-offset+ 10)
+(alexandria:define-constant +memory-bin-count+ 128)
+(alexandria:define-constant +memory-usable-offset+ 1034) ;; (+ 2 8 (* 8 128))
+(alexandria:define-constant +memory-header-size+ 8)
 
 (defstruct (memory
              (:print-function

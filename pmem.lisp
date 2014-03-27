@@ -1,10 +1,10 @@
 (in-package :graph-db)
 
 (defvar *pmem*)
-(defconstant +pmem-magic-byte+ #x1A)
-(defconstant +stack-pointer-offset+ 1)
-(defconstant +heap-pointer-offset+ 5)
-(defconstant +stack-pointer-start-offset+ 9)
+(alexandria:define-constant +pmem-magic-byte+ #x1A)
+(alexandria:define-constant +stack-pointer-offset+ 1)
+(alexandria:define-constant +heap-pointer-offset+ 5)
+(alexandria:define-constant +stack-pointer-start-offset+ 9)
 
 (defstruct (pmem
              (:conc-name %pmem-)

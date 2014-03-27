@@ -9,6 +9,7 @@
   :author "Kevin Raison <last name @ chatsubo dot net>"
   :version "0.1"
   :depends-on (:bordeaux-threads
+               :alexandria
                :iterate
                :cffi
                :osicat

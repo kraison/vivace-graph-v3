@@ -8,12 +8,12 @@
   heap
   addr)
 
-(defconstant +string-index+ 1)
-(defconstant +number-index+ 2)
-(defconstant +index-ascending+ 1)
-(defconstant +index-descending+ 2)
-(defconstant +index-unique+ 1)
-(defconstant +index-not-unique+ 2)
+(alexandria:define-constant +string-index+ 1)
+(alexandria:define-constant +number-index+ 2)
+(alexandria:define-constant +index-ascending+ 1)
+(alexandria:define-constant +index-descending+ 2)
+(alexandria:define-constant +index-unique+ 1)
+(alexandria:define-constant +index-not-unique+ 2)
 
 (defun make-string-index (heap &key (order :ascending) unique-p
                           (value-equal 'equal))

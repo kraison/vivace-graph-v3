@@ -19,8 +19,13 @@
                        "Could not find node with key ~A and value ~A in skip-list."
                        key value)))))
 
-(defconstant +max-level+ (the fixnum 64)
+(alexandria:define-constant +max-level+ (the fixnum 64)
+  :documentation
   "Maximum level of skip-list, should be enough for 2^64 elements.")
+(alexandria:define-constant +skip-list-header-size+ 25
+  :documentation
+  "space for type byte, count, head and tail pointers")
+
 
 (defmethod serialize-uuid ((id array))
   (subseq id 0 16))
@@ -248,8 +253,6 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
     (dotimes (i (%sl-max-level skip-list))
       (set-node-pointer skip-list head i (%sn-addr node)))
     node))
-
-(defconstant +skip-list-header-size+ 25) ;; space for type byte, count, head and tail pointers
 
 (defmethod serialize-skip-list-header ((heap memory) (address integer) (skip-list skip-list))
   (declare (type sb-ext:word address))
