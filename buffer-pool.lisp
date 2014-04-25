@@ -134,11 +134,14 @@
     (let ((b (make-byte-vector 34)))
       (sb-ext:atomic-push b (first (gethash 34 *buffer-pool*))))))
 
+(defun buffer-pool-running-p ()
+  (and (threadp *buffer-pool-thread*)
+             (thread-alive-p *buffer-pool-thread*)))
+
 (defun init-buffer-pool ()
-  (when (and (threadp *buffer-pool-thread*)
-             (thread-alive-p *buffer-pool-thread*))
+  (when (buffer-pool-running-p)
     (error "~A is already running. Cannot init-buffer-pool"
-           *buffer-pool-thread*))
+           *buffer-pool-thread*))  
   (setq *stop-buffer-pool* nil)
   (reset-buffer-pool-stats)
   (setq *buffer-pool* (make-hash-table :test 'eq :synchronized t))
@@ -167,6 +170,10 @@
   (setq *buffer-pool-thread*
         (make-thread 'monitor-buffer-pool :name "buffer-pool-thread"))
   *buffer-pool*)
+
+(defun ensure-buffer-pool ()
+  (or (buffer-pool-running-p)
+      (init-buffer-pool)))
 
 (defun stop-buffer-pool ()
   (setq *stop-buffer-pool* t)

@@ -39,6 +39,12 @@
   (ensure-directories-exist location)
   (let ((count 0))
     (with-open-file (out location :direction :output)
+      ;; The :LAST-TXN-ID record should come first so
+      ;; SNAPSHOT-FILE-TXN-ID can find it as the first record.
+      (let ((*print-pretty* nil))
+        (format out "~S~%"
+                (multiple-value-call 'list
+                  :last-txn-id (get-txn-id))))
       (map-vertices (lambda (v)
                       (init-node-data v :graph graph)
                       (incf count)
@@ -104,6 +110,10 @@
                     (setf (nth 3 plist) (transform-to-byte-vector (nth 3 plist)))
                     (setf (nth 7 plist) (transform-to-byte-vector (nth 7 plist)))
                     (apply '%%unsafe-make-edge (rest plist))))
+              (:last-txn-id
+               ;; Do nothing; this record is separately read by
+               ;; SNAPSHOT-FILE-TXN-ID
+               )
               (otherwise
                (log:error "RESTORE: Unknown input: ~S" plist))))))
       (dbg "RESTORE TOOK ~A SECONDS" (- (get-universal-time) start))

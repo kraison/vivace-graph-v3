@@ -9,7 +9,7 @@
 (alexandria:define-constant +meta-file+ "meta.dat" :test 'equal)
 (alexandria:define-constant +data-file+ "data.dat" :test 'equal)
 
-(defvar *pending-schema-updates* (make-hash-table :test 'equal))
+(defvar *schema-node-metadata* (make-hash-table :test 'equal))
 (alexandria:define-constant +max-node-types+ 65536)
 
 (alexandria:define-constant +storage-version+     #x01)

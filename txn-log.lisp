@@ -22,11 +22,27 @@
   (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
     (values sec msec (sb-ext:atomic-incf (aref *next-txn-id* 0)))))
 
+(defun read-snapshot-file-txn-id (snapshot-file)
+  (with-open-file (stream snapshot-file)
+    (let ((maybe-txn-id (read stream nil)))
+      (when (and maybe-txn-id
+                 (eql (car maybe-txn-id) :last-txn-id))
+        (rest maybe-txn-id)))))
+
+(defun snapshot-file-name-txn-id (snapshot-file)
+  (ppcre:register-groups-bind ((#'parse-integer seconds msec)) ("^snap-(\\d+)\\.(\\d+)$"
+                                              (file-namestring snapshot-file))
+    (list seconds msec 0)))
+
 (defun snapshot-file-txn-id (snapshot-file)
   "Return the highest txn id associated with SNAPSHOT-FILE."
-  ;; If this is too coarse, the snapshot process could store a fine
-  ;; txn-id as part of the snapshot data.
-  (values (universal-to-unix-time (file-write-date snapshot-file)) 0 0))
+  (let ((txn-id
+         (or (read-snapshot-file-txn-id snapshot-file)
+             (snapshot-file-name-txn-id snapshot-file))))
+    (if txn-id
+        (values-list txn-id)
+        (error "No txn-id could be determined from ~A"
+               snapshot-file))))
 
 (defmethod init-txn-log ((graph graph))
   (with-recursive-lock-held ((txn-lock graph))
@@ -73,12 +89,14 @@
                        (data edge) (id edge) (revision edge) (deleted-p edge))))
         (format (txn-log graph) "~S" txn)))))
 
-(defmethod snapshot ((graph graph) &key closing-graph-p include-deleted-p)
+(defmethod snapshot ((graph graph) &key closing-graph-p include-deleted-p
+                     (check-data-integrity-p t))
   (let ((count nil))
     (with-recursive-lock-held ((txn-lock graph))
-      (let ((problems (check-data-integrity graph
-                                            :include-deleted-p
-                                            include-deleted-p)))
+      (let ((problems (when check-data-integrity-p
+                        (check-data-integrity graph
+                                              :include-deleted-p
+                                              include-deleted-p))))
         (if problems
             (return-from snapshot
               (values :data-integrity-issues
@@ -181,16 +199,19 @@
           (setf last-txn-id (subseq plist 0 3)))))))
 
 (defmethod replay ((graph graph) txn-dir package-name)
-  (let ((last-txn-id nil))
+  (let ((last-txn-id '(0 0 0)))
     (multiple-value-bind (snapshot date) (find-newest-snapshot txn-dir)
       (if snapshot
           (progn
             (restore graph snapshot :package-name package-name)
-            (setf last-txn-id (snapshot-file-txn-id snapshot)))
+            (setf last-txn-id (multiple-value-list
+                               (snapshot-file-txn-id snapshot))))
           (setq date 0))
       (dolist (txn-log-file (find-txn-logs txn-dir date))
         (dbg "Restoring txn-log file ~A" txn-log-file)
-        (setf last-txn-id (replay-txn-file graph txn-log-file)))
+        ;; REPLAY-TXN-FILE may return NIL if the txn-log-file is empty
+        (setf last-txn-id (or (replay-txn-file graph txn-log-file)
+                              last-txn-id)))
       (dbg "Generating graph views.")
       (map nil
            (lambda (pair)

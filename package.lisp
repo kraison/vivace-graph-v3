@@ -34,13 +34,14 @@
            #:read-last-txn-id
            #:start-replication
            #:stop-replication
+           #:stop-buffer-pool
 
            #:def-node-type
            #:def-vertex
            #:def-edge
            #:lookup-node-type-by-name
            #:instantiate-node-type
-           #:*pending-schema-updates*
+           #:*schema-node-metadata*
            #:with-write-locked-class
            #:with-read-locked-class
            #:schema-class-locks

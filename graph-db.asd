@@ -22,7 +22,8 @@
                :ieee-floats
                :cl-json
                :log4cl
-               :usocket)
+               :usocket
+               :md5)
   :components ((:file "uuid")
                (:file "package" :depends-on ("uuid"))
                (:file "globals" :depends-on ("package"))

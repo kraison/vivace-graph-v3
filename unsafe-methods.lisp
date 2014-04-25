@@ -72,8 +72,10 @@
 (defun %%unsafe-save-node (node table &key (graph *graph*))
   (let ((old-node (%%unsafe-lhash-get table (id node))))
     (setf (id old-node) (id node))
-    (when (data node)
-      (setf (bytes node) (serialize (data node)))
+    (when (plusp (data-pointer node))
+      (if (data node)
+          (setf (bytes node) (serialize (data node)))
+          (init-node-data node :graph graph))
       (let ((addr (allocate (heap graph) (length (bytes node)))))
         (dotimes (i (length (bytes node)))
           (set-byte (heap graph)
@@ -203,6 +205,9 @@
   edge)
 
 (defmethod %%unsafe-delete-edge ((edge edge) &key (graph *graph*))
+  (when (deleted-p edge)
+    (error 'edge-already-deleted-error
+           :node edge))
   (let ((e (copy-edge edge)))
     (setf (deleted-p e) t)
     (%%unsafe-save-node e (edge-table graph) :graph graph)
@@ -256,6 +261,9 @@
   vertex)
 
 (defmethod %%unsafe-delete-vertex ((vertex vertex) &key (graph *graph*))
+  (when (deleted-p vertex)
+    (error 'vertex-already-deleted-error
+           :node vertex))
   (let ((v (copy-vertex vertex)))
     (setf (deleted-p v) t)
     (%%unsafe-save-node v (vertex-table graph) :graph graph)

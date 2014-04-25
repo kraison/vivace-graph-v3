@@ -252,6 +252,7 @@
       e)))
 
 (defun make-edge (type from to weight data &key id revision deleted-p
+                  retry-p
                   (graph *graph*))
   (when (stringp id)
     (setq id (read-id-array-from-string id)))
@@ -289,14 +290,15 @@
           (handler-case
               (write-edge e graph)
             (duplicate-key-error (c)
-              (declare (ignore c))
-              (let ((*print-pretty* nil))
-                (log:error "EDGE: Duplicate key error: ~A. Retrying MAKE-EDGE"
-                           (id e)))
-              (make-edge type from to weight data
-                         :id (gen-edge-id)
-                         :revision revision
-                         :deleted-p deleted-p :graph graph))))
+              (if retry-p
+                  (let ((*print-pretty* nil))
+                    (log:error "EDGE: Duplicate key error: ~A. Retrying MAKE-EDGE"
+                               (id e))
+                    (make-edge type from to weight data
+                               :id (gen-edge-id)
+                               :revision revision
+                               :deleted-p deleted-p :graph graph))
+                  (error c)))))
         (error "Unknown edge type ~A" type))))
 
 (defmethod copy-edge ((edge edge))
@@ -324,6 +326,9 @@
           new))))
 
 (defmethod delete-edge ((edge edge) &key (graph *graph*))
+  (when (deleted-p edge)
+    (error 'edge-already-deleted-error
+           :node edge))
   (let ((e (copy-edge edge)))
     (setf (deleted-p e) t)
     (let ((class-name (class-name (class-of edge))))
@@ -453,13 +458,13 @@
                       (edge-table *graph*))))
     (when collect-p (nreverse result))))
 
-(defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type)
+(defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :out
-             :collect-p t))
+             :collect-p t :include-deleted-p include-deleted-p))
 
-(defmethod incoming-edges ((vertex vertex) &key (graph *graph*) edge-type)
+(defmethod incoming-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :in
-             :collect-p t))
+             :collect-p t :include-deleted-p include-deleted-p))
 
 (defmethod compact-edges ((graph graph))
   (map-edges (lambda (edge)

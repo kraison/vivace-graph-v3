@@ -123,8 +123,10 @@
   ;; in case others are reading it!
   ;;(log:info "SAVING ~A" (string-id node))
   (let ((old-node nil))
-    (when (data node)
-      (setf (bytes node) (serialize (data node)))
+    (when (plusp (data-pointer node))
+      (if (data node)
+          (setf (bytes node) (serialize (data node)))
+          (init-node-data node :graph graph))
       (let ((addr (allocate (heap graph) (length (bytes node)))))
         (dotimes (i (length (bytes node)))
           (set-byte (heap graph)
@@ -268,9 +270,7 @@
                                  :deleted-p (slot-value node 'deleted-p)
                                  :written-p (slot-value node 'written-p)
                                  :data-pointer (slot-value node 'data-pointer))))
-    (setf (data new-node) (copy-tree (slot-value node 'data))
-          (bytes new-node) (when (slot-value new-node 'data)
-                             (serialize (slot-value new-node 'bytes))))
+    (setf (data new-node) (copy-tree (slot-value node 'data)))
     new-node))
 
 (defgeneric node-equal (x y)

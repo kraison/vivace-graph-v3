@@ -6,8 +6,9 @@
 ;;; Catching EPIPE: ugh. But I don't think there's a better way on
 ;;; SBCL
 (defun broken-pipe-error-p (condition)
-  (equalp (last (simple-condition-format-arguments condition))
-          '("Broken pipe")))
+  (and (typep condition 'simple-condition)
+       (equalp (last (simple-condition-format-arguments condition))
+               '("Broken pipe"))))
 
 (deftype broken-pipe-error ()
   '(satisfies broken-pipe-error-p))
@@ -50,7 +51,9 @@
   (remove-slave graph (current-thread)))
 
 (defmethod auth-slave ((graph master-graph))
-  (format (repl-stream *slave-session*) "~S~%" (graph-name graph))
+  (format (repl-stream *slave-session*) "~S~%"
+          (list (graph-name graph)
+                (schema-digest (schema graph))))
   (force-output (repl-stream *slave-session*))
   (let ((auth-key (read (repl-stream *slave-session*))))
     (log:debug "GOT AUTH-KEY ~S" auth-key)
@@ -270,52 +273,106 @@
           (write (master-txn-id graph) :stream out)
           (write '(0 0 0) :stream out)))))
 
+(deftype retryable-network-error ()
+  "A network connection attempt that signals one of these errors may
+  be retried."
+  '(or
+    usocket:ns-host-not-found-error
+    usocket:connection-refused-error usocket:network-unreachable-error
+    usocket:host-unreachable-error usocket:network-down-error
+    usocket:host-down-error usocket:timeout-error))
+
+(defun connect-to-master (graph &key (attempts 10))
+  "Connect to the master server for GRAPH. On successful network
+connection, authenticates and returns the socket. In the event of a
+retryable network error, retries with an exponential retry timeout."
+  (let ((timeout 1)
+        (attempt 1)
+        (host (master-host graph))
+        (port (replication-port graph)))
+    (loop
+      (when (<= attempts attempt)
+        (error "Failed to connect to master ~A:~A after ~A attempts"
+               host port attempts))
+      (handler-case
+          (let* ((socket (usocket:socket-connect host port))
+                 (stream (usocket:socket-stream socket)))
+            (unless (open-stream-p stream)
+              (error "Unable to connect"))
+            (destructuring-bind (graph-name schema-digest)
+                (read stream)
+              (unless (eql graph-name (graph-name graph))
+                (error "Connected to master with different graph name: ~A"
+                       graph-name))
+              (unless (equalp schema-digest (schema-digest (schema graph)))
+                (error "Connected to master with different graph schema")))
+            (format stream "~S~%" (replication-key graph))
+            (force-output stream)
+            (let ((response (read stream)))
+              (unless (eql response :ok)
+                (log:error "Slave auth error: ~A" response)
+                (error "Slave auth error: ~A" response)))
+            (format stream "~S~%" (master-txn-id graph))
+            (force-output stream)
+            (return socket))
+        (retryable-network-error (condition)
+          (log:info "Slave connection attempt ~A failed with ~A, ~
+                     retrying in ~A second~:P"
+                    attempt
+                    condition
+                    timeout)
+          (sleep timeout)
+          (incf timeout timeout)
+          (incf attempt))
+        (error (condition)
+          (error "Failed to connect to master ~A:~A: ~A"
+                 host port condition))))))
+
 (defmethod repl-slave-loop ((graph slave-graph) package)
   (let ((*package* (find-package (or package :graph-db))))
     (unwind-protect
          (progn
            ;; connect to server
            (setf (slave-socket graph)
-                 (usocket:socket-connect (master-host graph) (replication-port graph)))
-           (unless (open-stream-p (usocket:socket-stream (slave-socket graph)))
-             (error "Unable to connect to master ~A" (master-host graph)))
-           (let ((graph-name (read (usocket:socket-stream (slave-socket graph)))))
-             (unless (eql graph-name (graph-name graph))
-               (error "Connected to master with different graph name: ~A" graph-name))
-             ;; send auth key
-             (format (usocket:socket-stream (slave-socket graph)) "~S~%" (replication-key graph))
-             (force-output (usocket:socket-stream (slave-socket graph)))
-             (let ((response (read (usocket:socket-stream (slave-socket graph)))))
-               (unless (eql response :ok)
-                 (log:error "Slave auth error: ~A" response)
-                 (error "Slave auth error: ~A" response)))
-             ;; send txn-id
-             (format (usocket:socket-stream (slave-socket graph)) "~S~%" (master-txn-id graph))
-             (force-output (usocket:socket-stream (slave-socket graph)))
-             ;; start receiving updates
-             (let ((*readtable* (copy-readtable))
-                   (*graph* graph))
-               (local-time:enable-read-macros)
-               (loop until (stop-replication-p graph) do
-                    (handler-case
-                        (when (usocket:wait-for-input (slave-socket graph) :timeout 1 :ready-only t)
-                          (let ((txn (read (usocket:socket-stream (slave-socket graph)))))
-                            ;; FIXME: verify txn structure
-                            (let ((action (cadddr txn)) (plist (cddddr txn)))
-                              (let ((*print-pretty* nil))
-                                (log:debug "SLAVE GOT ~S" plist))
-                              (execute-tx-action action plist)
-                              (setf (master-txn-id graph) (subseq txn 0 3))
-                              (write-last-txn-id graph)
-                              (format (usocket:socket-stream (slave-socket graph)) ":ACK~%")
-                              (force-output (usocket:socket-stream (slave-socket graph))))))
-                      (error (c)
-                        (log:error "Replication error for ~A/~A: ~A"
-                                   (master-host graph) (graph-name graph) c)
-                        ;; FIXME: send admin a message
-                        (return))))
-               (log:info "Stopping replication from ~A for graph ~A"
-                         (master-host graph) (graph-name graph)))))
+                 (connect-to-master graph))
+           ;; start receiving updates
+           (let ((*readtable* (copy-readtable))
+                 (*graph* graph))
+             (local-time:enable-read-macros)
+             (loop
+               (when (stop-replication-p graph)
+                 (return))
+               (handler-case
+                   (when (usocket:wait-for-input (slave-socket graph) :timeout 1 :ready-only t)
+                     (let ((txn (read (usocket:socket-stream (slave-socket graph))
+                                      nil
+                                      :eof)))
+                       (cond ((eql txn :eof)
+                              (log:info ":EOF from master, reconnecting")
+                              (setf (slave-socket graph)
+                                    (connect-to-master graph)))
+                             ((consp txn)
+                              ;; FIXME: verify txn structure
+                              (let ((action (cadddr txn))
+                                    (plist (cddddr txn)))
+                                (let ((*print-pretty* nil))
+                                  (log:debug "SLAVE GOT ~S" plist))
+                                (execute-tx-action action plist)
+                                (setf (master-txn-id graph)
+                                      (subseq txn 0 3))
+                                (write-last-txn-id graph)
+                                (format (usocket:socket-stream (slave-socket graph)) ":ACK~%")
+                                (force-output (usocket:socket-stream (slave-socket graph)))))
+                             (t
+                              (error "Unknown response from master: ~A"
+                                     txn)))))
+                 (error (c)
+                   (log:error "Replication error for ~A/~A: ~A"
+                              (master-host graph) (graph-name graph) c)
+                   ;; FIXME: send admin a message
+                   (return))))
+             (log:info "Stopping replication from ~A for graph ~A"
+                       (master-host graph) (graph-name graph))))
       (ignore-errors
         (when (and (slave-socket graph)
                    (streamp (usocket:socket-stream (slave-socket graph)))

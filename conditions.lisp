@@ -52,3 +52,16 @@
              (with-slots (instance key) error
                (format stream "Nonexistent key ~S in ~S."
                        key instance)))))
+
+(define-condition node-already-deleted-error (error)
+  ((node
+    :initarg :node))
+  (:report (lambda (error stream)
+             (with-slots (node) error
+               (format stream "Node ~A already deleted" node)))))
+
+(define-condition vertex-already-deleted-error (node-already-deleted-error)
+  ())
+
+(define-condition edge-already-deleted-error (node-already-deleted-error)
+  ())

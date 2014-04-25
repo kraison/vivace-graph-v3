@@ -6,7 +6,12 @@
 (alexandria:define-constant +memory-bins-offset+ 10)
 (alexandria:define-constant +memory-bin-count+ 128)
 (alexandria:define-constant +memory-usable-offset+ 1034) ;; (+ 2 8 (* 8 128))
-(alexandria:define-constant +memory-header-size+ 8)
+(alexandria:define-constant +allocation-header-size+ 8
+  :documentation "The size, in bytes, of the metadata associated with
+  an allocation.")
+
+(alexandria:define-constant +allocation-pointer-size+ 8
+  :documentation "The size, in bytes, of a pointer to an allocation.")
 
 (defstruct (memory
              (:print-function
@@ -20,7 +25,7 @@
   (pointer 0 :type (UNSIGNED-BYTE 64))
   (lock (make-rw-lock))
   extent-size data-offset
-  (bin-locks (make-array +memory-bin-count+ :initial-element (make-recursive-lock)))
+  (bin-locks (map-into (make-array +memory-bin-count+) 'make-recursive-lock))
   (cache-lock (make-rw-lock))
   (cache (make-hash-table :synchronized t :weakness :value)))
 
@@ -77,6 +82,21 @@
     (serialize-uint64 memory (decf int) offset)
     int))
 
+(defun close-memory (memory)
+  (with-write-lock ((memory-lock memory))
+    (munmap-file (memory-mmap memory) :save-p t)
+    (setf (memory-mmap memory) nil)))
+
+(defun grow-memory (memory length)
+  (let ((num-extents (ceiling (/ length (memory-extent-size memory)))))
+    (log:info "GROWING MEMORY BY ~A EXTENTS" num-extents)
+    (extend-mapped-file (memory-mmap memory)
+                        (* num-extents (memory-extent-size memory)))
+    (setf (memory-size memory)
+          (mapped-file-length (memory-mmap memory)))))
+
+;;; Allocations
+
 (defmacro with-locked-bin ((memory size &key wait-p) &body body)
   (let ((lock (gensym)))
     `(let ((bin (mod (sxhash ,size) +memory-bin-count+)))
@@ -84,64 +104,57 @@
          (sb-thread:with-recursive-lock (,lock :wait-p ,wait-p)
            ,@body)))))
 
-(defun deserialize-header (mmap offset)
+(defun deserialize-header (mmap allocation-offset)
   ;;(declare (optimize (speed 3) (safety 0)))
-  (let ((int 0))
-    (dotimes (i 8)
-      (setf int
-            (dpb (get-byte mmap (+ offset i)) (byte 8 (* i 8)) int)))
-    (let ((free-p (null (ldb-test (byte 1 0) int))))
-      ;;(ldb (byte 1 0) int)))
-      (if free-p
-          (let ((next (deserialize-pointer mmap (+ 8 offset)))
-                (prev (deserialize-pointer mmap (+ 8 8 offset))))
-            (values (ash int -1) free-p next prev))
-          (values (ash int -1) free-p 0 0)))))
+  (let* ((int (deserialize-uint64 mmap allocation-offset))
+         (free-p (not (logtest 1 int)))
+         (data-size (ash int -1)))
+    (if free-p
+        (let ((next (deserialize-pointer mmap (+ +allocation-header-size+
+                                                 allocation-offset)))
+              (prev (deserialize-pointer mmap (+ +allocation-header-size+
+                                                 +allocation-pointer-size+
+                                                 allocation-offset))))
+          (values data-size free-p next prev))
+        (values data-size free-p 0 0))))
 
-(defun serialize-header (mmap offset alloc-len &key (active-p t))
+(deftype allocation-data-size ()
+  `(integer 1 ,(expt 2 63)))
+
+(defun serialize-header (mmap allocation-offset data-size &key (active-p t))
   ;; Max bytes we can allocate is 9223372036854775808 (ash (expt 2 64) -1)
   ;; since we use the first bit as the active / inactive tag
   ;;(declare (optimize (speed 3) (safety 0)))
-  (assert (and (> alloc-len 0) (<= alloc-len (ash (expt 2 64) -1))))
-  (let ((total-len (ash alloc-len 1)))
-    (if active-p
-        (setq total-len (dpb 1 (byte 1 0) total-len))
-        (setq total-len (dpb 0 (byte 1 0) total-len)))
-    (let ((n-bytes 8))
-      ;; serialize the flags and length
-      (dotimes (i n-bytes)
-        ;;(dbg "SERIALIZING ~8,'0B AT OFFSET ~A" (ldb (byte 8 0) total-len) offset)
-        (set-byte mmap offset (ldb (byte 8 0) total-len))
-        (incf offset)
-        (setq total-len (ash total-len -8)))
-      ;; 0 out prev and next pointers
-      (dotimes (i 16)
-        ;;(dbg "SERIALIZING ~8,'0B AT OFFSET ~S (~S)" 0 (+ offset i) i)
-        (set-byte mmap (+ offset i) 0))
-      ;; Return the offset of the start of the user-accessible portion of the block
-      offset)))
+  (assert (typep data-size 'allocation-data-size))
+  (let ((int (logior (ash data-size 1) (if active-p 1 0))))
+    (serialize-uint64 mmap int allocation-offset)
+    ;; Zero out the next and previous offsets
+    (serialize-pointer mmap 0 (+ +allocation-header-size+
+                                 allocation-offset))
+    (serialize-pointer mmap 0 (+ +allocation-header-size+
+                                 +allocation-pointer-size+
+                                 allocation-offset)))
+  (+ +allocation-header-size+ allocation-offset))
 
-(defun block-free-p (memory offset)
-  (multiple-value-bind (len free-p)
-      (deserialize-header (memory-mmap memory) offset)
-    (declare (ignore len))
-    free-p))
+(defun allocation-free-p (memory allocation-offset)
+  (nth-value 1 (deserialize-header (memory-mmap memory) allocation-offset)))
 
 (defun map-memory (fn memory &key collect-p include-free-p)
-  (let ((offset (memory-data-offset memory)) (done-p nil) (r nil))
+  (let ((allocation-offset (memory-data-offset memory)) (done-p nil) (r nil))
     (loop until done-p
        do
-         (multiple-value-bind (block-len free-p)
-             (deserialize-header (memory-mmap memory) offset)
-           ;;(dbg "GOT BLOCK OF ~A BYTES AT OFFSET ~A" block-len offset)
-           (if (= 0 block-len)
+         (multiple-value-bind (size free-p)
+             (deserialize-header (memory-mmap memory) allocation-offset)
+           ;;(dbg "GOT BLOCK OF ~A BYTES AT OFFSET ~A" block-len allocation-offset)
+           (if (= 0 size)
                (setq done-p t)
-               (progn
+               (let ((allocation-data-offset (+ +allocation-header-size+
+                                                allocation-offset)))
                  (when (or include-free-p (not free-p))
                    (if collect-p
-                       (push (funcall fn (+ 8 offset) block-len free-p) r)
-                       (funcall fn (+ 8 offset) block-len free-p)))
-                 (incf offset (+ 8 block-len))))))
+                       (push (funcall fn allocation-data-offset size free-p) r)
+                       (funcall fn allocation-data-offset size free-p)))
+                 (incf allocation-offset (+ +allocation-header-size+ size))))))
     (when collect-p
       (nreverse r))))
 
@@ -149,45 +162,39 @@
   (remove-if
    'null
    (map-memory
-    (lambda (offset size free?)
+    (lambda (allocation-data-offset size free?)
       (when free?
-        (cons offset size)))
+        (cons allocation-data-offset size)))
     memory
     :collect-p t
     :include-free-p t)))
 
 (defun set-memory-pointer (memory pointer)
   (setf (memory-pointer memory) pointer)
-  (let ((n-bytes 8) (offset +memory-memory-pointer-offset+))
-    (dotimes (i n-bytes)
-      (set-byte (memory-mmap memory) offset (ldb (byte 8 0) pointer))
-      (incf offset)
-      (setq pointer (ash pointer -8)))))
+  (serialize-uint64 (memory-mmap memory) pointer +memory-memory-pointer-offset+))
 
 (defun read-memory-pointer (memory)
-  (let ((n-bytes 8) (offset +memory-memory-pointer-offset+) (int 0))
-    (dotimes (i n-bytes)
-      (setq int (dpb (get-byte (memory-mmap memory) (+ offset i))
-                     (byte 8 (* i 8)) int)))
-    int))
+  (deserialize-uint64 memory +memory-memory-pointer-offset+))
 
-(defmethod get-chunk-of-size ((memory memory) size)
-  (with-locked-bin (memory size)
-    (let ((header-offset (pop (gethash size (memory-free-list memory)))))
-      (when header-offset
+(defmethod maybe-allocate-from-free-list ((memory memory) data-size)
+  (with-locked-bin (memory data-size)
+    (let ((allocation-offset (pop (gethash data-size (memory-free-list memory)))))
+      (when allocation-offset
         ;; FIXME: zero the bytes?
-        (serialize-header (memory-mmap memory) header-offset size :active-p t)
-        (+ +memory-header-size+ header-offset)))))
+        (serialize-header (memory-mmap memory) allocation-offset data-size
+                          :active-p t)))))
 
-(defun add-to-free-list (memory offset length)
+(defun add-to-free-list (memory allocation-offset data-size)
   ;; Use header offset, not user offset!
-  (with-locked-bin (memory length)
-    (push offset (gethash length (memory-free-list memory)))))
+  (with-locked-bin (memory data-size)
+    (push allocation-offset (gethash data-size (memory-free-list memory)))))
 
 (defmethod init-free-list ((memory memory))
   (dolist (pair (free-list memory))
-    (push (- (car pair) +memory-header-size+)
-          (gethash (cdr pair) (memory-free-list memory)))))
+    (destructuring-bind (allocation-data-offset . data-size)
+        pair
+      (push (- allocation-data-offset +allocation-header-size+)
+            (gethash data-size (memory-free-list memory))))))
 
 (defun create-memory (location size &key (extent-size (* 1024 1024 100)))
   (let ((memory
@@ -229,34 +236,30 @@
     (init-free-list memory)
     memory))
 
-(defun close-memory (memory)
-  (with-write-lock ((memory-lock memory))
-    (munmap-file (memory-mmap memory) :save-p t)
-    (setf (memory-mmap memory) nil)))
 
-(defun grow-memory (memory length)
-  (let ((num-extents (ceiling (/ length (memory-extent-size memory)))))
-    (log:info "GROWING MEMORY BY ~A EXTENTS" num-extents)
-    (extend-mapped-file (memory-mmap memory)
-                        (* num-extents (memory-extent-size memory)))
-    (setf (memory-size memory)
-          (mapped-file-length (memory-mmap memory)))))
-
-(defun free (memory offset)
-  ;; offset is the beginning of the user-accessible portion of the data block
-  (unless (>= offset (memory-data-offset memory))
-    (log:error "SEGV: Unsafe call to free: pointer ~S ~S" offset memory)
-    (error "SEGV: Cannot free pointer ~S" offset))
-  (let ((header-offset (- offset +memory-header-size+)))
-    (let ((size (deserialize-header (memory-mmap memory) header-offset)))
+(defun free (memory allocation-data-offset)
+  ;; allocation-data-offset is the beginning of the user-accessible
+  ;; portion of the data block
+  (unless (>= allocation-data-offset (memory-data-offset memory))
+    (log:error "SEGV: Unsafe call to free: pointer ~S ~S"
+               allocation-data-offset memory)
+    (error "SEGV: Cannot free pointer ~S" allocation-data-offset))
+  (let ((allocation-offset (- allocation-data-offset +allocation-header-size+)))
+    (multiple-value-bind (size free-p)
+        (deserialize-header (memory-mmap memory) allocation-offset)
+      (when free-p
+        (log:error "FREE on already-freed allocation at ~S"
+                   allocation-offset)
+        (error "FREE on an already-freed allocation at ~S"
+               allocation-offset))
       (log:info "ADDING ~S TO ~A FREE LIST, SIZE ~S"
-                header-offset (m-path (memory-mmap memory)) size)
-      (serialize-header (memory-mmap memory) header-offset size :active-p nil)
+                allocation-offset (m-path (memory-mmap memory)) size)
+      (serialize-header (memory-mmap memory) allocation-offset size :active-p nil)
       ;; FIXME: zero the bytes?
-      (add-to-free-list memory header-offset size)
-      header-offset)))
+      (add-to-free-list memory allocation-offset size)
+      allocation-offset)))
 
-(defun normalize-chunk-size (size)
+(defun normalize-allocation-data-size (size)
   (cond ((<= size 16)
          16)
         ((<= size 512)
@@ -264,33 +267,33 @@
         (t
          size)))
 
-(defun allocate (memory size)
-  (setq size (normalize-chunk-size size))
+(defun unallocated-memory-available (memory)
+  (- (memory-size memory) (memory-pointer memory)))
+
+(defun allocate-from-memory (memory data-size)
+  (let ((current-pointer nil)
+        (allocation-size (+ +allocation-header-size+ data-size))
+        (available-size (unallocated-memory-available memory)))
+    (when (< available-size allocation-size)
+      (grow-memory memory (- allocation-size available-size)))
+    (setq current-pointer (memory-pointer memory))
+    (set-memory-pointer memory
+                        (+ (memory-pointer memory) allocation-size))
+    (serialize-header (memory-mmap memory) current-pointer data-size
+                      :active-p t)))
+
+(defun allocate (memory data-size)
+  (setq data-size (normalize-allocation-data-size data-size))
   (with-write-lock ((memory-lock memory))
-    (let ((pointer
-           (or
-            ;;(get-chunk-of-size memory size)
-            (let ((current-pointer nil))
-              (let ((additional-memory-needed
-                     ;; size plus 8 bytes for header
-                     (- (+ +memory-header-size+ size)
-                        (- (memory-size memory) (memory-pointer memory)))))
-                (when (> additional-memory-needed 0)
-                  (grow-memory memory additional-memory-needed))
-                (setq current-pointer (memory-pointer memory))
-                (set-memory-pointer memory
-                                    (+ (memory-pointer memory)
-                                       +memory-header-size+
-                                       size))
-                (let ((block-begin
-                       (serialize-header (memory-mmap memory)
-                                         current-pointer
-                                         size)))
-                  block-begin))))))
-      (unless (>= pointer (memory-data-offset memory))
-        (log:error "SEGV: Tried to allocate at unsafe position ~S in ~S" pointer memory)
-        (error "Tried to allocate at unsafe position ~S in ~S" pointer memory))
-      pointer)))
+    (let ((allocation-offset
+           (or (maybe-allocate-from-free-list memory data-size)
+               (allocate-from-memory memory data-size))))
+      (unless (>= allocation-offset (memory-data-offset memory))
+        (log:error "SEGV: Tried to allocate at unsafe position ~S in ~S"
+                   allocation-offset memory)
+        (error "Tried to allocate at unsafe position ~S in ~S"
+               allocation-offset memory))
+      (values allocation-offset data-size))))
 
 (defun test-allocator ()
   (let ((memory (create-memory "/var/tmp/testmem.dat" 10240))

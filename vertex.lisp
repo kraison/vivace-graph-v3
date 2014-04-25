@@ -163,7 +163,7 @@
     (record-graph-write)
     v))
 
-(defun make-vertex (type-id data &key id deleted-p revision (graph *graph*))
+(defun make-vertex (type-id data &key id deleted-p revision retry-p (graph *graph*))
   (let ((type-meta (or (and (eq type-id :generic) :generic)
                        (and (eq 0 type-id) :generic)
                        (and (integerp type-id)
@@ -190,13 +190,14 @@
           (handler-case
               (write-vertex v graph)
             (duplicate-key-error (c)
-              (declare (ignore c))
-              (let ((*print-pretty* nil))
-                (log:error "VERTEX: Duplicate key error: ~A. Retrying MAKE-VERTEX" (id v)))
-              (make-vertex type-id data
-                           :id (gen-vertex-id)
-                           :revision revision
-                           :deleted-p deleted-p :graph graph))))
+              (if retry-p
+                  (let ((*print-pretty* nil))
+                    (log:error "VERTEX: Duplicate key error: ~A. Retrying MAKE-VERTEX" (id v))
+                    (make-vertex type-id data
+                                 :id (gen-vertex-id)
+                                 :revision revision
+                                 :deleted-p deleted-p :graph graph))
+                  (error c)))))
         (error "Unknown vertex type ~A" type-id))))
 
 (defun copy-vertex (vertex)
@@ -221,6 +222,9 @@
           new))))
 
 (defmethod delete-vertex ((vertex vertex) &key (graph *graph*))
+  (when (deleted-p vertex)
+    (error 'vertex-already-deleted-error
+           :node vertex))
   (let ((v (copy-vertex vertex)))
     (setf (deleted-p v) t)
     (let ((class-name (class-name (class-of vertex))))

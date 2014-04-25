@@ -12,7 +12,7 @@
          (dirty-file (format nil "~A/.dirty" location)))
     (unless (probe-file path)
       (error "Unable to open graph location ~A" path))
-    (init-buffer-pool)
+    (ensure-buffer-pool)
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
                   (* 1024 1024 1000)))
@@ -78,7 +78,7 @@
     (when (probe-file dirty-file)
       (error "~A exists;  graph not closed properly.  Run recovery." dirty-file))
     (log:info "Initilizing buffer pool.")
-    (init-buffer-pool)
+    (ensure-buffer-pool)
     (log:info "Opening graph.")
     (let* ((heap (open-memory (format nil "~A/heap.dat" path)))
            (graph
@@ -161,7 +161,6 @@
   (when (memory-p (heap graph))
     (dbg "Closing ~A" (heap graph))
     (close-memory (heap graph)))
-  (stop-buffer-pool)
   (setf (heap graph) nil
         (vertex-table graph) nil
         (edge-table graph) nil)

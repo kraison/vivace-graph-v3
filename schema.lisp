@@ -74,6 +74,38 @@
              (incf (schema-next-vertex-id schema))))
           (t (error "Unknown parent type ~S" parent)))))
 
+(defmethod schema-string-representation ((schema schema))
+  "Return a string representation of SCHEMA. Two schemas with the same
+node structure will have EQUALP string representations. This is meant
+for a quick test of replication compatibility, not guaranteed equality
+testing."
+  (with-output-to-string (stream)
+    (loop with parent-alist = (alexandria:hash-table-alist
+                               (schema-type-table schema))
+          for (parent . table) in (sort parent-alist #'string<
+                                        :key 'car)
+          do
+          (format stream "~A~%" parent)
+          (loop with node-types = (remove-if-not #'node-type-p
+                                                 (alexandria:hash-table-values table))
+                for node-type in (sort node-types #'string<
+                                       :key 'node-type-name)
+                do
+                (format stream "  ~A~%" (node-type-name node-type))
+                (loop with slots = (mapcar 'first (node-type-slots node-type))
+                      for slot in (sort slots #'string<)
+                      do (format stream "   ~A~%" slot))))))
+
+(defmethod schema-digest ((schema schema))
+  "Return a digest of the string representation of SCHEMA. Used in
+replication for a quick schema compatibility check."
+  (with-output-to-string (stream)
+    (map nil
+         (lambda (octet)
+           (format stream "~(~2,'0X~)" octet))
+         (md5:md5sum-string (schema-string-representation schema)
+                             :external-format :utf8))))
+
 (defmethod all-node-types ((graph graph))
   (let ((types nil))
     (maphash (lambda (parent table)
@@ -146,11 +178,13 @@
            (sb-mop:finalize-inheritance (find-class ',name)))
          (defun ,predicate (thing)
            (typep thing ',name))
-         (defun ,lookup-fn (id)
+         (defun ,lookup-fn (id &key included-deleted-p)
            (let ((thing ,(if (eql (last1 parent-types) 'edge)
                              `(lookup-edge id)
                              `(lookup-vertex id))))
-             (when (typep thing ',name)
+             (when (and (typep thing ',name)
+                        (or included-deleted-p
+                            (not (deleted-p thing))))
                thing)))
          ,(let ((args (if (eql (last1 parent-types) 'edge)
                           '(&rest make-args
@@ -232,10 +266,10 @@
                                            (undo-bindings old-trail)))
                                        *graph*
                                        :edge-type ',name))))))
+         (push ,meta (gethash ',graph-name *schema-node-metadata*))
          (let ((,graph (lookup-graph ',graph-name)))
-           (if ,graph
-               (instantiate-node-type ,meta ,graph)
-               (push ,meta (gethash ',graph-name *pending-schema-updates*))))))))
+           (when ,graph
+             (instantiate-node-type ,meta ,graph)))))))
 
 (defmacro def-vertex (name parent-types slot-specs graph-name)
   `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name))
@@ -289,8 +323,9 @@
 
 (defmethod update-schema ((graph graph))
   (with-recursive-lock-held ((schema-lock (schema graph)))
-    (loop until (null (gethash (graph-name graph) *pending-schema-updates*)) do
-         (let ((meta (pop (gethash (graph-name graph) *pending-schema-updates*))))
-           (when meta
-             (instantiate-node-type meta graph))))
+    (let ((node-metadata (gethash (graph-name graph) *schema-node-metadata*)))
+      ;; New metadata is pushed on the front of its list; apply
+      ;; metadata oldest to newest by reversing
+      (dolist (meta (reverse node-metadata))
+        (instantiate-node-type meta graph)))
     (save-schema (schema graph) graph)))
