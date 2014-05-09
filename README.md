@@ -14,6 +14,7 @@ stage.  Multi-node transactions are next on the agenda.
 Documentation is forthcoming;  please stay tuned.  But to get you started, here
 are some examples:
 
+```
 (ql:quickload :graph-db)
 (use-package :graph-db)
 (defvar *graph-name* :test-graph)
@@ -59,3 +60,4 @@ are some examples:
              love-qty)))
  )
 
+```
