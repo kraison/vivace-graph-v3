@@ -61,3 +61,9 @@ are some examples:
  )
 
 ```
+
+And always make sure you
+```
+(close-graph *graph*)
+```
+when finished.
