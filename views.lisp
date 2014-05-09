@@ -98,8 +98,10 @@
                         (open-skip-list :address (cdr (assoc :pointer view))
                                         :heap (indexes graph)
                                         :duplicates-allowed-p nil
-                                        :key-equal 'view-key-equal
-                                        :key-comparison 'view-less-than
+                                        ;;:key-equal 'view-key-equal
+                                        ;;:key-comparison 'view-less-than
+                                        :key-equal 'reduce-equal
+                                        :key-comparison 'reduce-comp
                                         :value-equal 'equal
                                         :key-serializer 'view-key-serialize
                                         :key-deserializer 'view-key-deserialize

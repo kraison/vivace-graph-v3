@@ -7,7 +7,7 @@
                 (declare (ignore d))
                 (format s "#<TYPE-INDEX ~A" (type-index-table i)))))
   table
-  (locks (make-array +max-node-types+ :initial-element (sb-thread:make-mutex)))
+  (locks (map-into (make-array +max-node-types+) 'sb-thread:make-mutex))
   (cache (make-hash-table :test 'eq :synchronized t)))
 
 (defun make-type-index (location heap)

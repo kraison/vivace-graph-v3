@@ -236,7 +236,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (value-deserializer 'identity)
   (node-cache (make-hash-table :test 'eq :weakness :value :synchronized t))
   (length-lock (sb-thread:make-mutex))
-  (locks (make-array 1000 :initial-element (sb-thread:make-mutex))))
+  (locks (map-into (make-array 1000) 'sb-thread:make-mutex)))
 
 (defun make-head (skip-list &key key value)
   (let ((node (make-skip-node skip-list key value (%sl-max-level skip-list))))

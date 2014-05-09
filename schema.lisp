@@ -178,12 +178,12 @@ replication for a quick schema compatibility check."
            (sb-mop:finalize-inheritance (find-class ',name)))
          (defun ,predicate (thing)
            (typep thing ',name))
-         (defun ,lookup-fn (id &key included-deleted-p)
+         (defun ,lookup-fn (id &key include-deleted-p)
            (let ((thing ,(if (eql (last1 parent-types) 'edge)
                              `(lookup-edge id)
                              `(lookup-vertex id))))
              (when (and (typep thing ',name)
-                        (or included-deleted-p
+                        (or include-deleted-p
                             (not (deleted-p thing))))
                thing)))
          ,(let ((args (if (eql (last1 parent-types) 'edge)
