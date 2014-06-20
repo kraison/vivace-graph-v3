@@ -539,6 +539,11 @@
      (apply '+ vals))))
 |#
 
+(defun fully-qualified-expression-string (expression)
+  (declare (ignore colonp atp args))
+  (let ((*package* (find-package :keyword)))
+    (format nil "~S" expression)))
+
 (defmacro def-view (name parents &body body)
   (with-gensyms (view-name class-name graph-name graph lookup-fn)
     (let ((map-code (cadr (assoc :map body)))
@@ -553,9 +558,9 @@
                                :graph-name ,graph-name
                                :lookup-fn ,lookup-fn
                                :heap (indexes ,graph)
-                               :map-code ,(format nil "~S" map-code)
+                               :map-code ,(fully-qualified-expression-string map-code)
                                :reduce-code ,(when reduce-code
-                                                   (format nil "~S" reduce-code))
+						   (fully-qualified-expression-string reduce-code))
                                :map-fn nil
                                :reduce-fn nil)))
          (dbg "MAKING ~S" view)

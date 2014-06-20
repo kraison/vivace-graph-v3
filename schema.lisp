@@ -266,6 +266,65 @@ replication for a quick schema compatibility check."
                                            (undo-bindings old-trail)))
                                        *graph*
                                        :edge-type ',name))))))
+         ,(when (eql (last1 parent-types) 'edge)
+                (let ((functor-name (intern (format nil "~A/3" name))))
+                  `(def-global-prolog-functor ,functor-name (from to weight cont)
+                     (setq from (var-deref from)
+                           to (var-deref to)
+                           weight (var-deref weight))
+                     (when *prolog-trace*
+                       (format t "TRACE: ~A(~S ~S ~S)~%" ',functor-name from to weight))
+                     (cond ((and (not (graph-db::var-p from)) (not (graph-db::var-p to)))
+                            (map-edges (lambda (edge)
+                                         (let ((old-trail (fill-pointer *trail*)))
+                                           (let ((v1 (lookup-vertex (from edge))))
+                                             (when (unify from v1)
+                                               (let ((v2 (lookup-vertex (to edge))))
+                                                 (when (unify to v2)
+                                                   (when (unify weight (weight edge))
+                                                     (funcall cont))))))
+                                           (undo-bindings old-trail)))
+                                       *graph*
+                                       :from-vertex from
+                                       :to-vertex to
+                                       :edge-type ',name))
+                           ((not (graph-db::var-p from))
+                            (map-edges (lambda (edge)
+                                         (let ((old-trail (fill-pointer *trail*)))
+                                           (let ((v2 (lookup-vertex (to edge))))
+                                             (when (unify to v2)
+                                               (when (unify weight (weight edge))
+                                                 (funcall cont))))
+                                           (undo-bindings old-trail)))
+                                       *graph*
+                                       :vertex from
+                                       :direction :out
+                                       :edge-type ',name))
+                           ((not (graph-db::var-p to))
+                            (map-edges (lambda (edge)
+                                         (let ((old-trail (fill-pointer *trail*)))
+                                           (let ((v2 (lookup-vertex (from edge))))
+                                             (when (unify from v2)
+                                               (when (unify weight (weight edge))
+                                                 (funcall cont))))
+                                           (undo-bindings old-trail)))
+                                       *graph*
+                                       :vertex to
+                                       :direction :in
+                                       :edge-type ',name))
+                           (t
+                            (map-edges (lambda (edge)
+                                         (let ((old-trail (fill-pointer *trail*)))
+                                           (let ((v1 (lookup-vertex (from edge))))
+                                             (when (unify from v1)
+                                               (let ((v2 (lookup-vertex (to edge))))
+                                                 (when (unify to v2)
+                                                   (when (unify weight (weight edge))
+                                                     (funcall cont))))))
+                                           (undo-bindings old-trail)))
+                                       *graph*
+                                       :edge-type ',name)))))
+                )
          (push ,meta (gethash ',graph-name *schema-node-metadata*))
          (let ((,graph (lookup-graph ',graph-name)))
            (when ,graph

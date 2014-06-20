@@ -21,7 +21,7 @@
               (lambda (lhash stream depth)
                 (declare (ignore depth))
                 (format stream
-                        "#<LHASH :TEST ~A :LOCTION ~A>"
+                        "#<LHASH :TEST ~A :LOCATION ~A>"
                         (%lhash-test lhash)
                         (%lhash-location lhash))))
 	     (:predicate lhash-p))
