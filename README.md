@@ -9,7 +9,8 @@ neo4j, as it implements a property graph model.  The Prolog interface has been
 greatly expanded, though it still suffers from a few minor issues (all of which 
 are more issues of interface convenience as opposed to functional deficiencies).
 CLOS integration was a goal with this version and works quite well at this 
-stage.  Multi-node transactions are next on the agenda.
+stage.  Multi-node transactions are now complete; all node creations & 
+modifications should now be wrapped in the WITH-TRANSACTION macro.
 
 Documentation is forthcoming;  please stay tuned.  But to get you started, here
 are some examples:
@@ -30,10 +31,11 @@ are some examples:
  ()
  :test-graph)
 
-(let ((p1 (make-person :name "Joe" :email "joe@blow.com"))
-      (p2 (make-person :name "Jill" :email "jill@hill.com")))
-  (make-likes :from p1 :to p2 :weight 100.0)
-  (make-likes :from p2 :to p1 :weight 50.0))
+(with-transaction ()
+  (let ((p1 (make-person :name "Joe" :email "joe@blow.com"))
+        (p2 (make-person :name "Jill" :email "jill@hill.com")))
+    (make-likes :from p1 :to p2 :weight 100.0)
+    (make-likes :from p2 :to p1 :weight 50.0)))
 
 (values
  (select (:flat nil)
