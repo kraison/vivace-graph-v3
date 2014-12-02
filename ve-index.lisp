@@ -136,7 +136,8 @@
             (when il
               (cache-index-list (ve-index-out graph) key il)))))))
 
-(defmethod ve-index-push ((idx ve-index) (key ve-key) (id array))
+(defmethod ve-index-push ((idx ve-index) (key ve-key) (id array)
+                          &key unless-present)
   (let ((table (ve-index-table idx)))
     (with-locked-hash-key (table key)
       ;;(dbg "ve-index-push ~A:~A" key id)
@@ -144,7 +145,9 @@
         (if index-list
             (progn
               ;;(dbg "add-to-ve-index: Got ~A" index-list)
-              (index-list-push id index-list)
+              (if unless-present
+                  (index-list-pushnew id index-list)
+                  (index-list-push id index-list))
               (%lhash-update table key index-list)
               ;;(dbg "add-to-ve-index: AFTER PUSH: ~A" index-list)
               )
@@ -165,6 +168,6 @@
           (%lhash-update table key index-list)
           (cache-index-list idx key index-list))))))
 
-(defgeneric add-to-ve-index (edge graph))
+(defgeneric add-to-ve-index (edge graph &key unless-present))
 (defgeneric remove-from-ve-index (edge graph))
 

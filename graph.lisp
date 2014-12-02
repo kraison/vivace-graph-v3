@@ -52,7 +52,6 @@
       (let ((*graph* graph))
         (init-schema graph)
         (update-schema graph)
-        (init-txn-log graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph))
@@ -60,11 +59,12 @@
         (setf (master-host graph) master-host)
         (when replay-txn-dir
           (let ((*graph* graph))
-            (multiple-value-bind (replayed-graph txn-id)
-                (replay graph replay-txn-dir package)
-              (declare (ignore replayed-graph))
-              (setf (master-txn-id graph) txn-id)
-              (write-last-txn-id graph)))))
+            (replay graph replay-txn-dir package))))
+      (setf (transaction-manager graph)
+            (make-instance 'transaction-manager
+                           :graph graph))
+      (ensure-directories-exist (persistent-transaction-directory graph))
+      (init-replication-log graph)
       (start-replication graph :package package)
       graph)))
 
@@ -119,12 +119,18 @@
         (setf (schema-lock (schema graph)) (make-recursive-lock))
         (update-schema graph)
         (restore-views graph)
-        (init-txn-log graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
-        (setf (gethash name *graphs*) graph))
+        (setf (gethash name *graphs*) graph)
+        (gc-heap graph)
+        (recover-transactions graph))
       (when slave-p
         (setf (master-host graph) master-host))
+      (setf (transaction-manager graph)
+            (make-instance 'transaction-manager
+                           :graph graph))
+      (ensure-directories-exist (persistent-transaction-directory graph))
+      (init-replication-log graph)
       (start-replication graph :package package)
       graph)))
 
@@ -133,7 +139,7 @@
   (remhash (graph-name graph) *graphs*)
   (when snapshot-p
     (dbg "Snapshotting ~A" graph)
-    (snapshot graph :closing-graph-p t))
+    (snapshot graph))
   (when (type-index-p (vertex-index graph))
     (dbg "Closing ~A" (vertex-index graph))
     (close-type-index (vertex-index graph)))
@@ -166,5 +172,6 @@
         (edge-table graph) nil)
   (let ((dirty-file (format nil "~A/.dirty" (location graph))))
     (delete-file dirty-file))
+  (close-replication-log graph)
   graph)
 

@@ -8,6 +8,7 @@
    (txn-log :accessor txn-log :initarg :txn-log)
    (txn-file :accessor txn-file :initarg :txn-file)
    (txn-lock :accessor txn-lock :initarg :txn-lock :initform (make-recursive-lock))
+   (transaction-manager :accessor transaction-manager :initarg :transaction-manager)
    (replication-key :accessor replication-key :initarg :replication-key)
    (replication-port :accessor replication-port :initarg :replication-port)
    (vertex-table :accessor vertex-table :initarg :vertex-table)
@@ -28,6 +29,10 @@
                 :initform (make-hash-table :test 'eq :synchronized t))
    (read-stats :accessor read-stats :initarg :read-stats
                :initform (make-hash-table :test 'eq :synchronized t))))
+
+(defmethod print-object ((graph graph) stream)
+  (print-unreadable-object (graph stream :type t :identity t)
+    (format stream "~S ~S" (graph-name graph) (location graph))))
 
 (defclass master-graph (graph)
   ((replication-mbox :accessor replication-mbox :initarg :replication-mbox)
@@ -57,8 +62,7 @@
 
 (defgeneric init-schema (graph))
 (defgeneric update-schema (graph-or-name))
-(defgeneric snapshot (graph &key closing-graph-p))
-(defgeneric init-txn-log (graph))
+(defgeneric snapshot (graph &key &allow-other-keys))
 (defgeneric scan-for-unindexed-nodes (graph))
 (defgeneric start-replication (graph &key package))
 (defgeneric stop-replication (graph))

@@ -55,6 +55,19 @@
       (setf (aref vec i) (get-byte mapped-file (+ i offset))))
     vec))
 
+(defmethod set-bytes :around (mf vec offset length)
+  (handler-case
+      (call-next-method)
+    (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-bytes mf offset length))))
+
+(defmethod set-bytes ((mapped-file mapped-file) vec offset length)
+  (declare (type word offset length))
+  (dotimes (i length)
+    (set-byte mapped-file (+ i offset) (aref vec i)))
+  vec)
+
 (defmethod size-of ((mmap mapped-file))
   (osicat-posix:stat-size (osicat-posix:stat (m-path mmap))))
 

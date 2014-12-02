@@ -16,12 +16,12 @@
   (:method ((edge edge))
     (delete-edge edge)))
 
-(defgeneric save (node &key graph)
+(defgeneric save (object &key graph)
   (:method (thing &key graph)
     (declare (ignore graph))
     (error "Cannot save ~S of type ~S" thing (type-of thing)))
   (:method ((vertex vertex) &key (graph *graph*))
-    (save-vertex vertex :graph graph))
+    (update-node vertex graph))
   (:method ((edge edge) &key (graph *graph*))
-    (save-edge edge :graph graph)))
+    (update-node edge graph)))
 

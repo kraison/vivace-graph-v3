@@ -171,11 +171,6 @@
   "Is there a variable anywhere in the expression x?"
   (find-if-anywhere #'variable-p x))
 
-(defun proper-listp (x)
-  "Is x a proper (non-dotted) list?"
-  (or (null x)
-      (and (consp x) (proper-listp (rest x)))))
-
 (defun maybe-add-undo-bindings (compiled-exps)
   "Undo any bindings that need undoing.
   If there are any, bind the trail before we start."

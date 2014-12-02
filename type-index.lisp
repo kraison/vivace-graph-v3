@@ -33,14 +33,17 @@
 (defmethod close-type-index ((index type-index))
   (munmap-file (type-index-table index) :save-p t))
 
-(defgeneric add-to-type-index (node graph))
+(defgeneric add-to-type-index (node graph &key unless-present))
 (defgeneric remove-from-type-index (node graph))
 
-(defmethod type-index-push ((uuid array) (type-id integer) (idx type-index))
+(defmethod type-index-push ((uuid array) (type-id integer) (idx type-index)
+                            &key unless-present)
   (let ((lock (aref (type-index-locks idx) type-id)))
     (sb-thread:with-recursive-lock (lock)
       (let ((il (gethash type-id (type-index-cache idx))))
-        (index-list-push uuid il)
+        (if unless-present
+            (index-list-pushnew uuid il)
+            (index-list-push uuid il))
         ;; FIXME: could be optimized to only write the new head
         (serialize-index-list (type-index-table idx)
                               il

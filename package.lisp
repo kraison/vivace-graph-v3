@@ -12,16 +12,13 @@
            #:snapshot
            #:replay
            #:restore
-           #:replay-txn-file
            #:location
            #:schema
            #:indexes
            #:*graph*
            #:execute-tx
-           #:with-graph-transaction
            #:transaction-p
            #:graph-name
-           #:*current-transaction*
            #:transaction-error
            #:master-host
            #:replication-port
@@ -35,6 +32,15 @@
            #:start-replication
            #:stop-replication
            #:stop-buffer-pool
+
+           #:with-transaction
+           #:lookup-object
+           #:update-node
+           #:delete-node
+           #:commit
+           #:rollback
+           #:*transaction*
+           #:no-transaction-in-progress
 
            #:def-node-type
            #:def-vertex

@@ -1,5 +1,13 @@
 (in-package :graph-db)
 
+(alexandria:define-constant +edge-header-size+
+    ;; Size, in bytes, of the standard node header, plus two vertex
+    ;; ids and a 64-bit weight
+    (+ +node-header-size+
+       16
+       16
+       8))
+
 (defclass edge (node)
   ((from :accessor from :initform +null-key+ :initarg :from
          :type (simple-array (unsigned-byte 8) (16))
@@ -103,7 +111,7 @@
   (let ((table
          (make-lhash :test key-test
                      :location location
-                     :value-bytes 55
+                     :value-bytes +edge-header-size+
                      :bucket-size 24
                      :buckets (expt 2 18)
                      :key-serializer 'serialize-key
@@ -113,16 +121,18 @@
     table))
 
 (defmethod lookup-edge ((id string) &key (graph *graph*))
-  (lookup-node (edge-table graph) (read-id-array-from-string id) graph))
+  (lookup-edge (read-id-array-from-string id) :graph graph))
 
 (defmethod lookup-edge ((id array) &key (graph *graph*))
-  (lookup-node (edge-table graph) id graph))
+  (lookup-object id (edge-table graph) *transaction* graph))
 
-(defmethod add-to-ve-index ((edge edge) (graph graph))
+(defmethod add-to-ve-index ((edge edge) (graph graph) &key unless-present)
   (let ((in-ve-key (make-ve-key :id (to edge) :type-id (type-id edge)))
         (out-ve-key (make-ve-key :id (from edge) :type-id (type-id edge))))
-    (ve-index-push (ve-index-in graph) in-ve-key (id edge))
-    (ve-index-push (ve-index-out graph) out-ve-key (id edge))))
+    (ve-index-push (ve-index-in graph) in-ve-key (id edge)
+                   :unless-present unless-present)
+    (ve-index-push (ve-index-out graph) out-ve-key (id edge)
+                   :unless-present unless-present)))
 
 (defmethod remove-from-ve-index ((edge edge) (graph graph))
   (let ((in-ve-key (make-ve-key :id (to edge) :type-id (type-id edge)))
@@ -130,7 +140,7 @@
     (ve-index-remove (ve-index-in graph) in-ve-key (id edge))
     (ve-index-remove (ve-index-out graph) out-ve-key (id edge))))
 
-(defmethod add-to-vev-index ((edge edge) (graph graph))
+(defmethod add-to-vev-index ((edge edge) (graph graph) &key unless-present)
   (let ((vev-key (make-vev-key :in-id (to edge) :out-id (from edge) :type-id (type-id edge)))
         (table (vev-index-table (vev-index graph))))
     ;;(dbg "add-to-vev-index: ~A" vev-key)
@@ -140,7 +150,9 @@
         (if index-list
             (progn
               ;;(dbg "add-to-vev-index: Got ~A" index-list)
-              (index-list-push (id edge) index-list)
+              (if unless-present
+                  (index-list-pushnew (id edge) index-list)
+                  (index-list-push (id edge) index-list))
               (%lhash-update table vev-key index-list)
               ;;(dbg "add-to-vev-index: AFTER PUSH: ~A" index-list)
               )
@@ -162,94 +174,12 @@
           (%lhash-update table vev-key index-list)
           (cache-index-list (vev-index graph) vev-key index-list))))))
 
-(defmethod add-to-type-index ((edge edge) (graph graph))
-  (type-index-push (id edge) (type-id edge) (edge-index graph)))
+(defmethod add-to-type-index ((edge edge) (graph graph) &key unless-present)
+  (type-index-push (id edge) (type-id edge) (edge-index graph)
+                   :unless-present unless-present))
 
 (defmethod remove-from-type-index ((edge edge) (graph graph))
   (type-index-remove (id edge) (type-id edge) (edge-index graph)))
-
-(defmethod rollback-edge ((graph graph) (e edge))
-  (when (views-written-p e)
-    (log:error "EDGE: Removing ~A from views" e)
-    (remove-from-views graph e)
-    (setf (views-written-p e) nil)
-    (save-node-flags (edge-table graph) e))
-  (when (type-idx-written-p e)
-    (log:error "EDGE: Removing ~A from type-index" e)
-    (remove-from-type-index e graph)
-    (setf (type-idx-written-p e) nil)
-    (save-node-flags (edge-table graph) e))
-  (when (vev-written-p e)
-    (log:error "EDGE: Removing ~A from vev-index" e)
-    (remove-from-vev-index e graph)
-    (setf (vev-written-p e) nil)
-    (save-node-flags (edge-table graph) e))
-  (when (ve-written-p e)
-    (log:error "EDGE: Removing ~A from ve-index" e)
-    (remove-from-ve-index e graph)
-    (setf (ve-written-p e) nil)
-    (save-node-flags (edge-table graph) e))
-  (when (and (heap-written-p e) (/= 0 (data-pointer e)))
-    (log:error "EDGE: Removing ~A from heap" e)
-    (free (heap graph) (data-pointer e))
-    (setf (heap-written-p e) nil)
-    (save-node-flags (edge-table graph) e))
-  (log:error "EDGE: Removing ~A from lhash" e)
-  (lhash-remove (edge-table graph) (id e)))
-
-(defmethod write-edge ((e edge) (graph graph))
-  (let ((*print-pretty* nil))
-    (let ((addr (when (bytes e) (allocate (heap graph) (length (bytes e))))))
-      (setf (data-pointer e) (or addr 0))
-      (handler-case
-          (progn
-            (lhash-insert (edge-table graph) (id e) e)
-            (when (/= 0 (data-pointer e))
-              (dotimes (i (length (bytes e)))
-                (set-byte (heap graph)
-                          (+ i (data-pointer e))
-                          (aref (bytes e) i))
-                (setf (heap-written-p e) t)
-                (save-node-flags (edge-table graph) e)))
-            (add-to-type-index e graph)
-            (setf (type-idx-written-p e) t)
-            (save-node-flags (edge-table graph) e)
-            (add-to-ve-index e graph)
-            (setf (ve-written-p e) t)
-            (save-node-flags (edge-table graph) e)
-            (add-to-vev-index e graph)
-            (setf (vev-written-p e) t)
-            (save-node-flags (edge-table graph) e)
-            (let ((class-name (class-name (class-of e))))
-              (if (lookup-view-group class-name graph)
-                  (with-write-locked-view-group (class-name graph)
-                    ;; This lock keeps the consistency of the graph in check:
-                    ;; no one can see the view change until the node is written
-                    (handler-case
-                        (progn
-                          (%add-to-views graph e class-name)
-                          (setf (views-written-p e) t)
-                          (save-node-flags (edge-table graph) e)
-                          (finalize-node e (edge-table graph) graph))
-                      (error (c)
-                        (log:error "EDGE: Error finalizing ~A: ~A" e c)
-                        (when (views-written-p e)
-                          (log:error "EDGE: Removing ~A from views" e)
-                          (%remove-from-views graph e class-name)
-                          (setf (views-written-p e) nil)
-                          (save-node-flags (edge-table graph) e)
-                          (error c)))))
-                  (finalize-node e (edge-table graph) graph)))
-            (log-txn graph :add e))
-        (duplicate-key-error (c)
-          (log:error "EDGE: ~A Problem creating edge: ~A"  (id e) c)
-          (error c))
-        (error (c)
-          (log:error "EDGE: ~A Problem creating edge: ~A"  (id e) c)
-          (rollback-edge graph e)
-          (error c)))
-      (record-graph-write)
-      e)))
 
 (defun make-edge (type from to weight data &key id revision deleted-p
                   retry-p
@@ -288,7 +218,7 @@
           (change-class e subclass)
           (setf (bytes e) bytes)
           (handler-case
-              (write-edge e graph)
+              (create-node e graph)
             (duplicate-key-error (c)
               (if retry-p
                   (let ((*print-pretty* nil))
@@ -317,31 +247,17 @@
           (multiple-value-bind (new old)
               (save-node edge (edge-table graph) :graph graph)
             (%update-in-views graph new old class-name)
-            (log-txn graph :modify new)
             new))
         (multiple-value-bind (new old)
             (save-node edge (edge-table graph) :graph graph)
           (declare (ignore old))
-          (log-txn graph :modify new)
           new))))
 
 (defmethod delete-edge ((edge edge) &key (graph *graph*))
   (when (deleted-p edge)
     (error 'edge-already-deleted-error
            :node edge))
-  (let ((e (copy-edge edge)))
-    (setf (deleted-p e) t)
-    (let ((class-name (class-name (class-of edge))))
-      (if (lookup-view-group class-name graph)
-          (with-write-locked-view-group (class-name graph)
-            (save-node e (edge-table graph) :graph graph)
-            ;; see compact-edges for index deletion
-            ;; View deletion must happen here because of the loose coupling of
-            ;; views
-            (%remove-from-views graph e class-name))
-          (save-node e (edge-table graph) :graph graph))
-      (log-txn graph :delete e)
-      nil)))
+  (delete-node edge graph))
 
 (defmethod active-edge-p ((edge edge) &key (graph *graph*))
   (and (not (deleted-p edge))

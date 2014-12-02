@@ -154,7 +154,7 @@
             (when il
               (cache-index-list (vev-index graph) key il)))))))
 
-(defgeneric add-to-vev-index (edge graph))
+(defgeneric add-to-vev-index (edge graph &key unless-present))
 (defgeneric remove-from-vev-index (edge graph))
 
 #|

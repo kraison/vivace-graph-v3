@@ -262,17 +262,6 @@
           (t
            (call-next-method)))))
 
-(defmethod copy-node ((node node))
-  (let ((new-node (make-instance (type-of node)
-                                 :id (slot-value node 'id)
-                                 :type-id (slot-value node 'type-id)
-                                 :revision (slot-value node 'revision)
-                                 :deleted-p (slot-value node 'deleted-p)
-                                 :written-p (slot-value node 'written-p)
-                                 :data-pointer (slot-value node 'data-pointer))))
-    (setf (data new-node) (copy-tree (slot-value node 'data)))
-    new-node))
-
 (defgeneric node-equal (x y)
   (:method ((x node) (y node))
     (equalp (id x) (id y)))

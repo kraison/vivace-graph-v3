@@ -100,6 +100,19 @@
       ;;(dbg "NEW HEAD: ~A" (index-list-head il))
       il)))
 
+(defmethod index-list-member-p (object (il index-list)
+                                &key (test 'uuid-array-equal) (key 'identity))
+  (block nil
+    (map-index-list (lambda (element)
+                      (when (funcall test object (funcall key element))
+                        (return t)))
+                    il)
+    nil))
+
+(defmethod index-list-pushnew ((uuid array) (il index-list))
+  (unless (index-list-member-p uuid il)
+    (index-list-push uuid il)))
+
 (defun make-index-list (heap &rest uuids)
   (let ((il (%make-index-list :heap heap))
         (addresses nil))

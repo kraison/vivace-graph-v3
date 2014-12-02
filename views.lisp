@@ -52,6 +52,9 @@
 (defmethod lookup-view-group ((group-name symbol) (graph-name symbol))
   (lookup-view-group group-name (lookup-graph graph-name)))
 
+(defmethod lookup-view-group ((node node) graph)
+  (lookup-view-group (class-name (class-of node)) graph))
+
 (defmacro with-write-locked-view-group ((name graph) &body body)
   `(let ((view-group (lookup-view-group ,name ,graph)))
      (with-write-lock ((view-group-lock view-group))
@@ -137,9 +140,11 @@
   "Delete this view's index"
   (with-write-locked-view-group (class-name graph)
     (let ((view (lookup-view graph class-name view-name)))
+      (dbg "Deleting ~A" view)
       (when (skip-list-p (view-skip-list view))
         (delete-skip-list (view-skip-list view)))
-      (remhash view-name (gethash class-name (views graph)))))
+      (remhash view-name (view-group-table
+                          (gethash class-name (views graph))))))
   (save-views graph))
 
 (defmethod get-view-table-for-class ((graph graph) (class-name symbol))
@@ -180,6 +185,9 @@
         (sb-ext:with-locked-hash-table ((view-group-table view-group))
           (loop for view-name being the hash-keys in (view-group-table view-group)
              collecting view-name))))))
+
+(defmethod lookup-views ((graph graph) (node node))
+  (lookup-views graph (class-name (class-of node))))
 
 ;; Not currently used
 (defmethod set-view-group-dirty ((graph graph) (class-name symbol))
@@ -551,7 +559,8 @@
       `(let* ((,view-name ',name)
               (,class-name ',(first parents))
               (,graph-name ',(second parents))
-              (,graph (lookup-graph ,graph-name))
+              (,graph (or (lookup-graph ,graph-name)
+                          (error "Unknown graph ~S" ,graph-name)))
               (,lookup-fn ',(intern (format nil "LOOKUP-~A" (first parents))))
               (view (make-view :name ,view-name
                                :class-name ,class-name
