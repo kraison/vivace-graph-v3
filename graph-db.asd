@@ -7,7 +7,7 @@
   :name "GraphDB"
   :maintainer "Kevin Raison"
   :author "Kevin Raison <last name @ chatsubo dot net>"
-  :version "0.1"
+  :version "1.0"
   :depends-on (:bordeaux-threads
                :alexandria
                :iterate
