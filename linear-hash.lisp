@@ -444,9 +444,6 @@
                 (funcall (%lhash-key-serializer lhash) file key offset)))
            ;;(dbg "ADDING ~A / ~A AT OFFSET ~X" key value new-offset)
            (funcall (%lhash-value-serializer lhash) file value new-offset)
-;;         (sync-region file
-;;                      :addr (+ (%lhash-key-bytes lhash) offset)
-;;                      :length (%lhash-value-bytes lhash))
            (unless *rehashing-bucket*
              (incf-lhash-count lhash)))
          (return-from add-to-bucket split-p))
