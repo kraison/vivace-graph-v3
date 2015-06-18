@@ -428,8 +428,8 @@ query."
         view-name (var-deref view-name)
         key (var-deref key)
         node (var-deref node))
-  (dolist (pair (if (or (and (var-p key) (bound-p key)) key)
-                    (invoke-graph-view class-name view-name :key key)
+  (dolist (pair (if (and (var-p key) (bound-p key))
+                    (invoke-graph-view class-name view-name :key (var-deref key))
                     (invoke-graph-view class-name view-name)))
     (let ((old-trail (fill-pointer *trail*)))
       (when (and (unify key (cdr (assoc :key pair)))
@@ -445,8 +445,8 @@ query."
         key (var-deref key)
         value (var-deref value)
         node (var-deref node))
-  (dolist (pair (if (or (and (var-p key) (bound-p key)) key)
-                    (invoke-graph-view class-name view-name :key key)
+  (dolist (pair (if (and (var-p key) (bound-p key))
+                    (invoke-graph-view class-name view-name :key (var-deref key))
                     (invoke-graph-view class-name view-name)))
     (let ((old-trail (fill-pointer *trail*)))
       (when (and (unify key (cdr (assoc :key pair)))
@@ -587,8 +587,3 @@ query."
                 :reason
                 (format nil "retract/3: cowardly refusing to retract(~A ~A ~A)"
                         edge-type from to)))))
-
-
-
-
-
