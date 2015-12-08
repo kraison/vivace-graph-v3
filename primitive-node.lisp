@@ -210,20 +210,22 @@
 
 (defsetf node-slot-value (node key) (value)
   (with-gensyms (pair keyword)
-    `(let ((,keyword (if (keywordp ,key)
-                         ,key
-                         (intern (symbol-name ,key) :keyword))))
-       (init-node-data ,node)
-       (cond ((null (data ,node))
-              (push (cons ,keyword ,value) (data ,node)))
-             ((consp (data ,node))
-              (let ((,pair (assoc ,keyword (data ,node))))
-                (if ,pair
-                    (setf (cdr ,pair) ,value)
-                    (push (cons ,keyword ,value) (data ,node)))))
-             (t
-              (error "Cannot set slot value when data slot is of type ~A"
-                     (type-of (data ,node))))))))
+    `(if (typep ,value 'graph-db::node)
+         (error "Cannot set ~A slots to objects with parent type NODE" (type-of ,node))
+         (let ((,keyword (if (keywordp ,key)
+                             ,key
+                             (intern (symbol-name ,key) :keyword))))
+           (init-node-data ,node)
+           (cond ((null (data ,node))
+                  (push (cons ,keyword ,value) (data ,node)))
+                 ((consp (data ,node))
+                  (let ((,pair (assoc ,keyword (data ,node))))
+                    (if ,pair
+                        (setf (cdr ,pair) ,value)
+                        (push (cons ,keyword ,value) (data ,node)))))
+                 (t
+                  (error "Cannot set slot value when data slot is of type ~A"
+                         (type-of (data ,node)))))))))
 
 (defmethod slot-value-using-class :around ((class node-class) instance slot)
   "Around method that is alternate-version aware and will show values for the current,
@@ -290,4 +292,3 @@
   (make-hash-table :test 'id-equal
                    :weakness weakness
                    :synchronized synchronized))
-
