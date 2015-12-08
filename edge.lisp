@@ -270,6 +270,14 @@
              (not (deleted-p to))
              nil))))
 
+(defmethod edge-exists-p (edge-type (vertex1 vertex) (vertex2 vertex) &key (graph *graph*))
+  (map-edges 'identity
+             graph
+             :edge-type edge-type
+             :from-vertex vertex1
+             :to-vertex vertex2
+             :collect-p t))
+
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex)
   ;; FIXME: need to handle subclasses when edge-type is specified
