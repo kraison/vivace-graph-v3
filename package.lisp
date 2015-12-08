@@ -45,6 +45,7 @@
            #:def-node-type
            #:def-vertex
            #:def-edge
+           #:edge-exists-p
            #:lookup-node-type-by-name
            #:instantiate-node-type
            #:*schema-node-metadata*
@@ -159,4 +160,3 @@
            #:node-equal
 
            ))
-
