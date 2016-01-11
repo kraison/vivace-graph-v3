@@ -80,6 +80,9 @@
            #:deleted-p
            #:active-edge-p
            #:data
+           #:traverse
+           #:traversal-path
+           #:end-vertex
            #:map-vertices
            #:map-edges
            #:outgoing-edges

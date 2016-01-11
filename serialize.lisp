@@ -449,5 +449,3 @@ another for prepending our code and the length of the object."
 	    (dotimes (i (length item))
 	      (vector-push-extend (aref item i) vec)))
 	  vec))))
-
-

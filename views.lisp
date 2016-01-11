@@ -140,6 +140,9 @@
   "Delete this view's index"
   (with-write-locked-view-group (class-name graph)
     (let ((view (lookup-view graph class-name view-name)))
+      (unless view
+        (error "Cannot delete view ~A/~A: view does not exist"
+               class-name view-name))
       (dbg "Deleting ~A" view)
       (when (skip-list-p (view-skip-list view))
         (delete-skip-list (view-skip-list view)))

@@ -252,8 +252,8 @@
                    allocation-offset)
         (error "FREE on an already-freed allocation at ~S"
                allocation-offset))
-      (log:info "ADDING ~S TO ~A FREE LIST, SIZE ~S"
-                allocation-offset (m-path (memory-mmap memory)) size)
+      ;;(log:debug "ADDING ~S TO ~A FREE LIST, SIZE ~S"
+      ;;           allocation-offset (m-path (memory-mmap memory)) size)
       (serialize-header (memory-mmap memory) allocation-offset size :active-p nil)
       ;; FIXME: zero the bytes?
       (add-to-free-list memory allocation-offset size)
@@ -317,6 +317,3 @@
       (progn
         (close-memory memory)
         (delete-file "/var/tmp/testmem.dat")))))
-
-
-

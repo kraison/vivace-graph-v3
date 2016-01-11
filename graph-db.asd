@@ -67,4 +67,5 @@
                (:file "functor" :depends-on ("vertex" "edge" "views" "schema"))
                (:file "prologc" :depends-on ("functor"))
                (:file "prolog-functors" :depends-on ("prologc"))
-               (:file "interface" :depends-on ("schema" "edge" "vertex" "views"))))
+               (:file "interface" :depends-on ("schema" "edge" "vertex" "views"))
+               (:file "traverse" :depends-on ("interface"))))

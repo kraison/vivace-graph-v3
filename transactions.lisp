@@ -487,7 +487,7 @@ no data are not written."
                               :element-type '(unsigned-byte 8)
                               :if-does-not-exist :create
                               :if-exists :overwrite)
-        (with-recursive-lock-held (*highest-transaction-id-lock*) 
+        (with-recursive-lock-held (*highest-transaction-id-lock*)
           (write-sequence serialized stream)))
       transaction-id)))
 
@@ -671,7 +671,9 @@ no data are not written."
 (defun transaction-node-vector-size (node)
   (+ +transaction-node-base-header-size+
      (transaction-node-header-size node)
-     (length (bytes node))))
+     (if (typep (bytes node) 'sequence)
+         (length (bytes node))
+         0)))
 
 (defun transaction-node-type-code (node)
   (etypecase node
@@ -716,8 +718,9 @@ no data are not written."
     (serialize-transaction-node-header node vector offset)
     (incf offset header-size)
     ;; (length bytes) of node bytes
-    (replace vector bytes :start1 offset)
-    (incf offset (length bytes))
+    (when (typep bytes 'sequence)
+      (replace vector bytes :start1 offset)
+      (incf offset (length bytes)))
     offset))
 
 (defun transaction-node-vector (node)
@@ -734,7 +737,9 @@ no data are not written."
   (let* ((edge (deserialize-edge-head vector header-offset))
          (bytes (subseq vector data-offset end)))
     (setf (id edge) id)
-    (setf (data edge) (deserialize bytes))
+    (if (> (length bytes) 0)
+        (setf (data edge) (deserialize bytes))
+        (setf (data edge) nil))
     edge))
 
 (defun deserialize-vertex-transaction-node-vector (vector id
@@ -744,7 +749,9 @@ no data are not written."
   (let ((vertex (deserialize-vertex-head vector header-offset))
         (bytes (subseq vector data-offset end)))
     (setf (id vertex) id)
-    (setf (data vertex) (deserialize bytes))
+    (if (> (length bytes) 0)
+        (setf (data vertex) (deserialize bytes))
+        (setf (data vertex) nil))
     vertex))
 
 (defun deserialize-transaction-node-vector (vector &optional (offset 0))
@@ -959,7 +966,7 @@ left in the stream."
     (let* ((transaction-manager (transaction-manager transaction))
            (stream (replication-log transaction-manager))
            (lock (replication-log-lock transaction-manager)))
-      (with-recursive-lock-held (lock) 
+      (with-recursive-lock-held (lock)
         (write-sequence (bytes transaction)
                         (replication-log (transaction-manager transaction)))
         (finish-output stream)))))
@@ -1021,6 +1028,7 @@ left in the stream."
 
 (defgeneric copy-node (node)
   (:method ((node node))
+    (init-node-data node)
     (let ((new-node (make-instance (type-of node)
                                    :id (slot-value node 'id)
                                    :type-id (slot-value node 'type-id)
@@ -1358,4 +1366,3 @@ left in the stream."
     :reader graph))
   (:default-initargs
    :writes nil))
-
