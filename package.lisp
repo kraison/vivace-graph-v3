@@ -100,6 +100,7 @@
            #:map-reduced-view
            #:invoke-graph-view
            #:make-view
+           #:delete-view
            #:save-views
            #:restore-views
            #:get-view-table-for-class

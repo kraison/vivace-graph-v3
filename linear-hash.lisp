@@ -104,9 +104,9 @@
   "Encode a UUID.  We keep UUIDs in byte-array form for efficiency's sake."
   (declare (type word offset))
   (declare (type (array (unsigned-byte 8) (16)) uuid))
-  ;;(dbg "SERIALIZING KEY ~A TO OFFSET ~X" uuid offset)
+  ;;(log:debug "SERIALIZING KEY ~A TO OFFSET ~X" uuid offset)
   (dotimes (i 16)
-    ;;(dbg "WRITING BYTE ~X" (aref uuid i))
+    ;;(log:debug "WRITING BYTE ~X" (aref uuid i))
     (set-byte mf (+ i offset) (aref uuid i)))
   (+ offset 16))
 
@@ -309,7 +309,7 @@
           (dotimes (i (%lhash-max-locks lhash))
             (setf (svref (%lhash-lock-vector lhash) i) (sb-thread:make-mutex))))
       (error (c)
-        (dbg "Cannot open lhash: ~S" c)
+        (log:debug "Cannot open lhash: ~S" c)
         (munmap-file (%lhash-config lhash))
         (munmap-file (%lhash-table lhash))
         (munmap-file (%lhash-overflow lhash))))
@@ -339,14 +339,14 @@
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
         (sb-thread:release-mutex lock)
-      (dbg "RELEASED LOCK: ~A" lock))))
+      (log:debug "RELEASED LOCK: ~A" lock))))
 
 (defun grab-lhash-lock (lhash index &key (wait-p t) timeout)
   (let ((lock (svref (%lhash-lock-vector lhash)
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
         (sb-thread:grab-mutex lock :waitp wait-p :timeout timeout)
-      (dbg "GOT LOCK: ~A" lock))))
+      (log:debug "GOT LOCK: ~A" lock))))
 
 (defmacro with-locked-hash-key ((lhash key) &body body)
   (with-gensyms (lock bucket lh k)
@@ -379,7 +379,7 @@
 
 (defun bucket-offset (lhash bucket)
   (let ((offset (1+ (* bucket (%lhash-bucket-bytes lhash)))))
-    ;;(DBG "OFFSET FOR BUCKET ~A IS ~X" bucket offset)
+    ;;(LOG:DEBUG "OFFSET FOR BUCKET ~A IS ~X" bucket offset)
     offset))
 
 (defun read-overflow-offset (lhash file bucket-offset)
@@ -420,7 +420,7 @@
     (dotimes (i (%lhash-bucket-size lhash))
       (let ((key (funcall (%lhash-key-deserializer lhash) file offset)))
         (when (funcall (%lhash-test lhash) (%lhash-null-key lhash) key)
-          ;;(dbg "GOT NULL KEY ~A; RETURNING ~A" key pairs)
+          ;;(log:debug "GOT NULL KEY ~A; RETURNING ~A" key pairs)
           (return-from read-bucket pairs))
         (let ((value (funcall (%lhash-value-deserializer lhash) file
                               (+ offset (%lhash-key-bytes lhash)))))
@@ -442,7 +442,7 @@
         ((funcall (%lhash-test lhash) (%lhash-null-key lhash) file offset)
          (let ((new-offset
                 (funcall (%lhash-key-serializer lhash) file key offset)))
-           ;;(dbg "ADDING ~A / ~A AT OFFSET ~X" key value new-offset)
+           ;;(log:debug "ADDING ~A / ~A AT OFFSET ~X" key value new-offset)
            (funcall (%lhash-value-serializer lhash) file value new-offset)
            (unless *rehashing-bucket*
              (incf-lhash-count lhash)))
@@ -452,7 +452,7 @@
         (t (incf offset (+ (%lhash-key-bytes lhash)
                            (%lhash-value-bytes lhash))))))
     (let ((overflow-pointer (get-overflow-offset lhash file begin-offset)))
-      ;;(dbg "ADDING TO OVERFLOW AT ~X" overflow-pointer)
+      ;;(log:debug "ADDING TO OVERFLOW AT ~X" overflow-pointer)
       (add-to-bucket lhash (%lhash-overflow lhash)
                      overflow-pointer key value t))))
 
@@ -466,7 +466,7 @@
         ((funcall (%lhash-test lhash) (%lhash-null-key lhash) file offset)
          (error 'nonexistent-key-error :key key :instance lhash))
         ((funcall (%lhash-test lhash) key file offset)
-         ;;(dbg "REPLACING ~A / ~A AT OFFSET ~X" key value offset)
+         ;;(log:debug "REPLACING ~A / ~A AT OFFSET ~X" key value offset)
          (funcall (%lhash-value-serializer lhash) file value
                   (+ (%lhash-key-bytes lhash) offset))
 ;;         (sync-region file
@@ -476,7 +476,7 @@
         (t (incf offset (+ (%lhash-key-bytes lhash)
                            (%lhash-value-bytes lhash))))))
     (let ((overflow-pointer (get-overflow-offset lhash file begin-offset)))
-      ;;(dbg "ADDING TO OVERFLOW AT ~X" overflow-pointer)
+      ;;(log:debug "ADDING TO OVERFLOW AT ~X" overflow-pointer)
       (update-in-bucket lhash (%lhash-overflow lhash) overflow-pointer key value))))
 
 (defun custom-update-in-bucket (lhash file offset update-fn key)
@@ -489,7 +489,7 @@
         ((funcall (%lhash-test lhash) (%lhash-null-key lhash) file offset)
          (error 'nonexistent-key-error :key key :instance lhash))
         ((funcall (%lhash-test lhash) key file offset)
-         ;;(dbg "CUSTOM UPDATING ~A WITH FN IN ~A ~A AT OFFSET ~X"
+         ;;(log:debug "CUSTOM UPDATING ~A WITH FN IN ~A ~A AT OFFSET ~X"
          ;;key update-fn file offset)
          (funcall update-fn file (+ (%lhash-key-bytes lhash) offset))
 ;;         (sync-region file
@@ -499,7 +499,7 @@
         (t (incf offset (+ (%lhash-key-bytes lhash)
                            (%lhash-value-bytes lhash))))))
     (let ((overflow-pointer (get-overflow-offset lhash file begin-offset)))
-      ;;(dbg "ADDING TO OVERFLOW AT ~X" overflow-pointer)
+      ;;(log:debug "ADDING TO OVERFLOW AT ~X" overflow-pointer)
       (custom-update-in-bucket lhash (%lhash-overflow lhash)
                                overflow-pointer update-fn key))))
 
@@ -554,13 +554,13 @@
     (let ((pairs (read-bucket lhash
                               (%lhash-table lhash)
                               (bucket-offset lhash bucket))))
-      ;;(dbg "PAIRS:~%~{~A~^~%~}" pairs)
+      ;;(log:debug "PAIRS:~%~{~A~^~%~}" pairs)
       (clear-bucket lhash (%lhash-table lhash) (bucket-offset lhash bucket))
       (dolist (pair pairs)
-        ;;(dbg "REHASHING ~A" pair)
+        ;;(log:debug "REHASHING ~A" pair)
         (let* ((level (1+ (read-lhash-level lhash)))
                (new-bucket (hash0 lhash level (car pair))))
-          ;;(dbg "NEW BUCKET IS ~A, LOCKING" new-bucket)
+          ;;(log:debug "NEW BUCKET IS ~A, LOCKING" new-bucket)
           (with-locked-hash-bucket (lhash new-bucket)
             (add-to-bucket lhash
                            (%lhash-table lhash)
@@ -614,7 +614,6 @@
         (when split-p
           (split-lhash lhash))
       (error (c)
-        (dbg "LHASH ERROR IN ~A SPLIT(): ~A" lhash c)
         (log:error "LHASH ERROR IN ~A SPLIT(): ~A" lhash c)
         (error c)))
     (read-lhash-count lhash)))

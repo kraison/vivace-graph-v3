@@ -104,7 +104,7 @@
            (logs (applicable-replication-logs minimum-transaction-id
                                               graph))
            (socket (socket session)))
-      (dbg "Streaming ~A to ~A" logs session)
+      (log:debug "Streaming ~A to ~A" logs session)
       (when logs
         (stream-replication-log socket (first logs) minimum-transaction-id))
       (map nil

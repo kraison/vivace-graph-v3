@@ -35,7 +35,7 @@
   (unless (>= offset (memory-data-offset memory))
     (log:error "SEGV: Tried to write byte ~S at unsafe position ~S in ~S" byte offset memory)
     (error "SEGV: Tried to write byte ~S at unsafe position ~S in ~S" byte offset memory))
-  ;;(dbg "SET-BYTE: ~A ADDR ~A TO ~A" (memory-location memory) offset byte)
+  ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (memory-location memory) offset byte)
   ;;(setf (cffi:mem-aref (m-pointer (memory-mmap memory)) :unsigned-char offset) byte))
   (set-byte (memory-mmap memory) offset byte))
 
@@ -56,7 +56,7 @@
   (unless (>= offset (memory-data-offset memory))
     (log:error "SEGV: Tried to serialize-uint64 ~S at unsafe position ~S in ~S" int offset memory)
     (error "SEGV: Tried to serialize-uint64 ~S at unsafe position ~S in ~S" int offset memory))
-  ;;(dbg "MEMORY: SERIALIZING UINT64 ~A TO ADDR ~A" int offset)
+  ;;(log:debug "MEMORY: SERIALIZING UINT64 ~A TO ADDR ~A" int offset)
   (serialize-uint64 (memory-mmap memory) int offset))
 
 (defmethod deserialize-uint64 ((memory memory) offset)
@@ -145,7 +145,7 @@
        do
          (multiple-value-bind (size free-p)
              (deserialize-header (memory-mmap memory) allocation-offset)
-           ;;(dbg "GOT BLOCK OF ~A BYTES AT OFFSET ~A" block-len allocation-offset)
+           ;;(log:debug "GOT BLOCK OF ~A BYTES AT OFFSET ~A" block-len allocation-offset)
            (if (= 0 size)
                (setq done-p t)
                (let ((allocation-data-offset (+ +allocation-header-size+
@@ -310,7 +310,7 @@
                    (push pointer pointers))))
               threads))
            (sb-concurrency:open-gate gate)
-           (dbg "THREAD: ~A" (length threads))
+           (log:debug "THREAD: ~A" (length threads))
            (loop until (notany 'thread-alive-p threads) do (sleep 1))
            (dolist (p pointers)
              (free memory p)))

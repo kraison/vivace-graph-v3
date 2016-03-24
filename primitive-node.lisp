@@ -230,7 +230,7 @@
 (defmethod slot-value-using-class :around ((class node-class) instance slot)
   "Around method that is alternate-version aware and will show values for the current,
    working private version of instance."
-  ;;(dbg "slot-value-using-class~%  '~A'~%  '~A'" class
+  ;;(log:debug "slot-value-using-class~%  '~A'~%  '~A'" class
   ;;(sb-pcl:slot-definition-name slot))
   (let* ((slot-name (sb-pcl:slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
@@ -249,7 +249,7 @@
     (new-value (class node-class) instance slot)
   "Is alternate-version aware and will update values for the current, working private
    version of instance."
-  ;;(dbg "setf slot-value-using-class~%  '~A'~%  '~A'~%  '~A'" new-value class
+  ;;(log:debug "setf slot-value-using-class~%  '~A'~%  '~A'~%  '~A'" new-value class
   ;;(sb-pcl:slot-definition-name slot))
   (let* ((slot-name (sb-pcl:slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))

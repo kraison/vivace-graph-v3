@@ -109,8 +109,8 @@
 		       (sb-thread:condition-wait
 			(lock-waitqueue rw-lock) (lock-lock rw-lock))))
 	       (error (c)
-		 (format t "Got error ~A while acquiring write lock ~A"
-                         c rw-lock)))
+		 (log:error "Got error ~A while acquiring write lock ~A"
+                            c rw-lock)))
 	     (when wait-p
 	       (sb-thread:wait-on-semaphore (lock-semaphore rw-lock)))))))
 

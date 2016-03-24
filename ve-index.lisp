@@ -140,21 +140,21 @@
                           &key unless-present)
   (let ((table (ve-index-table idx)))
     (with-locked-hash-key (table key)
-      ;;(dbg "ve-index-push ~A:~A" key id)
+      ;;(log:debug "ve-index-push ~A:~A" key id)
       (let ((index-list (%lhash-get table key)))
         (if index-list
             (progn
-              ;;(dbg "add-to-ve-index: Got ~A" index-list)
+              ;;(log:debug "add-to-ve-index: Got ~A" index-list)
               (if unless-present
                   (index-list-pushnew id index-list)
                   (index-list-push id index-list))
               (%lhash-update table key index-list)
-              ;;(dbg "add-to-ve-index: AFTER PUSH: ~A" index-list)
+              ;;(log:debug "add-to-ve-index: AFTER PUSH: ~A" index-list)
               )
             (progn
               (setq index-list
                     (make-index-list (heap *graph*) id))
-              ;;(dbg "add-to-ve-index: Made new ~A" index-list)
+              ;;(log:debug "add-to-ve-index: Made new ~A" index-list)
               (%lhash-insert table key index-list)))
         (cache-index-list idx key index-list)))))
 
@@ -163,11 +163,10 @@
     (with-locked-hash-key (table key)
       (let ((index-list (%lhash-get table key)))
         (when index-list
-          ;;(dbg "Removing ~A from ~A" edge index-list)
+          ;;(log:debug "Removing ~A from ~A" edge index-list)
           (remove-from-index-list id index-list)
           (%lhash-update table key index-list)
           (cache-index-list idx key index-list))))))
 
 (defgeneric add-to-ve-index (edge graph &key unless-present))
 (defgeneric remove-from-ve-index (edge graph))
-

@@ -38,13 +38,13 @@
   (declare (type word offset))
   ;; flags: dirty-p
   (let ((flags (flags-as-int il)))
-    ;;(dbg "SETTING BYTE ~A FLAGS ~A" offset flags)
+    ;;(log:debug "SETTING BYTE ~A FLAGS ~A" offset flags)
     (set-byte mf offset flags))
   (incf offset)
   ;; head
-  ;;(dbg "SETTING BYTES ~A HEAD ~A" offset (index-list-head il))
+  ;;(log:debug "SETTING BYTES ~A HEAD ~A" offset (index-list-head il))
   (setq offset (serialize-uint64 mf (index-list-head il) offset))
-  ;;(dbg "RETURNING OFFSET ~A" offset)
+  ;;(log:debug "RETURNING OFFSET ~A" offset)
   offset)
 
 (defmethod deserialize-index-list ((mf mapped-file) (offset integer))
@@ -93,11 +93,11 @@
       ;; Cache it
       ;;(setf (gethash address (index-list-cache il)) pcons)
       ;; Update index-list values
-      ;;(dbg "OLD HEAD: ~A" (index-list-head il))
+      ;;(log:debug "OLD HEAD: ~A" (index-list-head il))
       (sb-ext:cas (index-list-head il)
                   (index-list-head il)
                   address)
-      ;;(dbg "NEW HEAD: ~A" (index-list-head il))
+      ;;(log:debug "NEW HEAD: ~A" (index-list-head il))
       il)))
 
 (defmethod index-list-member-p (object (il index-list)
@@ -121,7 +121,7 @@
           (dolist (id (nreverse uuids))
             (let* ((uuid-address (allocate heap (+ 16 8 1))))
               (push uuid-address addresses)
-              ;;(dbg "Serializing UUID:~A to ADDR:~A" id uuid-address)
+              ;;(log:debug "Serializing UUID:~A to ADDR:~A" id uuid-address)
               ;; id
               (dotimes (i 16)
                 (set-byte heap (+ i uuid-address) (aref id i)))
@@ -175,4 +175,3 @@
                    (setq prev address
                          address next))))))
     il))
-

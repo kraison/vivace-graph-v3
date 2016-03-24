@@ -4,6 +4,7 @@
 
 (defclass graph ()
   ((graph-name :accessor graph-name :initarg :graph-name)
+   (graph-open-p :accessor graph-open-p :initarg :graph-open-p :initform nil)
    (location :accessor location :initarg :location)
    (txn-log :accessor txn-log :initarg :txn-log)
    (txn-file :accessor txn-file :initarg :txn-file)
@@ -69,5 +70,3 @@
 
 (defun lookup-graph (name)
   (gethash name *graphs*))
-
-

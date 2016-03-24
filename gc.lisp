@@ -126,6 +126,6 @@ GRAPH."
                                graph)
     (maphash (lambda (pointer _)
                (declare (ignore _))
-               (dbg "Freeing ~A" pointer)
+               (log:debug "Freeing ~A" pointer)
                (free heap pointer))
              allocation-table)))

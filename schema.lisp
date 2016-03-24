@@ -348,7 +348,7 @@ replication for a quick schema compatibility check."
 (defmethod instantiate-node-type ((meta node-type) (graph graph))
   (with-recursive-lock-held ((schema-lock (schema graph)))
     ;; Check if this type exists and if it differs from old spec
-    (dbg "Looking up ~A: ~A ~A" meta (node-type-name meta) (node-type-parent-type meta))
+    (log:debug "Looking up ~A: ~A ~A" meta (node-type-name meta) (node-type-parent-type meta))
     (let ((old-meta (lookup-node-type-by-name (node-type-name meta)
                                               (node-type-parent-type meta))))
       (if (node-type-p old-meta)
@@ -358,10 +358,10 @@ replication for a quick schema compatibility check."
             (if changes-p
                 (progn
                   ;; FIXME: what to do with slot changes-p
-                  (dbg "REMOVED SLOTS FOR ~S:~% ~S"
-                       (node-type-name meta) removed-slots)
-                  (dbg "NEW SLOTS FOR ~S:~% ~S"
-                       (node-type-name meta) new-slots)
+                  (log:debug "REMOVED SLOTS FOR ~S:~% ~S"
+                             (node-type-name meta) removed-slots)
+                  (log:debug "NEW SLOTS FOR ~S:~% ~S"
+                             (node-type-name meta) new-slots)
                   (update-node-type meta graph))
                 old-meta))
           ;; Else if new, assign node-type-id

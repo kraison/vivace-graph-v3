@@ -55,7 +55,7 @@ as the primary value, and non-nil as the secondary value at EOF."
                                           :transaction-id (incf tx-id))))
         (dolist (plist plists)
           (when (zerop (mod (incf count) 100))
-            (format t "~A RESTORED ~A NODES~%" (current-thread) count))
+            (log:info "~A RESTORED ~A NODES~%" (current-thread) count))
           (ecase (car plist)
             (:v
              (apply 'make-vertex (rest plist)))
@@ -67,6 +67,5 @@ as the primary value, and non-nil as the secondary value at EOF."
         (apply-transaction *transaction* graph)))
     (persist-highest-transaction-id (incf tx-id) graph)
     (let ((elapsed-time (- (get-universal-time) start-time)))
-      (dbg "RESTORE TOOK ~A SECONDS" elapsed-time)
+      (log:info "RESTORE TOOK ~A SECONDS" elapsed-time)
       (values graph :count count :elapsed-time elapsed-time))))
-

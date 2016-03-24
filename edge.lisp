@@ -143,23 +143,23 @@
 (defmethod add-to-vev-index ((edge edge) (graph graph) &key unless-present)
   (let ((vev-key (make-vev-key :in-id (to edge) :out-id (from edge) :type-id (type-id edge)))
         (table (vev-index-table (vev-index graph))))
-    ;;(dbg "add-to-vev-index: ~A" vev-key)
-    ;;(dbg "add-to-vev-index: EDGE: ~A" edge)
+    ;;(log:debug "add-to-vev-index: ~A" vev-key)
+    ;;(log:debug "add-to-vev-index: EDGE: ~A" edge)
     (with-locked-hash-key (table vev-key)
       (let ((index-list (%lhash-get table vev-key)))
         (if index-list
             (progn
-              ;;(dbg "add-to-vev-index: Got ~A" index-list)
+              ;;(log:debug "add-to-vev-index: Got ~A" index-list)
               (if unless-present
                   (index-list-pushnew (id edge) index-list)
                   (index-list-push (id edge) index-list))
               (%lhash-update table vev-key index-list)
-              ;;(dbg "add-to-vev-index: AFTER PUSH: ~A" index-list)
+              ;;(log:debug "add-to-vev-index: AFTER PUSH: ~A" index-list)
               )
             (progn
               (setq index-list
                     (make-index-list (heap graph) (id edge)))
-              ;;(dbg "add-to-vev-index: Made new ~A" index-list)
+              ;;(log:debug "add-to-vev-index: Made new ~A" index-list)
               (%lhash-insert table vev-key index-list)))
         (cache-index-list (vev-index graph) vev-key index-list)))))
 
@@ -169,7 +169,7 @@
     (with-locked-hash-key (table vev-key)
       (let ((index-list (%lhash-get table vev-key)))
         (when index-list
-          ;;(dbg "Removing ~A from ~A" edge index-list)
+          ;;(log:debug "Removing ~A from ~A" edge index-list)
           (remove-from-index-list (id edge) index-list)
           (%lhash-update table vev-key index-list)
           (cache-index-list (vev-index graph) vev-key index-list))))))

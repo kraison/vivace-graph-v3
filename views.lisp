@@ -12,9 +12,8 @@
              (:print-function
               (lambda (v s d)
                 (declare (ignore d))
-                (format s "#<VIEW '~S' OF '~S' IN '~S'~% ~S~% ~S>"
-                        (view-name v) (view-class-name v) (view-graph-name v)
-                        (view-map-code v) (view-reduce-code v)))))
+                (format s "#<VIEW '~S' OF '~S' IN '~S'>"
+                        (view-name v) (view-class-name v) (view-graph-name v)))))
   name
   class-name
   map-fn
@@ -86,7 +85,7 @@
                  (view-group (make-view-group :class-name view-group-name)))
             (setf (gethash view-group-name view-table) view-group)
             (dolist (view (rest view-data))
-              (dbg "RESTORING ~S VIEW ~S" view-group-name (cdr (assoc :name view)))
+              (log:info "RESTORING ~S VIEW ~S" view-group-name (cdr (assoc :name view)))
               (let* ((view-name (cdr (assoc :name view)))
                      (v (make-view :name view-name
                                    :class-name view-group-name
@@ -96,20 +95,21 @@
                                    :reduce-code (cdr (assoc :reduce-code view))
                                    :heap (indexes graph)
                                    :pointer (cdr (assoc :pointer view)))))
-                (when (view-pointer v)
-                  (setf (view-skip-list v)
-                        (open-skip-list :address (cdr (assoc :pointer view))
-                                        :heap (indexes graph)
-                                        :duplicates-allowed-p nil
-                                        ;;:key-equal 'view-key-equal
-                                        ;;:key-comparison 'view-less-than
-                                        :key-equal 'reduce-equal
-                                        :key-comparison 'reduce-comp
-                                        :value-equal 'equal
-                                        :key-serializer 'view-key-serialize
-                                        :key-deserializer 'view-key-deserialize
-                                        :value-serializer 'serialize
-                                        :value-deserializer 'deserialize)))
+                (if (view-pointer v)
+                    (setf (view-skip-list v)
+                          (open-skip-list :address (cdr (assoc :pointer view))
+                                          :heap (indexes graph)
+                                          :duplicates-allowed-p nil
+                                          ;;:key-equal 'view-key-equal
+                                          ;;:key-comparison 'view-less-than
+                                          :key-equal 'reduce-equal
+                                          :key-comparison 'reduce-comp
+                                          :value-equal 'equal
+                                          :key-serializer 'view-key-serialize
+                                          :key-deserializer 'view-key-deserialize
+                                          :value-serializer 'serialize
+                                          :value-deserializer 'deserialize))
+                    (log:info "~A didn't have a pointer; cannot restore skip list!" v))
                 (setf (gethash view-name (view-group-table view-group)) v)))))))
     (setf (views graph) view-table)))
 
@@ -132,7 +132,7 @@
             (view-group-table view-group))
            (push (cons class-name views) blob)))
        (views graph))
-      ;;(dbg "SAVING VIEWS: ~S" blob)
+      ;;(log:debug "SAVING VIEWS: ~S" blob)
       (cl-store:store blob views-file)
       blob)))
 
@@ -143,7 +143,7 @@
       (unless view
         (error "Cannot delete view ~A/~A: view does not exist"
                class-name view-name))
-      (dbg "Deleting ~A" view)
+      (log:info "Deleting ~A" view)
       (when (skip-list-p (view-skip-list view))
         (delete-skip-list (view-skip-list view)))
       (remhash view-name (view-group-table
@@ -210,12 +210,12 @@
           (eval (read-from-string (view-reduce-code view))))))
 
 (defun reduce-equal (key1 key2)
-  ;;(dbg "REDUCE-EQUAL ~S < ~S" key1 key2)
+  ;;(log:debug "REDUCE-EQUAL ~S < ~S" key1 key2)
   (and (equal (first key1) (first key2))
        (equalp (second key1) (second key2))))
 
 (defun reduce-comp (key1 key2)
-  ;;(dbg "REDUCE-COMP ~S < ~S" key1 key2)
+  ;;(log:debug "REDUCE-COMP ~S < ~S" key1 key2)
   (cond ((less-than (first key1) (first key2))
          t)
         ((and (equal (first key1) (first key2))
@@ -295,7 +295,7 @@
   (compile-view-code view)
   (let ((*view-rv* nil))
     (funcall (view-map-fn view) node)
-    ;;(dbg "VIEW-RV: ~S" *view-rv*)
+    ;;(log:debug "VIEW-RV: ~S" *view-rv*)
     (mapcar
      (lambda (rv)
        (destructuring-bind (key val) rv
@@ -321,7 +321,7 @@
 
 (defmethod %add-to-views ((graph graph) (node node) (class-name symbol))
   (dolist (view-name (lookup-views graph class-name))
-    ;;(dbg "Adding ~S to view ~S:~S" node class-name view-name)
+    ;;(log:debug "Adding ~S to view ~S:~S" node class-name view-name)
     (add-to-view graph (lookup-view graph class-name view-name) node)))
 
 (defmethod add-to-views ((graph graph) (node node))
@@ -441,7 +441,7 @@
            for node = (cursor-next cursor)
            until (or (null node) (and count (= found-count count)))
            do
-           ;;(dbg "~S" node)
+           ;;(log:debug "~S" node)
            (when (or (null skip) (> cursor-count skip))
              (incf cursor-count)
              (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
@@ -578,7 +578,7 @@
 						   (fully-qualified-expression-string reduce-code))
                                :map-fn nil
                                :reduce-fn nil)))
-         (dbg "MAKING ~S" view)
+         (log:info "MAKING ~S" view)
          (let* ((table (get-view-table-for-class ,graph-name ,class-name)))
            (with-write-locked-view-group (,class-name ,graph-name)
              (setf (gethash ,view-name table) view)

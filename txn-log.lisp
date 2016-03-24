@@ -35,14 +35,12 @@
   (let ((snapshot (find-newest-snapshot txn-dir)))
     (when snapshot
       (recreate-graph graph snapshot :package-name package-name))
-    (dbg "Generating graph views.")
+    (log:debug "Generating graph views.")
     (map nil
          (lambda (pair)
            (destructuring-bind (class-name . view-name) pair
              (regenerate-view graph class-name view-name)))
          (all-views graph))
-    (dbg "Checking data integrity.")
+    (log:debug "Checking data integrity.")
     (or (check-data-integrity graph)
                 graph)))
-
-

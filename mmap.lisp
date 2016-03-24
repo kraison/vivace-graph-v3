@@ -27,7 +27,7 @@
 (defmethod set-byte ((mapped-file mapped-file) offset byte)
   (declare (type word offset))
   (declare (type (integer 0 255) byte))
-  ;;(dbg "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
+  ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
   (setf (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset) byte))
 
 (defmethod get-byte :around (mf offset)
@@ -73,7 +73,7 @@
 
 (defun mmap-file (file &key (create-p t) (size (* 4096 25600)))
   "Use mmap() to map FILE into memory."
-  (dbg "Opening mmap ~A" file)
+  (log:debug "Opening mmap ~A" file)
   (when (and (not create-p) (not (probe-file file)))
     (error "mmap-file: ~A does not exist and create-p is not true." file))
   (let* ((fd (osicat-posix:open
@@ -115,11 +115,11 @@
 (defmethod munmap-file ((mapped-file mapped-file) &key (save-p nil)
 			(sync osicat-posix:ms-sync))
   (when save-p
-    ;;(dbg "Calling msync on ~S" mapped-file)
+    ;;(log:debug "Calling msync on ~S" mapped-file)
     (osicat-posix:msync (m-pointer mapped-file)
                         (mapped-file-length mapped-file)
                         sync))
-  ;;(dbg "Calling munmap on ~S" mapped-file)
+  ;;(log:debug "Calling munmap on ~S" mapped-file)
   (osicat-posix:munmap (m-pointer mapped-file) (mapped-file-length mapped-file))
   (osicat-posix:close (m-fd mapped-file))
   (setf (m-pointer mapped-file) nil)
@@ -144,11 +144,11 @@
 
 (defmethod serialize-uint64 ((mf mapped-file) int offset)
   (declare (type word int offset))
-  ;;(dbg "MMAP: SERIALIZING UINT64 ~A TO ADDR ~A" int offset)
+  ;;(log:debug "MMAP: SERIALIZING UINT64 ~A TO ADDR ~A" int offset)
   (dotimes (i 8)
-    ;;(dbg "WRITING BYTE ~X" (ldb (byte 8 0) int))
+    ;;(log:debug "WRITING BYTE ~X" (ldb (byte 8 0) int))
     (set-byte mf offset (ldb (byte 8 (* i 8)) int))
-    ;;(dbg "   WROTE BYTE ~A AT OFFSET ~X" (ldb (byte 8 0) int) offset)
+    ;;(log:debug "   WROTE BYTE ~A AT OFFSET ~X" (ldb (byte 8 0) int) offset)
     (incf offset))
   ;;  (incf offset))
   offset)
@@ -184,11 +184,11 @@
     int))
 
 (defmethod serialize-pointer ((mf mapped-file) pointer offset)
-  ;;(dbg "SERIALIZING POINTER ~A TO ADDR ~A" pointer offset)
+  ;;(log:debug "SERIALIZING POINTER ~A TO ADDR ~A" pointer offset)
   (serialize-uint64 mf pointer offset))
 
 (defmethod deserialize-pointer ((mf mapped-file) offset)
-  ;;(dbg "DESERIALIZING POINTER AT ADDR ~A" offset)
+  ;;(log:debug "DESERIALIZING POINTER AT ADDR ~A" offset)
   (deserialize-uint64 mf offset))
 
 (defmethod serialize-uint32 ((mf mapped-file) int offset)
@@ -222,4 +222,3 @@
     (dotimes (i 5)
       (setq int (dpb (get-byte mf (+ i offset)) (byte 8 (* i 8)) int)))
     int))
-

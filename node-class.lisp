@@ -41,55 +41,55 @@
 
 (defmethod meta-slot-names ((instance node-class))
   "Return a list of metadata slot names for an instance."
-  ;;(dbg "meta-slot-names(~A)" instance)
+  ;;(log:debug "meta-slot-names(~A)" instance)
   (let ((names
          (map 'list 'slot-definition-name
               (remove-if-not #'(lambda (i)
                                  (meta-p i))
 
                (sb-pcl:class-slots instance)))))
-    ;;(dbg "meta-slot-names(~A): ~A" instance names)
+    ;;(log:debug "meta-slot-names(~A): ~A" instance names)
     names))
 
 (defmethod persistent-slot-names ((instance node-class))
   "Return a list of persistent slot names for an instance."
-  ;;(dbg "persistent-slot-names(~A)" instance)
+  ;;(log:debug "persistent-slot-names(~A)" instance)
   (let ((names
          (map 'list 'slot-definition-name
               (remove-if-not #'(lambda (i)
                                  (persistent-p i))
                              (sb-pcl:class-slots instance)))))
-    ;;(dbg "persistent-slot-names(~A): ~A" instance names)
+    ;;(log:debug "persistent-slot-names(~A): ~A" instance names)
     names))
 
 (defmethod ephemeral-slot-names ((instance node-class))
   "Return a list of persistent slot names for an instance."
-  ;;(dbg "ephemeral-slot-names(~A)" instance)
+  ;;(log:debug "ephemeral-slot-names(~A)" instance)
   (let ((names
          (map 'list 'slot-definition-name
               (remove-if-not #'(lambda (i)
                                  (ephemeral-p i))
                              (sb-pcl:class-slots instance)))))
-    ;;(dbg "ephemeral-slot-names(~A): ~A" instance names)
+    ;;(log:debug "ephemeral-slot-names(~A): ~A" instance names)
     names))
 
 (defmethod direct-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  ;;(dbg "direct-slot-definition-class for ~A" class)
+  ;;(log:debug "direct-slot-definition-class for ~A" class)
   (find-class 'node-direct-slot-definition))
 
 (defmethod effective-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  ;;(dbg "effective-slot-definition-class for ~A" class)
+  ;;(log:debug "effective-slot-definition-class for ~A" class)
   (find-class 'node-effective-slot-definition))
 
 (defmethod compute-effective-slot-definition :around
     ((class node-class) slot-name direct-slots)
   "Ensure inheritance from direct slot definition of persistent, indexed,
    and ephemeral properties."
-  ;;(dbg "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
+  ;;(log:debug "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
   (let ((slot (call-next-method)))
-    ;;(dbg "  SLOT: ~A" slot)
+    ;;(log:debug "  SLOT: ~A" slot)
     (cond ((or (meta-p slot) (some 'meta-p direct-slots))
            (setf (slot-value slot 'meta) t)
            (setf (slot-value slot 'persistent) nil))
@@ -105,11 +105,11 @@
     slot))
 
 (defmethod find-all-subclasses ((class class))
-  ;;(dbg "Finding subclasses for ~A" class)
+  ;;(log:debug "Finding subclasses for ~A" class)
   (let ((result nil))
     (labels ((find-them (class)
                (let ((subclasses (sb-mop:class-direct-subclasses class)))
-                 ;;(dbg "Found subclasses for ~A: ~A" class subclasses)
+                 ;;(log:debug "Found subclasses for ~A: ~A" class subclasses)
                  (dolist (subclass subclasses)
                    (unless (find subclass result)
                      (push subclass result)
@@ -159,4 +159,3 @@
    (data :accessor data :initarg :data :initform nil :meta t :persistent nil)
    (bytes :accessor bytes :initform :init :initarg :bytes :meta t :persistent nil))
   (:metaclass node-class))
-
