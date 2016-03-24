@@ -54,8 +54,7 @@
                        key instance)))))
 
 (define-condition node-already-deleted-error (error)
-  ((node
-    :initarg :node))
+  ((node :initarg :node))
   (:report (lambda (error stream)
              (with-slots (node) error
                (format stream "Node ~A already deleted" node)))))
@@ -65,3 +64,12 @@
 
 (define-condition edge-already-deleted-error (node-already-deleted-error)
   ())
+
+(define-condition invalid-view-error (error)
+  ((class-name :initarg :class-name)
+   (view-name :initarg :view-name))
+  (:report (lambda (error stream)
+             (with-slots (class-name view-name) error
+               (format stream
+                       "No such graph view: ~A/~A"
+                       class-name view-name)))))

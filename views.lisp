@@ -498,41 +498,44 @@
 
 (defmethod invoke-graph-view ((class-name symbol) (view-name symbol)
                               &key (graph *graph*) key start-key end-key count
-                              skip group-p (reduce-p t))
-  (when (lookup-view-group class-name graph)
-    (with-read-locked-view-group (class-name graph)
-      (let ((view (lookup-view graph class-name view-name)))
-        (if (or (null (view-reduce-code view)) (null reduce-p))
-            ;; Simple map view
-            (map-view 'default-map-fn
-                      class-name view-name
-                      :key key :count count :skip skip
-                      :start-key start-key :end-key end-key
-                      :collect-p t :graph graph)
-            ;; Reduce view
-            (cond ((and group-p key)
-                   (let ((node (find-in-skip-list (view-skip-list view)
-                                                  (list key +null-key+))))
-                     (when node
-                       (default-map-fn (first (%sn-key node)) nil (%sn-value node)))))
-                  (key
-                   (map-view 'default-map-fn
-                             class-name view-name
-                             :key key :count count :skip skip
-                             :collect-p t :graph graph))
-                  (group-p
-                   (map-reduced-view 'default-map-fn
-                                     class-name view-name
-                                     :start-key start-key
-                                     :end-key end-key
-                                     :skip skip :count count
-                                     :collect-p t))
-                  (t
-                   (let ((node (find-in-skip-list (view-skip-list view)
-                                                  (list +reduce-master-key+
-                                                        +max-key+))))
-                     (when node
-                       (default-map-fn nil nil (%sn-value node)))))))))))
+                                skip group-p (reduce-p t))
+  (if (lookup-view-group class-name graph)
+      (with-read-locked-view-group (class-name graph)
+        (let ((view (lookup-view graph class-name view-name)))
+          (if (or (null (view-reduce-code view)) (null reduce-p))
+              ;; Simple map view
+              (map-view 'default-map-fn
+                        class-name view-name
+                        :key key :count count :skip skip
+                        :start-key start-key :end-key end-key
+                        :collect-p t :graph graph)
+              ;; Reduce view
+              (cond ((and group-p key)
+                     (let ((node (find-in-skip-list (view-skip-list view)
+                                                    (list key +null-key+))))
+                       (when node
+                         (default-map-fn (first (%sn-key node)) nil (%sn-value node)))))
+                    (key
+                     (map-view 'default-map-fn
+                               class-name view-name
+                               :key key :count count :skip skip
+                               :collect-p t :graph graph))
+                    (group-p
+                     (map-reduced-view 'default-map-fn
+                                       class-name view-name
+                                       :start-key start-key
+                                       :end-key end-key
+                                       :skip skip :count count
+                                       :collect-p t))
+                    (t
+                     (let ((node (find-in-skip-list (view-skip-list view)
+                                                    (list +reduce-master-key+
+                                                          +max-key+))))
+                       (when node
+                         (default-map-fn nil nil (%sn-value node)))))))))
+      (error 'invalid-view-error
+             :class-name class-name
+             :view-name view-name)))
 
 #|
 (def-view email (customer :offerly)
