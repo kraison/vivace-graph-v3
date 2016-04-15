@@ -54,8 +54,8 @@ as the primary value, and non-nil as the secondary value at EOF."
       (let ((*transaction* (make-instance 'restore-transaction
                                           :transaction-id (incf tx-id))))
         (dolist (plist plists)
-          (when (zerop (mod (incf count) 100))
-            (log:info "~A RESTORED ~A NODES~%" (current-thread) count))
+          (when (zerop (mod (incf count) 1000))
+            (log:info "~A RESTORED ~A NODES" (current-thread) count))
           (ecase (car plist)
             (:v
              (apply 'make-vertex (rest plist)))

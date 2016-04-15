@@ -37,7 +37,9 @@
 (defmethod list-views ((graph graph))
   (let ((views nil))
     (maphash (lambda (k v)
+               (declare (ignore k))
                (maphash (lambda (k1 v1)
+                          (declare (ignore k1))
                           (push (cons (view-group-class-name v)
                                       (view-name v1))
                                 views))
@@ -56,13 +58,17 @@
 
 (defmacro with-write-locked-view-group ((name graph) &body body)
   `(let ((view-group (lookup-view-group ,name ,graph)))
-     (with-write-lock ((view-group-lock view-group))
-       ,@body)))
+     (if view-group
+         (with-write-lock ((view-group-lock view-group))
+           ,@body)
+         (error 'invalid-view-error :class-name ,name))))
 
 (defmacro with-read-locked-view-group ((name graph) &body body)
   `(let ((view-group (lookup-view-group ,name ,graph)))
-     (with-read-lock ((view-group-lock view-group))
-       ,@body)))
+     (if view-group
+         (with-read-lock ((view-group-lock view-group))
+           ,@body)
+         (error 'invalid-view-error :class-name ,name))))
 
 (defun view-key-serialize (key)
   (let ((payload (serialize (first key))))
@@ -374,6 +380,10 @@
   "Regenerate this view's index"
   (with-write-locked-view-group (class-name graph)
     (let ((view (lookup-view graph class-name view-name)))
+      (unless view
+        (error 'invalid-view-error
+               :class-name class-name
+               :view-name view-name))
       ;; First, if exists, delete skip list
       (when (skip-list-p (view-skip-list view))
         (delete-skip-list (view-skip-list view)))
@@ -419,82 +429,96 @@
 
 (defmethod map-view (fn (class-name symbol) (view-name symbol)
                      &key (graph *graph*) key start-key end-key count skip
-                     collect-p include-deleted-p)
-  (when (lookup-view-group class-name graph)
-    (with-read-locked-view-group (class-name graph)
-      (let* ((view (lookup-view graph class-name view-name))
-             (lookup-fn (view-lookup-fn view))
-             (skip-list (view-skip-list view))
-             (cursor (if (and (null start-key) (null key) (null end-key))
-                         (make-cursor skip-list)
-                         (make-range-cursor skip-list
-                                            (list (cond (key key)
-                                                        (start-key start-key)
-                                                        (t +min-sentinel+))
-                                                  +null-key+)
-                                            (list (cond (key key)
-                                                        (end-key end-key)
-                                                        (t +max-sentinel+))
-                                                  +max-key+))))
-             (result nil) (found-count 0) (cursor-count 0))
-        (loop
-           for node = (cursor-next cursor)
-           until (or (null node) (and count (= found-count count)))
-           do
-           ;;(log:debug "~S" node)
-           (when (or (null skip) (> cursor-count skip))
-             (incf cursor-count)
-             (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
-               (unless (or include-deleted-p (null pnode) (deleted-p pnode))
-                 (incf found-count)
-                 (if collect-p
-                     (push (funcall fn
+                       collect-p include-deleted-p)
+  (if (lookup-view-group class-name graph)
+      (with-read-locked-view-group (class-name graph)
+        (let ((view (lookup-view graph class-name view-name)))
+          (unless view
+            (error 'invalid-view-error
+                   :class-name class-name
+                   :view-name view-name))
+          (let* ((lookup-fn (view-lookup-fn view))
+                 (skip-list (view-skip-list view))
+                 (cursor (if (and (null start-key) (null key) (null end-key))
+                             (make-cursor skip-list)
+                             (make-range-cursor skip-list
+                                                (list (cond (key key)
+                                                            (start-key start-key)
+                                                            (t +min-sentinel+))
+                                                      +null-key+)
+                                                (list (cond (key key)
+                                                            (end-key end-key)
+                                                            (t +max-sentinel+))
+                                                      +max-key+))))
+                 (result nil) (found-count 0) (cursor-count 0))
+            (loop
+               for node = (cursor-next cursor)
+               until (or (null node) (and count (= found-count count)))
+               do
+               ;;(log:debug "~S" node)
+                 (when (or (null skip) (> cursor-count skip))
+                   (incf cursor-count)
+                   (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
+                     (unless (or include-deleted-p (null pnode) (deleted-p pnode))
+                       (incf found-count)
+                       (if collect-p
+                           (push (funcall fn
+                                          (first (%sn-key node))
+                                          (second (%sn-key node))
+                                          (%sn-value node))
+                                 result)
+                           (funcall fn
                                     (first (%sn-key node))
                                     (second (%sn-key node))
-                                    (%sn-value node))
-                           result)
-                     (funcall fn
-                              (first (%sn-key node))
-                              (second (%sn-key node))
-                              (%sn-value node)))))))
-        (when collect-p
-          (values (nreverse result) found-count))))))
+                                    (%sn-value node)))))))
+            (when collect-p
+              (values (nreverse result) found-count)))))
+      (error 'invalid-view-error
+             :class-name class-name
+             :view-name view-name)))
 
 (defun default-map-fn (key id val)
   (list (cons :key key) (cons :id id) (cons :value val)))
 
-(defmethod map-reduced-view (fn (class-name symbol) (view-name symbol) &key
-                             (graph *graph*) start-key end-key count
-                             skip collect-p)
-  (when (lookup-view-group class-name graph)
-    (with-read-locked-view-group (class-name graph)
-      (let* ((view (lookup-view graph class-name view-name))
-             (skip-list (view-skip-list view))
-             (cursor (make-cursor skip-list))
-             (result nil) (found-count 0) (total-count 0))
-        (loop
-           for node = (cursor-next cursor)
-           while (and node
-                      (or (null end-key)
-                          (equal (first (%sn-key node)) end-key)
-                          (less-than (first (%sn-key node)) end-key)))
-           do
-           (when (and (equalp +null-key+ (second (%sn-key node)))
-                      (or (null start-key)
-                          (or (equal (first (%sn-key node)) start-key)
-                              (less-than start-key (first (%sn-key node))))))
-             (incf total-count)
-             (when (or (null skip) (> total-count skip))
-               (if collect-p
-                   (push
-                    (funcall fn (first (%sn-key node)) nil (%sn-value node))
-                    result)
-                   (funcall fn (first (%sn-key node)) nil (%sn-value node)))
-               (incf found-count)))
-           (when (and count (= count found-count))
-             (return)))
-        (when collect-p
-          (values (nreverse result) found-count))))))
+(defmethod map-reduced-view (fn (class-name symbol) (view-name symbol)
+                             &key (graph *graph*) start-key end-key count
+                               skip collect-p)
+  (if (lookup-view-group class-name graph)
+      (with-read-locked-view-group (class-name graph)
+        (let ((view (lookup-view graph class-name view-name)))
+          (unless view
+            (error 'invalid-view-error
+                   :class-name class-name
+                   :view-name view-name))
+          (let* ((skip-list (view-skip-list view))
+                 (cursor (make-cursor skip-list))
+                 (result nil) (found-count 0) (total-count 0))
+            (loop
+               for node = (cursor-next cursor)
+               while (and node
+                          (or (null end-key)
+                              (equal (first (%sn-key node)) end-key)
+                              (less-than (first (%sn-key node)) end-key)))
+               do
+                 (when (and (equalp +null-key+ (second (%sn-key node)))
+                            (or (null start-key)
+                                (or (equal (first (%sn-key node)) start-key)
+                                    (less-than start-key (first (%sn-key node))))))
+                   (incf total-count)
+                   (when (or (null skip) (> total-count skip))
+                     (if collect-p
+                         (push
+                          (funcall fn (first (%sn-key node)) nil (%sn-value node))
+                          result)
+                         (funcall fn (first (%sn-key node)) nil (%sn-value node)))
+                     (incf found-count)))
+                 (when (and count (= count found-count))
+                   (return)))
+            (when collect-p
+              (values (nreverse result) found-count)))))
+      (error 'invalid-view-error
+             :class-name class-name
+             :view-name view-name)))
 
 (defmethod invoke-graph-view ((class-name symbol) (view-name symbol)
                               &key (graph *graph*) key start-key end-key count
@@ -502,6 +526,10 @@
   (if (lookup-view-group class-name graph)
       (with-read-locked-view-group (class-name graph)
         (let ((view (lookup-view graph class-name view-name)))
+          (unless view
+            (error 'invalid-view-error
+                   :class-name class-name
+                   :view-name view-name))
           (if (or (null (view-reduce-code view)) (null reduce-p))
               ;; Simple map view
               (map-view 'default-map-fn
@@ -554,7 +582,7 @@
 |#
 
 (defun fully-qualified-expression-string (expression)
-  (declare (ignore colonp atp args))
+  ;;(declare (ignore colonp atp args))
   (let ((*package* (find-package :keyword)))
     (format nil "~S" expression)))
 

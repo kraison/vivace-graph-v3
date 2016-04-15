@@ -26,7 +26,6 @@
              :views (make-hash-table :synchronized t)
              :cache
              (make-id-table :synchronized t :weakness :value)
-             ;;(make-hash-table :synchronized t :test 'equalp :weakness :value)
              :replication-key replication-key
              :replication-port replication-port
              :vertex-table (make-vertex-table
@@ -92,7 +91,6 @@
              :views (make-hash-table :synchronized t)
              :cache
              (make-id-table :synchronized t :weakness :value)
-             ;;(make-hash-table :synchronized t :test 'equalp :weakness :value)
              :replication-key replication-key
              :replication-port replication-port
              :vertex-table (open-lhash

@@ -266,34 +266,38 @@ on SOCKET."
            (mailbox (mailbox session)))
       (log:info "Slave session ~A initiated" session)
       (add-slave-session session graph)
-      (stream-logged-transactions graph session)
-      (unwind-protect
-           (loop
-              (when (stop-replication-p graph)
-                (return))
-              (let ((tx (sb-concurrency:receive-message mailbox :timeout 1)))
-                (case tx
-                  ((nil)
-                   ;; Hit timeout, do nothing
-                   )
-                  ((:shutdown)
-                   (log:info "Shutting down slave ~A" session)
-                   (return))
-                  (t
-                   (handler-case
-                       (stream-transaction-to-slave tx session)
-                     (broken-pipe-error ()
-                       (return)))))))
-        (log:info "Cleaning up slave session ~A" session)
-        (remove-slave-session session graph)
-        (ignore-errors (usocket:socket-close (socket session)))))))
+      (handler-case
+          (unwind-protect
+               (progn
+                 (stream-logged-transactions graph session)
+                 (loop
+                    (when (stop-replication-p graph)
+                      (return))
+                    (let ((tx (sb-concurrency:receive-message mailbox :timeout 1)))
+                      (case tx
+                        ((nil)
+                         ;; Hit timeout, do nothing
+                         )
+                        ((:shutdown)
+                         (log:info "Shutting down slave ~A" session)
+                         (return))
+                        (t
+                         (handler-case
+                             (stream-transaction-to-slave tx session)
+                           (broken-pipe-error ()
+                             (return))))))))
+            (log:info "Cleaning up slave session ~A" session)
+            (remove-slave-session session graph)
+            (ignore-errors (usocket:socket-close (socket session))))
+        (error (c)
+          (log:error "~A erred: ~A" session c))))))
 
 (defun server-accept-loop (graph)
   (let ((port (replication-port graph))
         (address usocket:*wildcard-host*))
     (usocket:with-socket-listener (listener address port :reuse-address t)
       (loop
-         (when (stop-replication-p graph) 
+         (when (stop-replication-p graph)
            (return))
          (when (usocket:wait-for-input listener :timeout 1 :ready-only t)
            (let ((socket (usocket:socket-accept listener

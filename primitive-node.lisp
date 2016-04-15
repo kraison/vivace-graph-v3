@@ -87,8 +87,8 @@
   (setf (gethash (id node) (cache graph)) node))
 
 ;;; FIXME: reenable when deallocation bug is fixed
-;;; (declaim (inline init-node-data))
-(defun init-node-data (node &key (graph *graph*))
+;;; (declaim (inline maybe-init-node-data))
+(defun maybe-init-node-data (node &key (graph *graph*))
   (when (> (data-pointer node) 0)
     (when (or (eq (bytes node) :init) (null (bytes node)))
       ;;(log:info "READING BYTES FOR ~A AT ~A" (string-id node) (data-pointer node))
@@ -112,7 +112,7 @@
         (when (node-p node)
           (setf (id node) key)
           ;; we should wait to do this until we need the data.
-          ;;(init-node-data node :graph graph)
+          ;;(maybe-init-node-data node :graph graph)
           (when *cache-enabled*
             (setf (gethash key (cache graph)) node))
           (record-graph-read)
@@ -126,7 +126,7 @@
     (when (plusp (data-pointer node))
       (if (data node)
           (setf (bytes node) (serialize (data node)))
-          (init-node-data node :graph graph))
+          (maybe-init-node-data node :graph graph))
       (let ((addr (allocate (heap graph) (length (bytes node)))))
         (dotimes (i (length (bytes node)))
           (set-byte (heap graph)
@@ -138,7 +138,7 @@
       (setf (id old-node) (id node))
       ;;(log:info "~A OLD ADDRESS IS ~A" (string-id node) (data-pointer old-node))
       ;;(log:info "~A NEW ADDRESS IS ~A" (string-id node) (data-pointer node))
-      (init-node-data old-node :graph graph)
+      (maybe-init-node-data old-node :graph graph)
       (setf (gethash (id old-node) (cache graph)) old-node)
       ;;(log:info "OLD REV OF ~A CACHED" (string-id old-node))
       ;; Make sure we are modifying the latest revision or bail
@@ -193,7 +193,7 @@
          (id node))))
 
 (defun node-to-alist (node &key slots)
-  (init-node-data node)
+  (maybe-init-node-data node)
   (remove-if (lambda (pair)
                (member (car pair) slots))
              (append (list (cons :id (string-id node)))
@@ -201,7 +201,7 @@
 
 (defun node-slot-value (node key &key (graph *graph*))
   ;;(log:info "GETTING ~A FOR ~A" key (string-id node))
-  (init-node-data node :graph graph)
+  (maybe-init-node-data node :graph graph)
   (when (consp (data node))
     (cdr (assoc (if (keywordp key)
                     key
@@ -215,7 +215,7 @@
          (let ((,keyword (if (keywordp ,key)
                              ,key
                              (intern (symbol-name ,key) :keyword))))
-           (init-node-data ,node)
+           (maybe-init-node-data ,node)
            (cond ((null (data ,node))
                   (push (cons ,keyword ,value) (data ,node)))
                  ((consp (data ,node))

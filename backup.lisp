@@ -40,12 +40,12 @@
   (let ((count 0))
     (with-open-file (out location :direction :output)
       (map-vertices (lambda (v)
-                      (init-node-data v :graph graph)
+                      (maybe-init-node-data v :graph graph)
                       (incf count)
                       (backup v out))
                     graph :include-deleted-p include-deleted-p)
       (map-edges (lambda (e)
-                   (init-node-data e :graph graph)
+                   (maybe-init-node-data e :graph graph)
                    (incf count)
                    (backup e out))
                  graph :include-deleted-p include-deleted-p)
@@ -60,7 +60,7 @@
                         (format t ".")
                         (force-output))
                       (handler-case
-                          (init-node-data v :graph graph)
+                          (maybe-init-node-data v :graph graph)
                         (error (c)
                           (push (cons (string-id v) c) problems))))
                     graph :include-deleted-p include-deleted-p)
@@ -70,14 +70,9 @@
                         (format t ".")
                         (force-output))
                    (handler-case
-                       (init-node-data e :graph graph)
+                       (maybe-init-node-data e :graph graph)
                      (error (c)
                        (push (cons (string-id e) c) problems))))
                  graph :include-deleted-p include-deleted-p)
       (terpri)
       problems)))
-
-
-
-
-

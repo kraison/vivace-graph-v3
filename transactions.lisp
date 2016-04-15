@@ -343,7 +343,10 @@ no data are not written."
   "Free the heap space used by NODE, if necessary."
   (let ((data-pointer (data-pointer node)))
     (unless (zerop data-pointer)
-      (free (heap graph) data-pointer))))
+      (handler-case
+          (free (heap graph) data-pointer)
+        (error (c)
+          (log:error "Unable to free ~A (~A): ~A" (string-id node) data-pointer c))))))
 
 (defgeneric add-node-to-indexes (node graph &key unless-present)
   (:method ((node node) graph &key unless-present)
@@ -421,7 +424,9 @@ no data are not written."
           (serialize (data new-node)))
     (maybe-write-to-heap new-node graph)
     (lhash-update table (id new-node) new-node)
-    (maybe-free-from-heap old-node graph))
+    ;; KTR: moved to post-view generation
+    ;;(maybe-free-from-heap old-node graph)
+    )
   write)
 
 
@@ -516,12 +521,23 @@ no data are not written."
     (dolist (write writes)
       (apply-tx-write-to-views write graph))))
 
+(defgeneric garbage-collect-heap (writes graph)
+  (:method (writes graph)
+    (let ((old-nodes (delete-duplicates
+                      (mapcar 'old-node
+                              (remove-if-not (lambda (write)
+                                               (typep write 'tx-update))
+                                             writes)))))
+      (dolist (old-node old-nodes)
+        (maybe-free-from-heap old-node graph)))))
+
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
       (let ((writes (writes transaction)))
         (apply-tx-writes writes graph)
         (apply-tx-writes-to-views writes graph)
+        (garbage-collect-heap writes graph)
         (persist-highest-transaction-id (transaction-id transaction) graph)))))
 
 (defmethod apply-transaction :after (transaction (graph master-graph))
@@ -738,7 +754,9 @@ no data are not written."
          (bytes (subseq vector data-offset end)))
     (setf (id edge) id)
     (if (> (length bytes) 0)
-        (setf (data edge) (deserialize bytes))
+        (progn
+          (setf (data edge) (deserialize bytes))
+          (setf (bytes edge) bytes))
         (setf (data edge) nil))
     edge))
 
@@ -750,7 +768,9 @@ no data are not written."
         (bytes (subseq vector data-offset end)))
     (setf (id vertex) id)
     (if (> (length bytes) 0)
-        (setf (data vertex) (deserialize bytes))
+        (progn
+          (setf (data vertex) (deserialize bytes))
+          (setf (bytes vertex) bytes))
         (setf (data vertex) nil))
     vertex))
 
@@ -866,6 +886,16 @@ no data are not written."
           (deserialize-transaction-node-vector vector offset))
     (if (= count 2)
         (let ((old-node (deserialize-transaction-node-vector vector offset)))
+          ;; get local data-pointer to replace the one read from the txn file
+          (log:debug "FINDING PROPER DATA-POINTER FOR ~A (~A)"
+                     (id old-node) (data-pointer old-node))
+          (let ((local-old-node (if (vertex-p old-node)
+                                    (lookup-vertex (id old-node))
+                                    (lookup-edge (id old-node)))))
+            (log:debug "SETTING DATA-POINTER OF ~A TO ~A"
+                       (id old-node)
+                       (data-pointer local-old-node))
+            (setf (data-pointer old-node) (data-pointer local-old-node)))
           (make-instance class
                          :node node
                          :old-node old-node))
@@ -1028,7 +1058,7 @@ left in the stream."
 
 (defgeneric copy-node (node)
   (:method ((node node))
-    (init-node-data node)
+    (maybe-init-node-data node)
     (let ((new-node (make-instance (type-of node)
                                    :id (slot-value node 'id)
                                    :type-id (slot-value node 'type-id)
