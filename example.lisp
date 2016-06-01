@@ -40,15 +40,15 @@
  :test-graph)
 
 ;;; Indexes
-;; This will index both customers and people
-(def-view last-name (person :test-graph)
+;; This will index only people
+(def-view last-name :lessp (person :test-graph)
   (:map
    (lambda (person)
      (when (last-name person)
        (yield (last-name person) nil)))))
 
 ;; This will only index customers
-(def-view email (customer :test-graph)
+(def-view email :greaterp (customer :test-graph)
   (:map
    (lambda (customer)
      (when (email customer)
