@@ -25,7 +25,8 @@
   pointer
   skip-list
   (lock (make-rw-lock))
-  lookup-fn)
+  lookup-fn
+  (sort-order :lessp))
 
 (defun yield (key value)
   ;;(dbg "PUSHING (~S ~S) ON TO *VIEW-RV*" key value)
@@ -100,6 +101,7 @@
                                    :map-code (cdr (assoc :map-code view))
                                    :reduce-code (cdr (assoc :reduce-code view))
                                    :heap (indexes graph)
+                                   :sort-order (cdr (assoc :sort-order view))
                                    :pointer (cdr (assoc :pointer view)))))
                 (if (view-pointer v)
                     (setf (view-skip-list v)
@@ -109,7 +111,9 @@
                                           ;;:key-equal 'view-key-equal
                                           ;;:key-comparison 'view-less-than
                                           :key-equal 'reduce-equal
-                                          :key-comparison 'reduce-comp
+                                          :key-comparison (if (eql (view-sort-order v) :greaterp)
+                                                              'reduce-comp-greaterp
+                                                              'reduce-comp-lessp)
                                           :value-equal 'equal
                                           :key-serializer 'view-key-serialize
                                           :key-deserializer 'view-key-deserialize
@@ -134,6 +138,7 @@
                 (setq view-alist (acons :map-code (view-map-code view) view-alist))
                 (setq view-alist (acons :reduce-code (view-reduce-code view) view-alist))
                 (setq view-alist (acons :pointer (view-pointer view) view-alist))
+                (setq view-alist (acons :sort-order (view-sort-order view) view-alist))
                 (push view-alist views)))
             (view-group-table view-group))
            (push (cons class-name views) blob)))
@@ -220,12 +225,21 @@
   (and (equal (first key1) (first key2))
        (equalp (second key1) (second key2))))
 
-(defun reduce-comp (key1 key2)
-  ;;(log:debug "REDUCE-COMP ~S < ~S" key1 key2)
+(defun reduce-comp-lessp (key1 key2)
+  ;;(log:debug "REDUCE-COMP-LESSP ~S < ~S" key1 key2)
   (cond ((less-than (first key1) (first key2))
          t)
         ((and (equal (first key1) (first key2))
-         (key-vector< (second key1) (second key2)))
+              (key-vector< (second key1) (second key2)))
+         t)
+        (t nil)))
+
+(defun reduce-comp-greaterp (key1 key2)
+  ;;(log:debug "REDUCE-COMP-GREATERP ~S < ~S" key1 key2)
+  (cond ((greater-than (first key1) (first key2))
+         t)
+        ((and (equal (first key1) (first key2))
+              (key-vector> (second key1) (second key2)))
          t)
         (t nil)))
 
@@ -394,10 +408,16 @@
                  ;;:key-equal 'view-key-equal
                  ;;:key-comparison 'view-less-than
                  :key-equal 'reduce-equal
-                 :key-comparison 'reduce-comp
-                 :head-key (list +min-sentinel+ +null-key+)
+                 :key-comparison (if (eql :greaterp (view-sort-order view))
+                                     'reduce-comp-greaterp
+                                     'reduce-comp-lessp)
+                 :head-key (if (eql :greaterp (view-sort-order view))
+                               (list +max-sentinel+ +max-key+)
+                               (list +min-sentinel+ +null-key+))
                  :head-value nil
-                 :tail-key (list +max-sentinel+ +max-key+)
+                 :tail-key (if (eql :greaterp (view-sort-order view))
+                               (list +min-sentinel+ +null-key+)
+                               (list +max-sentinel+ +max-key+))
                  :tail-value nil
                  :value-equal 'equal
                  :key-serializer 'view-key-serialize
@@ -492,18 +512,21 @@
                    :view-name view-name))
           (let* ((skip-list (view-skip-list view))
                  (cursor (make-cursor skip-list))
-                 (result nil) (found-count 0) (total-count 0))
+                 (result nil) (found-count 0) (total-count 0)
+                 (comparator (if (eql :greaterp (view-sort-order view))
+                                 'greater-than
+                                 'less-than)))
             (loop
                for node = (cursor-next cursor)
                while (and node
                           (or (null end-key)
                               (equal (first (%sn-key node)) end-key)
-                              (less-than (first (%sn-key node)) end-key)))
+                              (funcall comparator (first (%sn-key node)) end-key)))
                do
                  (when (and (equalp +null-key+ (second (%sn-key node)))
                             (or (null start-key)
                                 (or (equal (first (%sn-key node)) start-key)
-                                    (less-than start-key (first (%sn-key node))))))
+                                    (funcall comparator start-key (first (%sn-key node))))))
                    (incf total-count)
                    (when (or (null skip) (> total-count skip))
                      (if collect-p
@@ -586,8 +609,8 @@
   (let ((*package* (find-package :keyword)))
     (format nil "~S" expression)))
 
-(defmacro def-view (name parents &body body)
-  (with-gensyms (view-name class-name graph-name graph lookup-fn)
+(defmacro def-view (name sort-order parents &body body)
+  (with-gensyms (view-name class-name graph-name graph lookup-fn view-sort-order)
     (let ((map-code (cadr (assoc :map body)))
           (reduce-code (cadr (assoc :reduce body))))
       `(let* ((,view-name ',name)
@@ -596,6 +619,7 @@
               (,graph (or (lookup-graph ,graph-name)
                           (error "Unknown graph ~S" ,graph-name)))
               (,lookup-fn ',(intern (format nil "LOOKUP-~A" (first parents))))
+              (,view-sort-order ',sort-order)
               (view (make-view :name ,view-name
                                :class-name ,class-name
                                :graph-name ,graph-name
@@ -605,6 +629,7 @@
                                :reduce-code ,(when reduce-code
 						   (fully-qualified-expression-string reduce-code))
                                :map-fn nil
+                               :sort-order ,view-sort-order
                                :reduce-fn nil)))
          (log:info "MAKING ~S" view)
          (let* ((table (get-view-table-for-class ,graph-name ,class-name)))

@@ -289,3 +289,85 @@ characters.~@:>" string (length string)))
         (t
          nil)))
 
+(defgeneric greater-than (x y)
+  (:documentation
+   "Generic greater-than operator.  Allows comparison of apples and oranges.")
+  ;; Sentinels for generic skip lists
+  (:method ((x (eql +min-sentinel+)) y) nil)
+  (:method ((x (eql +max-sentinel+)) y) t)
+
+  (:method ((x (eql +min-sentinel+)) (y number))  nil)
+  (:method ((x (eql +min-sentinel+)) (y symbol))  nil)
+  (:method ((x (eql +min-sentinel+)) (y (eql t))) nil)
+  (:method ((x (eql +min-sentinel+)) (y null))    nil)
+  (:method ((x (eql +min-sentinel+)) (y list))    nil)
+  (:method ((x number)  (y (eql +min-sentinel+))) t)
+  (:method ((x symbol)  (y (eql +min-sentinel+))) t)
+  (:method ((x (eql t)) (y (eql +min-sentinel+))) t)
+  (:method ((x null)    (y (eql +min-sentinel+))) t)
+  (:method ((x list)    (y (eql +min-sentinel+))) t)
+
+  (:method ((x (eql +max-sentinel+)) (y number))  t)
+  (:method ((x (eql +max-sentinel+)) (y symbol))  t)
+  (:method ((x (eql +max-sentinel+)) (y string))  t)
+  (:method ((x (eql +max-sentinel+)) (y (eql t))) t)
+  (:method ((x (eql +max-sentinel+)) (y null))    t)
+  (:method ((x (eql +max-sentinel+)) (y list))    t)
+  (:method ((x number)  (y (eql +max-sentinel+))) nil)
+  (:method ((x symbol)  (y (eql +max-sentinel+))) nil)
+  (:method ((x string)  (y (eql +max-sentinel+))) nil)
+  (:method ((x (eql t)) (y (eql +max-sentinel+))) nil)
+  (:method ((x null)    (y (eql +max-sentinel+))) nil)
+  (:method ((x list)    (y (eql +max-sentinel+))) nil)
+
+  (:method ((x (eql t))   (y null))      t)
+  (:method ((x null)      (y (eql t)))   nil)
+  (:method ((x (eql t))   y)             nil)
+  (:method ((x null)      y)             nil)
+
+  (:method ((x symbol)    (y symbol))    (string> (symbol-name x) (symbol-name y)))
+  (:method ((x string)    (y string))    (string> x y))
+  (:method ((x number)    (y number))    (> x y))
+  (:method ((x timestamp) (y timestamp)) (timestamp> x y))
+  (:method ((x uuid:uuid) (y uuid:uuid)) (string>
+                                          (uuid:print-bytes nil x)
+                                          (uuid:print-bytes nil y)))
+
+  (:method ((x list) (y list))           (or (greater-than (car x) (car y))
+                                             (and (equal (car x) (car y))
+                                                  (greater-than (cdr x) (cdr y)))))
+  (:method ((x list) y)                  nil)
+  (:method (x        (y list))           t)
+
+  (:method ((x number)    y)            nil)
+  (:method ((x number)    (y (eql t)))  t)
+  (:method ((x number)    (y null))     t)
+  (:method (x             (y number))   t)
+
+  (:method ((x string)    (y symbol))    t)
+  (:method ((x symbol)    (y string))    nil)
+
+  (:method ((x symbol)    (y timestamp)) t)
+  (:method ((x timestamp) (y symbol))    nil)
+
+  (:method ((x symbol)    (y uuid:uuid)) t)
+  (:method ((x uuid:uuid) (y symbol))    nil)
+
+  (:method ((x string)    (y timestamp)) t)
+  (:method ((x timestamp) (y string))    nil)
+
+  (:method ((x string)    (y uuid:uuid)) t)
+  (:method ((x uuid:uuid) (y string))    nil)
+
+  (:method ((x uuid:uuid) (y timestamp)) t)
+  (:method ((x timestamp) (y uuid:uuid)) nil))
+
+(defun key-vector> (v1 v2)
+  (cond ((= (array-dimension v1 0) 0)
+         nil)
+        ((> (aref v1 0) (aref v2 0))
+         t)
+        ((= (aref v1 0) (aref v2 0))
+         (key-vector> (subseq v1 1) (subseq v2 1)))
+        (t
+         nil)))

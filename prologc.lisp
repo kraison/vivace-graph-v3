@@ -623,7 +623,7 @@
   `(first (select () ,vars ,@goals !)))
 
 (defmacro select-one (vars &rest goals)
-  `(first (select (:flat t) ,vars ,@goals !)))
+  `(first (select (:flat t :limit 1) ,vars ,@goals !)))
 
 (defmacro do-query (&rest goals)
   `(select () () ,@goals))
@@ -670,7 +670,7 @@
 |#
 
 (defmacro map-query (fn query &key collect-p)
-  "Maps fn over the results of query. collect? will return a list of the
+  "Maps fn over the results of query. collect-p will return a list of the
  results of each application of fn."
   (with-gensyms (result)
     (if collect-p
