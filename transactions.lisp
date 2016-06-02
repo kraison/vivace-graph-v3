@@ -434,9 +434,8 @@ no data are not written."
 
 (defgeneric call-for-applicable-views (fun graph node)
   (:method (fun graph (node node))
-    (loop with class-name = (class-name (class-of node))
-       for view-name in (lookup-views graph class-name)
-       for view = (lookup-view graph class-name view-name)
+    (loop
+       for view in (lookup-views graph node)
        when view do (funcall fun view))))
 
 (defmacro do-applicable-views ((view graph node) &body body)

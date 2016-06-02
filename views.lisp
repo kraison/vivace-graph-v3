@@ -178,7 +178,8 @@
 
 (defmethod lookup-view ((graph graph) (class-name symbol) (view-name symbol))
   (let ((view-group (lookup-view-group class-name graph)))
-    (gethash view-name (view-group-table view-group))))
+    (let ((view (gethash view-name (view-group-table view-group))))
+      view)))
 
 (defmethod all-views ((graph graph))
   (let ((views nil))
@@ -193,12 +194,17 @@
     views))
 
 (defmethod lookup-views ((graph graph) (class-name symbol))
-  (when (lookup-view-group class-name graph)
-    (let ((view-group (gethash class-name (views graph))))
-      (when view-group
-        (sb-ext:with-locked-hash-table ((view-group-table view-group))
-          (loop for view-name being the hash-keys in (view-group-table view-group)
-             collecting view-name))))))
+  (let ((ancestor-classes (find-ancestor-classes class-name)))
+    (delete-duplicates
+     (mapcan (lambda (class)
+               (let ((class-name (class-name class)))
+                 (when (lookup-view-group class-name graph)
+                   (let ((view-group (gethash class-name (views graph))))
+                     (when view-group
+                       (sb-ext:with-locked-hash-table ((view-group-table view-group))
+                         (loop for view being the hash-values in (view-group-table view-group)
+                            collecting view)))))))
+             ancestor-classes))))
 
 (defmethod lookup-views ((graph graph) (node node))
   (lookup-views graph (class-name (class-of node))))
@@ -340,29 +346,25 @@
      *view-rv*)))
 
 (defmethod %add-to-views ((graph graph) (node node) (class-name symbol))
-  (dolist (view-name (lookup-views graph class-name))
+  (dolist (view (lookup-views graph class-name))
     ;;(log:debug "Adding ~S to view ~S:~S" node class-name view-name)
-    (add-to-view graph (lookup-view graph class-name view-name) node)))
+    (add-to-view graph view node)))
 
 (defmethod add-to-views ((graph graph) (node node))
   "Add node to indices for its class's named views"
-  (dolist (class (append (list (class-of node))
-                         (find-graph-parent-classes (class-of node))))
+  (dolist (class (find-ancestor-classes (class-of node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)
           (%add-to-views graph node class-name))))))
 
 (defmethod %remove-from-views ((graph graph) (node node) (class-name symbol))
-  (dolist (view-name (lookup-views graph class-name))
-    (remove-from-view graph
-                      (lookup-view graph class-name view-name)
-                      node)))
+  (dolist (view (lookup-views graph class-name))
+    (remove-from-view graph view node)))
 
 (defmethod remove-from-views ((graph graph) (node node))
   "Remove node from indices for its class's named views"
-  (dolist (class (append (list (class-of node))
-                         (find-graph-parent-classes (class-of node))))
+  (dolist (class (find-ancestor-classes (class-of node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)
@@ -370,15 +372,13 @@
 
 (defmethod %update-in-views ((graph graph) (new-node node) (old-node node)
                              (class-name symbol))
-  (dolist (view-name (lookup-views graph class-name))
-    (let ((view (lookup-view graph class-name view-name)))
-      (remove-from-view graph view old-node)
-      (add-to-view graph view new-node))))
+  (dolist (view (lookup-views graph class-name))
+    (remove-from-view graph view old-node)
+    (add-to-view graph view new-node)))
 
 (defmethod update-in-views ((graph graph) (new-node node) (old-node node))
   "Add node to indices for its class's named views"
-  (dolist (class (append (list (class-of new-node))
-                         (find-graph-parent-classes (class-of new-node))))
+  (dolist (class (find-ancestor-classes (class-of node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)

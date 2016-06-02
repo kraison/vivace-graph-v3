@@ -120,6 +120,15 @@
 (defmethod find-all-subclass-names ((class class))
   (mapcar 'class-name (find-all-subclasses class)))
 
+(defmethod find-ancestor-classes ((class-name symbol))
+  (find-ancestor-classes (find-class class-name)))
+
+(defmethod find-ancestor-classes ((class node-class))
+  (delete-if (lambda (class)
+               (find (class-name class)
+                     '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)))
+             (sb-mop:compute-class-precedence-list class)))
+
 (defmethod find-graph-parent-classes ((class node-class))
   (let ((classes
          (remove-if (lambda (class)
