@@ -71,6 +71,54 @@
            ,@body)
          (error 'invalid-view-error :class-name ,name))))
 
+(defmethod lock-view-groups ((graph graph) (node node) &key (max-tries 10000))
+  (let ((view-groups (lookup-view-groups graph node))
+        (sleep 0.001))
+    (when view-groups
+      ;;(log:debug "LOCKING VIEW GROUPS FOR ~A: ~A" node view-groups)
+      (let ((tries 0))
+        (loop until (> tries max-tries) do
+             (incf tries)
+             (let ((locks nil))
+               (handler-case
+                   (progn
+                     (dolist (group view-groups)
+                       (let ((lock (acquire-write-lock (view-group-lock group)
+                                                       :wait-p nil)))
+                         (if (rw-lock-p lock)
+                             (push lock locks)
+                             (error "~A" group)))))
+                 (error (c)
+                   (log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
+                   (log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
+                              node tries)
+                   (map nil (lambda (lock)
+                              (when (rw-lock-p lock)
+                                (release-write-lock lock)))
+                        locks)
+                   (sleep (* tries sleep)))
+                 (:no-error (rv)
+                   (declare (ignore rv))
+                   ;;(log:debug "LOCKED VIEW GROUPS FOR ~A!" node)
+                   (return-from lock-view-groups (nreverse locks))))))
+        (log:error "max-tries exceeded trying to lock views for ~A" node)
+        (error 'view-lock-error
+               :message
+               (format nil "max-tries exceeded trying to view-lock ~A" node))))))
+
+(defmacro with-locked-view-groups ((node graph) &body body)
+  `(let ((locks nil))
+     (unwind-protect
+          (progn
+            (setq locks (lock-view-groups ,graph ,node))
+            (progn ,@body))
+       (progn
+         (when locks
+           ;;(log:debug "UNLOCKING ~A" locks)
+           (map nil 'release-write-lock locks)
+           ;;(log:debug "UNLOCKED ~A" locks)
+           )))))
+
 (defun view-key-serialize (key)
   (let ((payload (serialize (first key))))
     (let ((d (concatenate 'vector (second key) payload)))
@@ -193,6 +241,23 @@
                    (push (cons class-name view-name) views)))))))
     views))
 
+(defmethod lookup-view-groups ((graph graph) (class-name symbol))
+  (let ((ancestor-classes (find-ancestor-classes class-name)))
+    (sort
+     (delete
+      nil
+      (delete-duplicates
+       (mapcar (lambda (class)
+                 (let ((class-name (class-name class)))
+                   (when (lookup-view-group class-name graph)
+                     (let ((group (gethash class-name (views graph))))
+                       group))))
+               ancestor-classes)))
+     'string-lessp :key 'view-group-class-name)))
+
+(defmethod lookup-view-groups ((graph graph) (node node))
+  (lookup-view-groups graph (class-name (class-of node))))
+
 (defmethod lookup-views ((graph graph) (class-name symbol))
   (let ((ancestor-classes (find-ancestor-classes class-name)))
     (delete-duplicates
@@ -253,6 +318,7 @@
   "Add node to view."
   (compile-view-code view)
   (let ((*view-rv* nil))
+    ;;(log:debug "ADDING TO ~A" view)
     ;;(log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
     (funcall (view-map-fn view) node)
     ;;(log:debug "VIEW-RV: ~S" *view-rv*)
@@ -347,28 +413,37 @@
 
 (defmethod %add-to-views ((graph graph) (node node) (class-name symbol))
   (dolist (view (lookup-views graph class-name))
-    ;;(log:debug "Adding ~S to view ~S:~S" node class-name view-name)
+    ;;(log:debug "Adding ~S to view ~S:~S" node class-name (view-name view))
     (add-to-view graph view node)))
 
 (defmethod add-to-views ((graph graph) (node node))
   "Add node to indices for its class's named views"
-  (dolist (class (find-ancestor-classes (class-of node)))
+  (with-locked-view-groups (node graph)
+    (%add-to-views graph node (class-name (class-of node)))))
+#|
+    (dolist (class (find-ancestor-classes (class-of node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)
           (%add-to-views graph node class-name))))))
+|#
 
 (defmethod %remove-from-views ((graph graph) (node node) (class-name symbol))
   (dolist (view (lookup-views graph class-name))
+    ;;(log:debug "Removing ~S from view ~S:~S" node class-name (view-name view))
     (remove-from-view graph view node)))
 
 (defmethod remove-from-views ((graph graph) (node node))
   "Remove node from indices for its class's named views"
+  (with-locked-view-groups (node graph)
+    (%remove-from-views graph node (class-name (class-of node)))))
+#|
   (dolist (class (find-ancestor-classes (class-of node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)
           (%remove-from-views graph node class-name))))))
+|#
 
 (defmethod %update-in-views ((graph graph) (new-node node) (old-node node)
                              (class-name symbol))
@@ -378,11 +453,15 @@
 
 (defmethod update-in-views ((graph graph) (new-node node) (old-node node))
   "Add node to indices for its class's named views"
-  (dolist (class (find-ancestor-classes (class-of node)))
+  (with-locked-view-groups (new-node graph)
+    (%update-in-views graph new-node old-node (class-name (class-of new-node)))))
+#|
+  (dolist (class (find-ancestor-classes (class-of new-node)))
     (let ((class-name (class-name class)))
       (when (lookup-view-group class-name graph)
         (with-write-locked-view-group (class-name graph)
           (%update-in-views graph new-node old-node class-name))))))
+|#
 
 (defun view-key-equal (key1 key2)
   (equal (first key1) (first key2)))

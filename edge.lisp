@@ -20,7 +20,7 @@
   (:metaclass node-class))
 
 (defmethod print-object ((node node) stream)
-  (format stream "#<~A ~S REV ~S~%   (~S -> ~S)>"
+  (format stream "#<~A ~S REV ~S (~S -> ~S)>"
           (type-of node) (uuid:byte-array-to-uuid (id node))
           (revision node) (uuid:byte-array-to-uuid (from node))
           (uuid:byte-array-to-uuid (to node))))

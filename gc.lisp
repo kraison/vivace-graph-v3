@@ -119,6 +119,7 @@ data structure in GRAPH to T. Used for debugging, not used in GC."
   "Garbage-collect the heap of GRAPH by calling FREE on any
 allocations that are not referenced through any data structure in
 GRAPH."
+  (log:debug "gc-ing graph database heap.")
   (let ((allocation-table (heap-allocation-table graph))
         (heap (heap graph)))
     (map-all-graph-allocations (lambda (pointer)
@@ -128,4 +129,5 @@ GRAPH."
                (declare (ignore _))
                (log:debug "Freeing ~A" pointer)
                (free heap pointer))
-             allocation-table)))
+             allocation-table))
+  (log:debug "gc complete"))

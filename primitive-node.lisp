@@ -91,7 +91,6 @@
 (defun maybe-init-node-data (node &key (graph *graph*))
   (when (> (data-pointer node) 0)
     (when (or (eq (bytes node) :init) (null (bytes node)))
-      ;;(log:info "READING BYTES FOR ~A AT ~A" (string-id node) (data-pointer node))
       (let ((bytes (read-bytes (make-mpointer
                                 :mmap (memory-mmap (heap graph))
                                 :loc (data-pointer node)))))

@@ -454,20 +454,23 @@ no data are not written."
 
 (defmethod apply-tx-write-to-views ((write tx-create) graph)
   (let ((node (node write)))
-    (do-applicable-views (view graph node)
-      (add-to-view graph view node))))
+;;    (do-applicable-views (view graph node)
+;;      (add-to-view graph view node))))
+    (add-to-views graph node)))
 
 (defmethod apply-tx-write-to-views ((write tx-update) graph)
   (let ((new-node (node write))
         (old-node (old-node write)))
-    (do-applicable-views (view graph new-node)
-      (remove-from-view graph view old-node)
-      (add-to-view graph view new-node))))
+;;    (do-applicable-views (view graph new-node)
+;;      (remove-from-view graph view old-node)
+;;      (add-to-view graph view new-node))))
+    (update-in-views graph new-node old-node)))
 
 (defmethod apply-tx-write-to-views ((write tx-delete) graph)
   (let ((node (node write)))
-    (do-applicable-views (view graph node)
-      (remove-from-view graph view node))))
+;;    (do-applicable-views (view graph node)
+;;      (remove-from-view graph view node))))
+    (remove-from-views graph node)))
 
 
 ;;; Applying the transaction

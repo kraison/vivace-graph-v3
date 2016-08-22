@@ -73,3 +73,11 @@
                (format stream
                        "No such graph view: ~A/~A"
                        class-name view-name)))))
+
+(define-condition view-lock-error (error)
+  ((message :initarg :message))
+  (:report (lambda (error stream)
+             (with-slots (message) error
+               (format stream
+                       "View locking error: '~A'"
+                       message)))))

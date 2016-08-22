@@ -74,45 +74,56 @@
             )
 	  (sb-thread:condition-broadcast (lock-waitqueue rw-lock))))))
 
-(defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p)
+(defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p (wait-p t))
   (declare (ignore max-tries))
   (sb-thread:with-recursive-lock ((lock-lock rw-lock))
-    (if (and (next-in-queue-p rw-lock sb-thread:*current-thread*)
-	     (eq (lock-writer rw-lock) sb-thread:*current-thread*))
-	(progn
-	  (enqueue-front (lock-writer-queue rw-lock)
-                         sb-thread:*current-thread*)
-          ;;(log:debug "~A GOT WRITE LOCK ~A" (current-thread) rw-lock)
-	  (return-from acquire-write-lock rw-lock))
-	(enqueue (lock-writer-queue rw-lock) sb-thread:*current-thread*)))
+    (cond ((and (next-in-queue-p rw-lock sb-thread:*current-thread*)
+                (eq (lock-writer rw-lock) sb-thread:*current-thread*))
+           (enqueue-front (lock-writer-queue rw-lock)
+                          sb-thread:*current-thread*)
+           ;;(log:debug "~A GOT WRITE LOCK ~A" (current-thread) rw-lock)
+           (return-from acquire-write-lock rw-lock))
+          (wait-p
+           (enqueue (lock-writer-queue rw-lock) sb-thread:*current-thread*))
+          (t
+           (if (lock-unused-p rw-lock)
+               (progn
+                 (enqueue (lock-writer-queue rw-lock)
+                          sb-thread:*current-thread*)
+                 (setf (lock-writer rw-lock)
+                       sb-thread:*current-thread*)
+                 (when reading-p
+                   (decf (lock-readers rw-lock)))
+                 (return-from acquire-write-lock rw-lock))
+               (return-from acquire-write-lock nil)))))
   ;;(loop for tries from 0 to max-tries do
   (loop
-       (if (eq (lock-writer rw-lock) sb-thread:*current-thread*)
-           (progn
-             ;;(log:debug "~A GOT WRITE LOCK ~A" (current-thread) rw-lock)
-             (return-from acquire-write-lock rw-lock))
-	   (let ((wait-p nil))
-	     (handler-case
-		 (sb-thread:with-recursive-lock ((lock-lock rw-lock))
-		   (if (and (null (lock-writer rw-lock))
-			    (next-in-queue-p rw-lock
-                                            sb-thread:*current-thread*))
-		       (progn
-			 (setf (lock-writer rw-lock)
-                               sb-thread:*current-thread*)
-			 (when reading-p
-			   (decf (lock-readers rw-lock))
-                           ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) rw-lock)
-                           )
-			 (unless (eql 0 (lock-readers rw-lock))
-			   (setf wait-p t)))
-		       (sb-thread:condition-wait
-			(lock-waitqueue rw-lock) (lock-lock rw-lock))))
-	       (error (c)
-		 (log:error "Got error ~A while acquiring write lock ~A"
-                            c rw-lock)))
-	     (when wait-p
-	       (sb-thread:wait-on-semaphore (lock-semaphore rw-lock)))))))
+     (if (eq (lock-writer rw-lock) sb-thread:*current-thread*)
+         (progn
+           ;;(log:debug "~A GOT WRITE LOCK ~A" (current-thread) rw-lock)
+           (return-from acquire-write-lock rw-lock))
+         (let ((internal-wait-p nil))
+           (handler-case
+               (sb-thread:with-recursive-lock ((lock-lock rw-lock))
+                 (if (and (null (lock-writer rw-lock))
+                          (next-in-queue-p rw-lock
+                                           sb-thread:*current-thread*))
+                     (progn
+                       (setf (lock-writer rw-lock)
+                             sb-thread:*current-thread*)
+                       (when reading-p
+                         (decf (lock-readers rw-lock))
+                         ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) rw-lock)
+                         )
+                       (unless (eql 0 (lock-readers rw-lock))
+                         (setf internal-wait-p t)))
+                     (sb-thread:condition-wait
+                      (lock-waitqueue rw-lock) (lock-lock rw-lock))))
+             (error (c)
+               (log:error "Got error ~A while acquiring write lock ~A"
+                          c rw-lock)))
+           (when internal-wait-p
+             (sb-thread:wait-on-semaphore (lock-semaphore rw-lock)))))))
 
 (defmacro with-write-lock ((rw-lock &key reading-p) &body body)
   `(unwind-protect

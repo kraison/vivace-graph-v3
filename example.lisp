@@ -40,7 +40,7 @@
  :test-graph)
 
 ;;; Indexes
-;; This will index only people
+;; This will index both customers and people
 (def-view last-name :lessp (person :test-graph)
   (:map
    (lambda (person)
