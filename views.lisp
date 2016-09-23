@@ -528,22 +528,23 @@
 
 (defmethod map-view (fn (class-name symbol) (view-name symbol)
                      &key (graph *graph*) key start-key end-key count skip
-                       collect-p include-deleted-p)
+                       collect-p include-deleted-p write-p)
   (if (lookup-view-group class-name graph)
-      (with-read-locked-view-group (class-name graph)
-        (let ((view (lookup-view graph class-name view-name)))
-          (unless view
-            (error 'invalid-view-error
-                   :class-name class-name
-                   :view-name view-name))
-          (let* ((lookup-fn (view-lookup-fn view))
-                 (skip-list (view-skip-list view))
-                 (cursor (if (and (null start-key) (null key) (null end-key))
-                             (make-cursor skip-list)
-                             (make-range-cursor skip-list
-                                                (list (cond (key key)
-                                                            (start-key start-key)
-                                                            (t +min-sentinel+))
+      (let ((thunk
+             (lambda ()
+               (let ((view (lookup-view graph class-name view-name)))
+                 (unless view
+                   (error 'invalid-view-error
+                          :class-name class-name
+                          :view-name view-name))
+                 (let* ((lookup-fn (view-lookup-fn view))
+                        (skip-list (view-skip-list view))
+                        (cursor (if (and (null start-key) (null key) (null end-key))
+                                    (make-cursor skip-list)
+                                    (make-range-cursor skip-list
+                                                       (list (cond (key key)
+                                                                   (start-key start-key)
+                                                                   (t +min-sentinel+))
                                                       +null-key+)
                                                 (list (cond (key key)
                                                             (end-key end-key)
@@ -571,7 +572,12 @@
                                     (second (%sn-key node))
                                     (%sn-value node)))))))
             (when collect-p
-              (values (nreverse result) found-count)))))
+              (values (nreverse result) found-count)))))))
+        (if write-p
+            (with-write-locked-view-group (class-name graph)
+              (funcall thunk))
+            (with-read-locked-view-group (class-name graph)
+              (funcall thunk))))
       (error 'invalid-view-error
              :class-name class-name
              :view-name view-name)))
