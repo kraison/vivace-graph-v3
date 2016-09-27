@@ -1,17 +1,10 @@
-vivace-graph-v3
+VivaceGraph
 ===============
 
-VivaceGraph version 3
+VivaceGraph is an open source graph database written in pure Common Lisp.
 
-This is another redesign of VivaceGraph;  this version uses memory mapped files
-and has dropped the RDF semantics of previous versions.  VG is now more akin to
-neo4j, as it implements a property graph model.  The Prolog interface has been
-greatly expanded, though it still suffers from a few minor issues (all of which
-are more issues of interface convenience as opposed to functional deficiencies).
-CLOS integration was a goal with this version and works quite well at this
-stage.  Multi-node transactions are now complete; all node creations &
-modifications should now be wrapped in the WITH-TRANSACTION macro.
+VG takes design inspiration from CouchDB, neo4j and AllegroGraph.  It implements an ACID-compliant object graph model with user-defined indexes and map-reduce views.  It also implements a master / slave replication scheme for redundancy and horizontal read scaling.  Querying the graph is accomplished via a number of Lisp methods or via a Prolog-like query language.
 
-Documentation is forthcoming;  please stay tuned.
+It currently only works with SBCL versions >= 1.045, though it would not take much work to port it to other Common Lisp implementations.
 
-But to get you started, please see example.lisp.
+To get started, please see example.lisp.
