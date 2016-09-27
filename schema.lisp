@@ -161,174 +161,176 @@ replication for a quick schema compatibility check."
                             s1
                             (append s1 (list :initarg (intern (symbol-name (first s1)) :keyword))))))
                     slot-specs))
-      `(let* ((,meta
-               (make-node-type
-                :name ',name
-                :parent-type
-                ',(intern (symbol-name (last1 parent-types)) :keyword)
-                :graph-name ',graph-name
-                :slots ',slot-specs
-                :package (package-name *package*)
-                :constructor ',constructor)))
+      `(progn
          (defclass ,name (,@parent-types)
            (,@slot-specs)
            (:metaclass node-class))
-         ;; FIXME: why is this necessary when inheriting from another node subclass?
-         (unless (sb-mop:class-finalized-p (find-class ',name))
-           (sb-mop:finalize-inheritance (find-class ',name)))
-         (defun ,predicate (thing)
-           (typep thing ',name))
-         (defun ,lookup-fn (id &key include-deleted-p)
-           (let ((thing ,(if (eql (last1 parent-types) 'edge)
-                             `(lookup-edge id)
-                             `(lookup-vertex id))))
-             (when (and (typep thing ',name)
-                        (or include-deleted-p
-                            (not (deleted-p thing))))
-               thing)))
-         ,(let ((args (if (eql (last1 parent-types) 'edge)
-                          '(&rest make-args
-                            &key (graph *graph*) id deleted-p revision from to weight &allow-other-keys)
-                          '(&rest make-args
-                            &key (graph *graph*) id deleted-p revision &allow-other-keys))))
-               `(defun ,constructor ,args
-                  (let ((slots (remove-if
-                                'null
-                                (mapcar
-                                 (lambda (slot-name)
-                                   (let ((key (intern (symbol-name slot-name) :keyword)))
-                                     (let ((pos (position key make-args)))
-                                       (when pos
-                                         (cons key (nth (1+ pos) make-args))))))
-                                 (data-slots (find-class ',name))))))
-                    ,(if (eql (last1 parent-types) 'edge)
-                         `(make-edge (node-type-id
-                                      (lookup-node-type-by-name ',name :edge))
-                                     from to weight
-                                     slots ;(list ,@slots)
-                                     :id id :revision revision :deleted-p deleted-p
-                                     :graph graph)
-                         `(make-vertex (node-type-id
-                                        (lookup-node-type-by-name ',name :vertex))
+         (let* ((,meta
+                 (make-node-type
+                  :name ',name
+                  :parent-type
+                  ',(intern (symbol-name (last1 parent-types)) :keyword)
+                  :graph-name ',graph-name
+                  :slots ',slot-specs
+                  :package (package-name *package*)
+                  :constructor ',constructor)))
+           ;; FIXME: why is this necessary when inheriting from another node subclass?
+           (unless (sb-mop:class-finalized-p (find-class ',name))
+             (sb-mop:finalize-inheritance (find-class ',name)))
+           (defun ,predicate (thing)
+             (typep thing ',name))
+           (defun ,lookup-fn (id &key include-deleted-p)
+             (let ((thing ,(if (eql (last1 parent-types) 'edge)
+                               `(lookup-edge id)
+                               `(lookup-vertex id))))
+               (when (and (typep thing ',name)
+                          (or include-deleted-p
+                              (not (deleted-p thing))))
+                 thing)))
+           ,(let ((args (if (eql (last1 parent-types) 'edge)
+                            '(&rest make-args
+                              &key (graph *graph*) id deleted-p revision from to weight &allow-other-keys)
+                            '(&rest make-args
+                              &key (graph *graph*) id deleted-p revision &allow-other-keys))))
+                 `(defun ,constructor ,args
+                    (let ((slots (remove-if
+                                  'null
+                                  (mapcar
+                                   (lambda (slot-name)
+                                     (let ((key (intern (symbol-name slot-name) :keyword)))
+                                       (let ((pos (position key make-args)))
+                                         (when pos
+                                           (cons key (nth (1+ pos) make-args))))))
+                                   (data-slots (find-class ',name))))))
+                      ,(if (eql (last1 parent-types) 'edge)
+                           `(make-edge (node-type-id
+                                        (lookup-node-type-by-name ',name :edge))
+                                       from to weight
                                        slots ;(list ,@slots)
                                        :id id :revision revision :deleted-p deleted-p
-                                       :graph graph)))))
-         ,(when (eql (last1 parent-types) 'edge)
-                (let ((functor-name (intern (format nil "~A/2" name))))
-                  `(def-global-prolog-functor ,functor-name (from to cont)
-                     (setq from (var-deref from)
-                           to (var-deref to))
-                     (when *prolog-trace*
-                       (format t "TRACE: ~A(~S ~S)~%" ',functor-name from to))
-                     (cond ((and (not (graph-db::var-p from)) (not (graph-db::var-p to)))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v1 (lookup-vertex (from edge))))
-                                             (when (unify from v1)
-                                               (let ((v2 (lookup-vertex (to edge))))
-                                                 (when (unify to v2)
-                                                   (funcall cont)))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :from-vertex from
-                                       :to-vertex to
-                                       :edge-type ',name))
-                           ((not (graph-db::var-p from))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v2 (lookup-vertex (to edge))))
-                                             (when (unify to v2)
-                                               (funcall cont)))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :vertex from
-                                       :direction :out
-                                       :edge-type ',name))
-                           ((not (graph-db::var-p to))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v2 (lookup-vertex (from edge))))
-                                             (when (unify from v2)
-                                               (funcall cont)))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :vertex to
-                                       :direction :in
-                                       :edge-type ',name))
-                           (t
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v1 (lookup-vertex (from edge))))
-                                             (when (unify from v1)
-                                               (let ((v2 (lookup-vertex (to edge))))
-                                                 (when (unify to v2)
-                                                   (funcall cont)))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :edge-type ',name))))))
-         ,(when (eql (last1 parent-types) 'edge)
-                (let ((functor-name (intern (format nil "~A/3" name))))
-                  `(def-global-prolog-functor ,functor-name (from to weight cont)
-                     (setq from (var-deref from)
-                           to (var-deref to)
-                           weight (var-deref weight))
-                     (when *prolog-trace*
-                       (format t "TRACE: ~A(~S ~S ~S)~%" ',functor-name from to weight))
-                     (cond ((and (not (graph-db::var-p from)) (not (graph-db::var-p to)))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v1 (lookup-vertex (from edge))))
-                                             (when (unify from v1)
-                                               (let ((v2 (lookup-vertex (to edge))))
-                                                 (when (unify to v2)
-                                                   (when (unify weight (weight edge))
-                                                     (funcall cont))))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :from-vertex from
-                                       :to-vertex to
-                                       :edge-type ',name))
-                           ((not (graph-db::var-p from))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v2 (lookup-vertex (to edge))))
-                                             (when (unify to v2)
-                                               (when (unify weight (weight edge))
-                                                 (funcall cont))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :vertex from
-                                       :direction :out
-                                       :edge-type ',name))
-                           ((not (graph-db::var-p to))
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v2 (lookup-vertex (from edge))))
-                                             (when (unify from v2)
-                                               (when (unify weight (weight edge))
-                                                 (funcall cont))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :vertex to
-                                       :direction :in
-                                       :edge-type ',name))
-                           (t
-                            (map-edges (lambda (edge)
-                                         (let ((old-trail (fill-pointer *trail*)))
-                                           (let ((v1 (lookup-vertex (from edge))))
-                                             (when (unify from v1)
-                                               (let ((v2 (lookup-vertex (to edge))))
-                                                 (when (unify to v2)
-                                                   (when (unify weight (weight edge))
-                                                     (funcall cont))))))
-                                           (undo-bindings old-trail)))
-                                       *graph*
-                                       :edge-type ',name)))))
-                )
-         (push ,meta (gethash ',graph-name *schema-node-metadata*))
-         (let ((,graph (lookup-graph ',graph-name)))
-           (when ,graph
-             (instantiate-node-type ,meta ,graph)))))))
+                                       :graph graph)
+                           `(make-vertex (node-type-id
+                                          (lookup-node-type-by-name ',name :vertex))
+                                         slots ;(list ,@slots)
+                                         :id id :revision revision :deleted-p deleted-p
+                                         :graph graph)))))
+           ,(when (eql (last1 parent-types) 'edge)
+                  (let ((functor-name (intern (format nil "~A/2" name))))
+                    `(def-global-prolog-functor ,functor-name (from to cont)
+                       (setq from (var-deref from)
+                             to (var-deref to))
+                       (when *prolog-trace*
+                         (format t "TRACE: ~A(~S ~S)~%" ',functor-name from to))
+                       (cond ((and (not (graph-db::var-p from)) (not (graph-db::var-p to)))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v1 (lookup-vertex (from edge))))
+                                               (when (unify from v1)
+                                                 (let ((v2 (lookup-vertex (to edge))))
+                                                   (when (unify to v2)
+                                                     (funcall cont)))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :from-vertex from
+                                         :to-vertex to
+                                         :edge-type ',name))
+                             ((not (graph-db::var-p from))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v2 (lookup-vertex (to edge))))
+                                               (when (unify to v2)
+                                                 (funcall cont)))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :vertex from
+                                         :direction :out
+                                         :edge-type ',name))
+                             ((not (graph-db::var-p to))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v2 (lookup-vertex (from edge))))
+                                               (when (unify from v2)
+                                                 (funcall cont)))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :vertex to
+                                         :direction :in
+                                         :edge-type ',name))
+                             (t
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v1 (lookup-vertex (from edge))))
+                                               (when (unify from v1)
+                                                 (let ((v2 (lookup-vertex (to edge))))
+                                                   (when (unify to v2)
+                                                     (funcall cont)))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :edge-type ',name))))))
+           ,(when (eql (last1 parent-types) 'edge)
+                  (let ((functor-name (intern (format nil "~A/3" name))))
+                    `(def-global-prolog-functor ,functor-name (from to weight cont)
+                       (setq from (var-deref from)
+                             to (var-deref to)
+                             weight (var-deref weight))
+                       (when *prolog-trace*
+                         (format t "TRACE: ~A(~S ~S ~S)~%" ',functor-name from to weight))
+                       (cond ((and (not (graph-db::var-p from)) (not (graph-db::var-p to)))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v1 (lookup-vertex (from edge))))
+                                               (when (unify from v1)
+                                                 (let ((v2 (lookup-vertex (to edge))))
+                                                   (when (unify to v2)
+                                                     (when (unify weight (weight edge))
+                                                       (funcall cont))))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :from-vertex from
+                                         :to-vertex to
+                                         :edge-type ',name))
+                             ((not (graph-db::var-p from))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v2 (lookup-vertex (to edge))))
+                                               (when (unify to v2)
+                                                 (when (unify weight (weight edge))
+                                                   (funcall cont))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :vertex from
+                                         :direction :out
+                                         :edge-type ',name))
+                             ((not (graph-db::var-p to))
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v2 (lookup-vertex (from edge))))
+                                               (when (unify from v2)
+                                                 (when (unify weight (weight edge))
+                                                   (funcall cont))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :vertex to
+                                         :direction :in
+                                         :edge-type ',name))
+                             (t
+                              (map-edges (lambda (edge)
+                                           (let ((old-trail (fill-pointer *trail*)))
+                                             (let ((v1 (lookup-vertex (from edge))))
+                                               (when (unify from v1)
+                                                 (let ((v2 (lookup-vertex (to edge))))
+                                                   (when (unify to v2)
+                                                     (when (unify weight (weight edge))
+                                                       (funcall cont))))))
+                                             (undo-bindings old-trail)))
+                                         *graph*
+                                         :edge-type ',name)))))
+                  )
+           (push ,meta (gethash ',graph-name *schema-node-metadata*))
+           (let ((,graph (lookup-graph ',graph-name)))
+             (when ,graph
+               (instantiate-node-type ,meta ,graph)))
+           )))))
 
 (defmacro def-vertex (name parent-types slot-specs graph-name)
   `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name))

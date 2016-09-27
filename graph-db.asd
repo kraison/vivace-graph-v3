@@ -21,6 +21,9 @@
                :local-time
                :ieee-floats
                :cl-json
+               :hunchentoot
+               :ningle
+               :clack
                :log4cl
                :usocket
                :md5)
@@ -62,10 +65,10 @@
                (:file "transaction-streaming" :depends-on ("transaction-log-streaming"))
                (:file "backup" :depends-on ("edge"))
                (:file "replication" :depends-on ("backup"))
-               (:file "unsafe-methods" :depends-on ("backup"))
-               (:file "txn-log" :depends-on ("replication" "unsafe-methods"))
+               (:file "txn-log" :depends-on ("replication"))
                (:file "functor" :depends-on ("vertex" "edge" "views" "schema"))
                (:file "prologc" :depends-on ("functor"))
                (:file "prolog-functors" :depends-on ("prologc"))
                (:file "interface" :depends-on ("schema" "edge" "vertex" "views"))
-               (:file "traverse" :depends-on ("interface"))))
+               (:file "traverse" :depends-on ("interface"))
+               (:file "rest" :depends-on ("traverse"))))
