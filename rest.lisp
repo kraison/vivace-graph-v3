@@ -150,6 +150,35 @@
           (cons :error
                 (format nil "Unknown graph ~A" graph-name)))))))
 
+(defun rest-put-vertex (params)
+  (let* ((graph-name (get-param params :graph-name))
+         (node-id (get-param params :node-id))
+         (graph (lookup-graph
+                 (intern (json:camel-case-to-lisp graph-name) :keyword))))
+    (if (graph-p graph)
+        (let ((node (lookup-vertex node-id :graph graph)))
+          (if node
+              (with-transaction ()
+                (let ((slots (data-slots (class-of node)))
+                      (new-node (copy node)))
+                  (dolist (slot slots)
+                    (let ((kv (assoc (json:lisp-to-camel-case
+                                      (symbol-name slot))
+                                     params
+                                     :test 'string-equal)))
+                      (when kv
+                        (setf (slot-value new-node slot)
+                              (cdr kv)))))
+                  (json-encode (save new-node))))
+              (json:encode-json-to-string
+               (list
+                (cons :error
+                      (format nil "Unknown vertex ~A" node-id))))))
+        (json:encode-json-to-string
+         (list
+          (cons :error
+                (format nil "Unknown graph ~A" graph-name)))))))
+
 (defun rest-delete-vertex (params)
   (let* ((graph-name (get-param params :graph-name))
          (node-id (get-param params :node-id))
@@ -232,6 +261,35 @@
           (cons :error
                 (format nil "Unknown graph ~A" graph-name)))))))
 
+(defun rest-put-edge (params)
+  (let* ((graph-name (get-param params :graph-name))
+         (node-id (get-param params :node-id))
+         (graph (lookup-graph
+                 (intern (json:camel-case-to-lisp graph-name) :keyword))))
+    (if (graph-p graph)
+        (let ((node (lookup-edge node-id :graph graph)))
+          (if node
+              (with-transaction ()
+                (let ((slots (data-slots (class-of node)))
+                      (new-node (copy node)))
+                  (dolist (slot slots)
+                    (let ((kv (assoc (json:lisp-to-camel-case
+                                      (symbol-name slot))
+                                     params
+                                     :test 'string-equal)))
+                      (when kv
+                        (setf (slot-value new-node slot)
+                              (cdr kv)))))
+                  (json-encode (save new-node))))
+              (json:encode-json-to-string
+               (list
+                (cons :error
+                      (format nil "Unknown edge ~A" node-id))))))
+        (json:encode-json-to-string
+         (list
+          (cons :error
+                (format nil "Unknown graph ~A" graph-name)))))))
+
 (defun rest-delete-edge (params)
   (let* ((graph-name (get-param params :graph-name))
          (node-id (get-param params :node-id))
@@ -275,6 +333,9 @@
           (ningle:route *rest-app* "/graph/:graph-name/vertex/:type" :method :post)
           'rest-post-vertex
 
+          (ningle:route *rest-app* "/graph/:graph-name/vertex/:node-id" :method :put)
+          'rest-put-vertex
+
           (ningle:route *rest-app* "/graph/:graph-name/edge/:node-id" :method :get)
           'rest-get-edge
 
@@ -282,7 +343,10 @@
           'rest-delete-edge
 
           (ningle:route *rest-app* "/graph/:graph-name/edge/:type" :method :post)
-          'rest-post-edge)
+          'rest-post-edge
+
+          (ningle:route *rest-app* "/graph/:graph-name/edge/:type" :method :put)
+          'rest-put-edge)
 
     (setq *clack-app* (clack:clackup *rest-app* :port port))))
 

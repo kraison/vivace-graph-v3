@@ -4,7 +4,7 @@
 (in-package :graph-db-system)
 
 (defsystem graph-db
-  :name "GraphDB"
+  :name "VivaceGraph"
   :maintainer "Kevin Raison"
   :author "Kevin Raison <last name @ chatsubo dot net>"
   :version "1.0"
