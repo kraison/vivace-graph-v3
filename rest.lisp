@@ -272,7 +272,7 @@
           (ningle:route *rest-app* "/graph/:graph-name/edge/:type" :method :post)
           'rest-post-edge
 
-          (ningle:route *rest-app* "/graph/:graph-name/edge/:type" :method :put)
+          (ningle:route *rest-app* "/graph/:graph-name/edge/:node-id" :method :put)
           'rest-put-edge)
 
     (setq *clack-app* (clack:clackup *rest-app* :port port))))
