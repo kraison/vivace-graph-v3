@@ -4,6 +4,45 @@
 (defvar *rest-app* nil)
 (defvar *clack-app* nil)
 (defvar *rest-procedures* (make-hash-table :synchronized t :test 'equalp))
+(defvar *rest-passwd-file* "rpasswd")
+(defvar *htpasswd-bin* "/usr/bin/htpasswd")
+
+(defun add-rest-user (username password)
+  (trivial-shell:shell-command
+   (format nil "~A -b ~A ~A ~A ~A"
+           *htpasswd-bin*
+           (if (probe-file *rest-passwd-file*) "" "-c")
+           *rest-passwd-file*
+           username
+           password)))
+
+(defun delete-rest-user (username)
+  (trivial-shell:shell-command
+   (format nil "~A -D ~A ~A"
+           *htpasswd-bin*
+           *rest-passwd-file*
+           username)))
+
+(defun auth-rest-user (username password)
+  (multiple-value-bind (out err exit-code)
+      (trivial-shell:shell-command
+       (format nil "~A -vb ~A ~A ~A"
+               *htpasswd-bin*
+               *rest-passwd-file*
+               username
+               password))
+    (declare (ignore out err))
+    (eq 0 exit-code)))
+
+(defmacro with-rest-auth ((username password) &body body)
+  `(if (auth-rest-user ,username ,password)
+       (progn
+         ,@body)
+       (progn
+         (setf (lack.response:response-status ningle:*response*) 401)
+         (json:encode-json-to-string
+          (list
+           (cons :error "Invalid credentials"))))))
 
 (defmacro with-rest-graph ((graph-name) &body body)
   `(let ((*graph* (lookup-graph (intern (json:camel-case-to-lisp ,graph-name) :keyword))))
@@ -130,151 +169,150 @@
      (setf (gethash ,(json:lisp-to-camel-case (symbol-name name)) *rest-procedures*) fn))))
 
 (defun call-rest-procedure (name params)
-  (let ((fn (gethash name *rest-procedures*)))
-    (if (functionp fn)
-        (funcall fn params)
-        (progn
-          (setf (lack.response:response-status ningle:*response*) 404)
-          (json:encode-json-to-string
-           (list
-            (cons :error
-                  (format nil "Unknown procedure '~A'" name))))))))
-
-(defun rest-login (params)
-  )
-
-(defun rest-logout (params)
-  )
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (let ((fn (gethash name *rest-procedures*)))
+      (if (functionp fn)
+          (with-rest-graph ((get-param params :graph-name))
+            (funcall fn params))
+          (progn
+            (setf (lack.response:response-status ningle:*response*) 404)
+            (json:encode-json-to-string
+             (list
+              (cons :error
+                    (format nil "Unknown procedure '~A'" name)))))))))
 
 (defun rest-get-graph (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (json-encode *graph*)))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (json-encode *graph*))))
 
 (defun rest-get-vertex (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-vertex ((get-param params :node-id))
-      (json-encode vertex))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-vertex ((get-param params :node-id))
+        (json-encode vertex)))))
 
 (defun rest-post-vertex (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (let* ((type-name (get-param params :type))
-           (type (lookup-node-type-by-name
-                  (intern (json:camel-case-to-lisp type-name) :keyword)
-                  :vertex
-                  :graph *graph*)))
-      (if type
-          (let* ((class (find-class (node-type-name type)))
-                 (slots (mapcar (lambda (slot)
-                                  (intern (symbol-name slot) :keyword))
-                                (data-slots class)))
-                 (constructor (node-type-constructor type))
-                 (slot-args (flatten
-                             (mapcar (lambda (slot)
-                                       (list slot
-                                             (cdr (assoc (json:lisp-to-camel-case
-                                                          (symbol-name slot))
-                                                         params
-                                                         :test 'string-equal))))
-                                     slots)))
-                 (node (apply constructor slot-args)))
-            (json-encode node))
-          (json:encode-json-to-string
-           (list
-            (cons :error
-                  (format nil "Unknown vertex type ~A" type-name))))))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (let* ((type-name (get-param params :type))
+             (type (lookup-node-type-by-name
+                    (intern (json:camel-case-to-lisp type-name) :keyword)
+                    :vertex
+                    :graph *graph*)))
+        (if type
+            (let* ((class (find-class (node-type-name type)))
+                   (slots (mapcar (lambda (slot)
+                                    (intern (symbol-name slot) :keyword))
+                                  (data-slots class)))
+                   (constructor (node-type-constructor type))
+                   (slot-args (flatten
+                               (mapcar (lambda (slot)
+                                         (list slot
+                                               (cdr (assoc (json:lisp-to-camel-case
+                                                            (symbol-name slot))
+                                                           params
+                                                           :test 'string-equal))))
+                                       slots)))
+                   (node (apply constructor slot-args)))
+              (json-encode node))
+            (json:encode-json-to-string
+             (list
+              (cons :error
+                    (format nil "Unknown vertex type ~A" type-name)))))))))
 
 (defun rest-put-vertex (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-vertex ((get-param params :node-id))
-      (with-transaction ()
-        (let ((slots (data-slots (class-of vertex)))
-              (new-vertex (copy vertex)))
-          (dolist (slot slots)
-            (let ((kv (assoc (json:lisp-to-camel-case
-                              (symbol-name slot))
-                             params
-                             :test 'string-equal)))
-              (when kv
-                (setf (slot-value new-vertex slot)
-                      (cdr kv)))))
-          (json-encode (save new-vertex)))))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-vertex ((get-param params :node-id))
+        (with-transaction ()
+          (let ((slots (data-slots (class-of vertex)))
+                (new-vertex (copy vertex)))
+            (dolist (slot slots)
+              (let ((kv (assoc (json:lisp-to-camel-case
+                                (symbol-name slot))
+                               params
+                               :test 'string-equal)))
+                (when kv
+                  (setf (slot-value new-vertex slot)
+                        (cdr kv)))))
+            (json-encode (save new-vertex))))))))
 
 (defun rest-delete-vertex (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-vertex ((get-param params :node-id))
-      (mark-deleted vertex))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-vertex ((get-param params :node-id))
+        (mark-deleted vertex)))))
 
 (defun rest-get-edge (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-edge ((get-param params :node-id))
-      (json-encode edge))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-edge ((get-param params :node-id))
+        (json-encode edge)))))
 
 (defun rest-post-edge (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (let* ((type-name (get-param params :type))
-           (type (lookup-node-type-by-name
-                  (intern (json:camel-case-to-lisp type-name) :keyword)
-                  :edge
-                  :graph *graph*)))
-      (if type
-          (let* ((class (find-class (node-type-name type)))
-                 (slots (mapcar (lambda (slot)
-                                  (intern (symbol-name slot) :keyword))
-                                (data-slots class)))
-                 (constructor (node-type-constructor type))
-                 (from (lookup-vertex (cdr (assoc "from" params :test 'string-equal))))
-                 (to (lookup-vertex (cdr (assoc "to" params :test 'string-equal))))
-                 (slot-args (flatten
-                             (mapcar (lambda (slot)
-                                       (list slot
-                                             (cdr (assoc (json:lisp-to-camel-case
-                                                          (symbol-name slot))
-                                                         params
-                                                         :test 'string-equal))))
-                                     slots))))
-            (if (and from to)
-                (let ((node (apply constructor :from from :to to slot-args)))
-                  (json-encode node))
-                (json:encode-json-to-string
-                 (list
-                  (cons :error
-                        "You must provide both FROM and TO vertices")))))
-          (json:encode-json-to-string
-           (list
-            (cons :error
-                  (format nil "Unknown edge type ~A" type-name))))))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (let* ((type-name (get-param params :type))
+             (type (lookup-node-type-by-name
+                    (intern (json:camel-case-to-lisp type-name) :keyword)
+                    :edge
+                    :graph *graph*)))
+        (if type
+            (let* ((class (find-class (node-type-name type)))
+                   (slots (mapcar (lambda (slot)
+                                    (intern (symbol-name slot) :keyword))
+                                  (data-slots class)))
+                   (constructor (node-type-constructor type))
+                   (from (lookup-vertex (cdr (assoc "from" params :test 'string-equal))))
+                   (to (lookup-vertex (cdr (assoc "to" params :test 'string-equal))))
+                   (slot-args (flatten
+                               (mapcar (lambda (slot)
+                                         (list slot
+                                               (cdr (assoc (json:lisp-to-camel-case
+                                                            (symbol-name slot))
+                                                           params
+                                                           :test 'string-equal))))
+                                       slots))))
+              (if (and from to)
+                  (let ((node (apply constructor :from from :to to slot-args)))
+                    (json-encode node))
+                  (json:encode-json-to-string
+                   (list
+                    (cons :error
+                          "You must provide both FROM and TO vertices")))))
+            (json:encode-json-to-string
+             (list
+              (cons :error
+                    (format nil "Unknown edge type ~A" type-name)))))))))
 
 (defun rest-put-edge (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-edge ((get-param params :node-id))
-      (with-transaction ()
-        (let ((slots (data-slots (class-of edge)))
-              (new-edge (copy edge)))
-          (dolist (slot slots)
-            (let ((kv (assoc (json:lisp-to-camel-case
-                              (symbol-name slot))
-                             params
-                             :test 'string-equal)))
-              (when kv
-                (setf (slot-value new-edge slot)
-                      (cdr kv)))))
-          (json-encode (save new-edge)))))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-edge ((get-param params :node-id))
+        (with-transaction ()
+          (let ((slots (data-slots (class-of edge)))
+                (new-edge (copy edge)))
+            (dolist (slot slots)
+              (let ((kv (assoc (json:lisp-to-camel-case
+                                (symbol-name slot))
+                               params
+                               :test 'string-equal)))
+                (when kv
+                  (setf (slot-value new-edge slot)
+                        (cdr kv)))))
+            (json-encode (save new-edge))))))))
 
 (defun rest-delete-edge (params)
-  (with-rest-graph ((get-param params :graph-name))
-    (with-rest-edge ((get-param params :node-id))
-      (mark-deleted edge))))
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-edge ((get-param params :node-id))
+        (mark-deleted edge)))))
 
 (defun start-rest (&optional (port *rest-port*))
   (prog1
       (setq *rest-app* (make-instance 'ningle:<app>))
-    (setf (ningle:route *rest-app* "/login" :method :post)
-          'rest-login
-
-          (ningle:route *rest-app* "/logout" :method :post)
-          'rest-logout
-
-          (ningle:route *rest-app* "/graph/:graph-name" :method :get)
+    (setf (ningle:route *rest-app* "/graph/:graph-name" :method :get)
           'rest-get-graph
 
           (ningle:route *rest-app* "/graph/:graph-name/vertex/:node-id" :method :get)
