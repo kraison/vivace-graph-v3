@@ -32,8 +32,11 @@
            #:start-replication
            #:stop-replication
            #:stop-buffer-pool
+
            #:start-rest
            #:stop-rest
+           #:def-rest-procedure
+           #:*rest-procedures*
 
            #:with-transaction
            #:lookup-object

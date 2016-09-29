@@ -3,6 +3,7 @@
 (defvar *rest-port* 8080)
 (defvar *rest-app* nil)
 (defvar *clack-app* nil)
+(defvar *rest-procedures* (make-hash-table :synchronized t :test 'equalp))
 
 (defmacro with-rest-graph ((graph-name) &body body)
   `(let ((*graph* (lookup-graph (intern (json:camel-case-to-lisp ,graph-name) :keyword))))
@@ -112,7 +113,32 @@
                             (node-type-slots type-definition)))))))))
 
 (defun get-param (params name)
-  (cdr (assoc name params)))
+  (cdr (assoc name params :test 'equalp)))
+
+(defmacro def-rest-procedure (name lambda-list &body body)
+  (with-gensyms (params)
+  `(let ((fn (lambda (,params)
+               (let (,@(mapcar (lambda (var)
+                                 (list var
+                                       `(get-param ,params
+                                                   ,(json:lisp-to-camel-case
+                                                     (symbol-name var)))))
+                               lambda-list))
+                 (progn
+                   ,@body)))))
+     (setf (gethash ,name *rest-procedures*) fn)
+     (setf (gethash ,(json:lisp-to-camel-case (symbol-name name)) *rest-procedures*) fn))))
+
+(defun call-rest-procedure (name params)
+  (let ((fn (gethash name *rest-procedures*)))
+    (if (functionp fn)
+        (funcall fn params)
+        (progn
+          (setf (lack.response:response-status ningle:*response*) 404)
+          (json:encode-json-to-string
+           (list
+            (cons :error
+                  (format nil "Unknown procedure '~A'" name))))))))
 
 (defun rest-login (params)
   )
@@ -273,9 +299,14 @@
           'rest-post-edge
 
           (ningle:route *rest-app* "/graph/:graph-name/edge/:node-id" :method :put)
-          'rest-put-edge)
+          'rest-put-edge
+
+          (ningle:route *rest-app* "/graph/:graph-name/procedure/:procedure-name" :method :post)
+          '(lambda (params)
+            (call-rest-procedure procedure-name params)))
 
     (setq *clack-app* (clack:clackup *rest-app* :port port))))
 
 (defun stop-rest (&optional (app *clack-app*))
-  (clack:stop app))
+  (clack:stop app)
+  (setq *rest-app* nil))
