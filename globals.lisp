@@ -91,6 +91,7 @@
 (alexandria:define-constant +pcell+ 26)
 (alexandria:define-constant +index-list+ 27)
 (alexandria:define-constant +vev-index+ 28)
+(alexandria:define-constant +bit-vector+ 29)
 ;; User-defined type identifiers for serializing. Start at 100
 (alexandria:define-constant +uuid+ 100)
 (alexandria:define-constant +timestamp+ 101)

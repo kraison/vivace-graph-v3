@@ -32,6 +32,7 @@
   (declare (type (array (unsigned-byte 8)) a))
   (let ((id-byte (aref a 0)))
     (cond ((or (= id-byte +uuid+) ;; These are all fixed length
+               (= id-byte +bit-vector+)
 	       (= id-byte +positive-integer+)
 	       (= id-byte +negative-integer+)
 	       (= id-byte +character+)
@@ -232,6 +233,30 @@
 	  (dotimes (i (length item))
 	    (vector-push-extend (aref item i) vec)))
 	vec)))
+
+(defun bit-vector->integer (bit-vector)
+  "Create a positive integer from a bit-vector."
+  (reduce #'(lambda (first-bit second-bit)
+              (+ (* first-bit 2) second-bit))
+          bit-vector))
+
+(defun integer->bit-vector (integer)
+  "Create a bit-vector from a positive integer."
+  (labels ((integer->bit-list (int &optional accum)
+             (cond ((> int 0)
+                    (multiple-value-bind (i r) (truncate int 2)
+                      (integer->bit-list i (push r accum))))
+                   ((null accum) (push 0 accum))
+                   (t accum))))
+    (coerce (integer->bit-list integer) 'bit-vector)))
+
+(defmethod serialize ((v bit-vector))
+  (let ((vec (serialize (bit-vector->integer v))))
+    (setf (aref vec 0) +bit-vector+)
+    vec))
+
+(defmethod deserialize-help ((become (eql +bit-vector+)) (bytes array))
+  (integer->bit-vector (deserialize-help +positive-integer+ bytes)))
 
 (defmethod deserialize-help ((become (eql +uuid+)) (bytes array))
   "Decode a UUID."
