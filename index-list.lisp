@@ -21,11 +21,11 @@
       (setq flags (dpb 1 (byte 1 0) flags)))
     flags))
 
-(defmethod deserialize-pcons ((il index-list) (address integer))
-  ;; FIXME: using the cache causes the systenm to hang; not sure why yet
+(defmethod deserialize-pcons ((il index-list) (address integer) &optional pcons-buffer)
+  ;; FIXME: using the cache causes the system to hang; not sure why yet
   ;;(or (and *cache-enabled* (gethash address (index-list-cache il)))
   ;;(setf (gethash address (index-list-cache il))
-  (let ((pcons (get-pcons-buffer)))
+  (let ((pcons (or pcons-buffer (get-pcons-buffer))))
     (setf (%pcons-car pcons) (get-bytes (index-list-heap il) address 16)
           (%pcons-cdr pcons) (deserialize-uint64
                               (index-list-heap il) (+ 16 address))
@@ -56,10 +56,12 @@
     il))
 
 (defmethod %map-index-list (fn (il index-list) &key collect-p include-deleted-p)
-  (let ((address (index-list-head il)) (result nil))
+  (let ((address (index-list-head il))
+        (result nil)
+        (pcons-buffer (get-pcons-buffer)))
     (loop
        until (eq address 0) do
-         (let ((pcons (deserialize-pcons il address)))
+         (let ((pcons (deserialize-pcons il address pcons-buffer)))
            (when (or include-deleted-p
                      (not (%pcons-deleted-p pcons)))
              (if collect-p
@@ -157,9 +159,10 @@
   nil)
 
 (defmethod remove-from-index-list ((uuid array) (il index-list) &key remove-all-p)
-  (let ((address (index-list-head il)) (prev nil))
+  (let ((address (index-list-head il)) (prev nil)
+        (pcons-buffer (get-pcons-buffer)))
     (loop until (eq address 0) do
-         (let ((pcons (deserialize-pcons il address)))
+         (let ((pcons (deserialize-pcons il address pcons-buffer)))
            (unless (%pcons-deleted-p pcons)
              (let ((id (%pcons-car pcons))
                    (next (%pcons-cdr pcons)))

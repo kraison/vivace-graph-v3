@@ -270,13 +270,24 @@
              (not (deleted-p to))
              nil))))
 
-(defmethod edge-exists-p (edge-type (vertex1 vertex) (vertex2 vertex) &key (graph *graph*))
-  (map-edges 'identity
-             graph
-             :edge-type edge-type
-             :from-vertex vertex1
-             :to-vertex vertex2
-             :collect-p t))
+(defmethod edge-exists-p (edge-type (vertex1 vertex) (vertex2 vertex)
+                          &key (graph *graph*))
+  (let ((type-meta (or (and (integerp edge-type)
+                            (lookup-node-type-by-id edge-type :edge))
+                       (lookup-node-type-by-name edge-type :edge))))
+    (when type-meta
+      (let* ((vev-key (make-vev-key :in-id (id vertex2)
+                                    :out-id (id vertex1)
+                                    :type-id (node-type-id type-meta)))
+             (index-list (lookup-vev-index-list vev-key graph)))
+        (when index-list
+          (map-index-list
+           (lambda (edge-id)
+             (let ((edge (lookup-edge edge-id :graph graph)))
+               (when (and (written-p edge)
+                          (active-edge-p edge))
+                 (return-from edge-exists-p edge))))
+           index-list))))))
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex)

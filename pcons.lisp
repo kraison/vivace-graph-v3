@@ -28,11 +28,10 @@
       (set-byte heap (+ 24 address) flags))
     address))
 
-(defgeneric deserialize-pcons (index-list address))
+(defgeneric deserialize-pcons (index-list address &optional buffer))
 
 (defmethod mark-pcons-deleted ((pcons pcons) heap address)
   (setf (%pcons-deleted-p pcons) t)
   (let ((flags 0))
     (setq flags (dpb 1 (byte 1 0) flags))
     (set-byte heap (+ 24 address) flags)))
-

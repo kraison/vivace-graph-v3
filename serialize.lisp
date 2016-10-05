@@ -250,6 +250,8 @@
                    (t accum))))
     (coerce (integer->bit-list integer) 'bit-vector)))
 
+;; FIXME: write methods for bignum serialization, and use them here for larger
+;; bit vectors
 (defmethod serialize ((v bit-vector))
   (let ((vec (serialize (bit-vector->integer v))))
     (setf (aref vec 0) +bit-vector+)
