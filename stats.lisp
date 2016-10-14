@@ -56,7 +56,9 @@
            (:cache-size . ,(hash-table-count (cache graph)))
            (:vertex-count . ,(read-lhash-count (vertex-table graph)))
            (:edge-count . ,(read-lhash-count (edge-table graph)))
-           (:buffer-pool . ,(dump-buffer-pool-stats)))))
+           (:buffer-pool . ,(if (buffer-pool-running-p)
+                                (dump-buffer-pool-stats)
+                                "DISABLED")))))
     (when detail-p
       (setq report
             (let ((writes-report (graph-writes-report graph))
@@ -73,4 +75,3 @@
 (defun record-graph-read ()
   (incf (gethash (get-universal-time) (read-stats *graph*) 0))
   )
-

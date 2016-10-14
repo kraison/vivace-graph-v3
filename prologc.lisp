@@ -5,13 +5,18 @@
 
 (defstruct (prolog-gensym
              (:conc-name pg-))
-  (counter 0 :type (unsigned-byte 64)))
+  (counter 0 :type (unsigned-byte 64))
+  (symbols nil :type list))
 
-(defvar *prolog-gensym-counter* (make-prolog-gensym))
+(defvar *prolog-gensym* (make-prolog-gensym))
 
 (defun prolog-gensym (&optional (thing "PROVE"))
-  (let ((num (sb-ext:atomic-incf (pg-counter *prolog-gensym-counter*))))
-    (make-symbol (format nil "~A~D" thing num))))
+  (or (sb-ext:atomic-pop (pg-symbols *prolog-gensym*))
+      (let ((num (sb-ext:atomic-incf (pg-counter *prolog-gensym*))))
+        (make-symbol (format nil "~A~D" thing num)))))
+
+(defun release-prolog-symbol (symbol)
+  (sb-ext:atomic-push symbol (pg-symbols *prolog-gensym*)))
 
 (defun trace-prolog () (setq *prolog-trace* t))
 (defun untrace-prolog () (setq *prolog-trace* nil))
@@ -439,7 +444,7 @@
                            clauses))))))
       (when *prolog-trace*
         (format t "TRACE: Adding ~A to ~A~%" func *functor*))
-      (set-functor-fn *functor* (eval func)))))
+      (set-functor-fn *functor* ( func)))))
 
 (defun compile-body (body cont bindings)
   "Compile the body of a clause."
@@ -520,7 +525,9 @@
 		(set-functor-fn *functor* func)
 		(funcall func #'prolog-ignore)
 		(format t "~&No.~%")))
-	 (delete-functor functor))
+         (progn
+           (delete-functor functor)
+           (release-prolog-symbol ,top-level-query)))
        (values))))
 
 #|
@@ -613,7 +620,9 @@
                          (error 'prolog-error :reason condition))))))
 	      (set-functor-fn *functor* func)
 	      (funcall func #'prolog-ignore))
-	 (delete-functor functor))
+         (progn
+           (delete-functor functor)
+           (release-prolog-symbol top-level-query)))
        (nreverse *select-list*))))
 
 (defmacro select-flat (vars &rest goals)

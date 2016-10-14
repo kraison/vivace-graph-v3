@@ -5,6 +5,8 @@
 (defvar *buffer-pool-thread* nil)
 (defvar *stop-buffer-pool* nil)
 (defvar *buffer-pool-low-water-mark* 1000)
+(defvar *free-memory-low-water-mark* 10485760)
+(defparameter *allow-force-gc-p* nil)
 
 (defstruct (buffer-pool-stats
              (:conc-name bps-))
@@ -38,43 +40,55 @@
     (append stats (list (cons :available-buffers buffers)))))
 
 (defun monitor-buffer-pool ()
-  (loop until *stop-buffer-pool* do
-       (let ((stats (dump-buffer-pool-stats)))
-         (dolist (stat (cdr (assoc :available-buffers stats)))
-           (when (< (cdr stat) *buffer-pool-low-water-mark*)
-             (case (car stat)
-               (16
-                (log:info "BUFFER-POOL: Refreshing byte-vector-16 buffers (~D)"
-                          (- 1000000 (cdr stat)))
-                (dotimes (i (- 1000000 (cdr stat)))
-                  (let ((b (make-byte-vector 16)))
-                    (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*))))))
-               ((8 18 24 34)
-                (log:info "BUFFER-POOL: Refreshing byte-vector-~D buffers (~D)"
-                          (car stat) (- 100000 (cdr stat)))
-                (dotimes (i (- 100000 (cdr stat)))
-                  (let ((b (make-byte-vector (car stat))))
-                    (sb-ext:atomic-push b (first (gethash (car stat) *buffer-pool*))))))
-               (:skip-node
-                (log:info "BUFFER-POOL: Refreshing skip-node buffers (~D)"
-                          (- 1000000 (cdr stat)))
-                (dotimes (i (- 1000000 (cdr stat)))
-                  (make-skip-node-buffer)))
-               (:pcons
-                (log:info "BUFFER-POOL: Refreshing pcons buffers (~D)"
-                          (- 1000000 (cdr stat)))
-                (dotimes (i (- 1000000 (cdr stat)))
-                  (make-pcons-buffer)))
-               (:edge
-                (log:info "BUFFER-POOL: Refreshing edge buffers (~D)"
-                          (- 100000 (cdr stat)))
-                (dotimes (i (- 100000 (cdr stat)))
-                  (make-edge-buffer)))
-               (:vertex
-                (log:info "BUFFER-POOL: Refreshing vertex buffers (~D)"
-                          (- 100000 (cdr stat)))
-                (dotimes (i (- 100000 (cdr stat)))
-                  (make-vertex-buffer)))))))
+  (let ((free-memory (free-memory)))
+    (if (and *allow-force-gc-p*
+             (<= free-memory *free-memory-low-water-mark*))
+        (progn
+          (log:warn "VG forcing a full GC, ~A bytes dynamic space available"
+                    free-memory)
+          (sb-ext:gc :full t))
+        (let ((stats (dump-buffer-pool-stats)))
+          (dolist (stat (cdr (assoc :available-buffers stats)))
+            (when (< (cdr stat) *buffer-pool-low-water-mark*)
+              (case (car stat)
+                (16
+                 (log:info "BUFFER-POOL: Refreshing byte-vector-16 buffers (~D)"
+                           (- 1000000 (cdr stat)))
+                 (dotimes (i (- 1000000 (cdr stat)))
+                   (let ((b (make-byte-vector 16)))
+                     (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*))))))
+                ((8 18 24 34)
+                 (log:info "BUFFER-POOL: Refreshing byte-vector-~D buffers (~D)"
+                           (car stat) (- 100000 (cdr stat)))
+                 (dotimes (i (- 100000 (cdr stat)))
+                   (let ((b (make-byte-vector (car stat))))
+                     (sb-ext:atomic-push b (first (gethash (car stat) *buffer-pool*))))))
+                (:skip-node
+                 (log:info "BUFFER-POOL: Refreshing skip-node buffers (~D)"
+                           (- 1000000 (cdr stat)))
+                 (dotimes (i (- 1000000 (cdr stat)))
+                   (make-skip-node-buffer)))
+                (:pcons
+                 (log:info "BUFFER-POOL: Refreshing pcons buffers (~D)"
+                           (- 1000000 (cdr stat)))
+                 (dotimes (i (- 1000000 (cdr stat)))
+                   (make-pcons-buffer)))
+                (:edge
+                 (log:info "BUFFER-POOL: Refreshing edge buffers (~D)"
+                           (- 100000 (cdr stat)))
+                 (dotimes (i (- 100000 (cdr stat)))
+                   (make-edge-buffer)))
+                (:vertex
+                 (log:info "BUFFER-POOL: Refreshing vertex buffers (~D)"
+                           (- 100000 (cdr stat)))
+                 (dotimes (i (- 100000 (cdr stat)))
+                   (make-vertex-buffer))))))))))
+
+(defun monitor-buffer-pool-loop ()
+  (loop
+     until *stop-buffer-pool*
+     do
+       (monitor-buffer-pool)
        (sleep 1)))
 
 (defun reset-buffer-pool-stats ()
@@ -136,12 +150,12 @@
 
 (defun buffer-pool-running-p ()
   (and (threadp *buffer-pool-thread*)
-             (thread-alive-p *buffer-pool-thread*)))
+       (thread-alive-p *buffer-pool-thread*)))
 
 (defun init-buffer-pool ()
   (when (buffer-pool-running-p)
     (error "~A is already running. Cannot init-buffer-pool"
-           *buffer-pool-thread*))  
+           *buffer-pool-thread*))
   (setq *stop-buffer-pool* nil)
   (reset-buffer-pool-stats)
   (setq *buffer-pool* (make-hash-table :test 'eq :synchronized t))
@@ -168,7 +182,7 @@
     (make-skip-node-buffer)
     (make-byte-vector-16-buffer))
   (setq *buffer-pool-thread*
-        (make-thread 'monitor-buffer-pool :name "buffer-pool-thread"))
+        (make-thread 'monitor-buffer-pool-loop :name "buffer-pool-thread"))
   *buffer-pool*)
 
 (defun ensure-buffer-pool ()
@@ -182,44 +196,54 @@
     (join-thread *buffer-pool-thread*)))
 
 (defun get-buffer (size)
-  (or (sb-ext:atomic-pop (first (gethash size *buffer-pool*)))
+  (or (and (buffer-pool-running-p)
+           (sb-ext:atomic-pop (first (gethash size *buffer-pool*))))
       (progn
-        (case size
-          (8  (sb-ext:atomic-incf (bps-buffer-8 *buffer-pool-stats*)))
-          (16 (sb-ext:atomic-incf (bps-buffer-16 *buffer-pool-stats*)))
-          (18 (sb-ext:atomic-incf (bps-buffer-18 *buffer-pool-stats*)))
-          (24 (sb-ext:atomic-incf (bps-buffer-24 *buffer-pool-stats*)))
-          (34 (sb-ext:atomic-incf (bps-buffer-34 *buffer-pool-stats*))))
+        (when (buffer-pool-running-p)
+          (case size
+            (8  (sb-ext:atomic-incf (bps-buffer-8 *buffer-pool-stats*)))
+            (16 (sb-ext:atomic-incf (bps-buffer-16 *buffer-pool-stats*)))
+            (18 (sb-ext:atomic-incf (bps-buffer-18 *buffer-pool-stats*)))
+            (24 (sb-ext:atomic-incf (bps-buffer-24 *buffer-pool-stats*)))
+            (34 (sb-ext:atomic-incf (bps-buffer-34 *buffer-pool-stats*)))))
         (make-byte-vector size))))
 
 (defun release-buffer (buffer)
-  (let ((size (length buffer)))
-    (dotimes (i size)
-      (setf (aref buffer i) 0))
-    (sb-ext:atomic-push buffer (first (gethash size *buffer-pool*)))
-    nil))
+  (when (buffer-pool-running-p)
+    (let ((size (length buffer)))
+      (dotimes (i size)
+        (setf (aref buffer i) 0))
+      (sb-ext:atomic-push buffer (first (gethash size *buffer-pool*)))
+      nil)))
 
 (defun get-vertex-buffer ()
-  (or (sb-ext:atomic-pop (first (gethash :vertex *buffer-pool*)))
+  (or (and (buffer-pool-running-p)
+           (sb-ext:atomic-pop (first (gethash :vertex *buffer-pool*))))
       (progn
-        (sb-ext:atomic-incf (bps-vertex *buffer-pool-stats*))
+        (when (buffer-pool-running-p)
+          (sb-ext:atomic-incf (bps-vertex *buffer-pool-stats*)))
         (make-instance 'vertex))))
 
 (defun get-edge-buffer ()
-  (or (sb-ext:atomic-pop (first (gethash :edge *buffer-pool*)))
+  (or (and (buffer-pool-running-p)
+           (sb-ext:atomic-pop (first (gethash :edge *buffer-pool*))))
       (progn
-        (sb-ext:atomic-incf (bps-edge *buffer-pool-stats*))
+        (when (buffer-pool-running-p)
+          (sb-ext:atomic-incf (bps-edge *buffer-pool-stats*)))
         (make-instance 'edge))))
 
 (defun get-skip-node-buffer ()
-  (or (sb-ext:atomic-pop (first (gethash :skip-node *buffer-pool*)))
+  (or (and (buffer-pool-running-p)
+           (sb-ext:atomic-pop (first (gethash :skip-node *buffer-pool*))))
       (progn
-        (sb-ext:atomic-incf (bps-skip-node *buffer-pool-stats*))
+        (when (buffer-pool-running-p)
+          (sb-ext:atomic-incf (bps-skip-node *buffer-pool-stats*)))
         (%make-skip-node))))
 
 (defun get-pcons-buffer ()
-  (or (sb-ext:atomic-pop (first (gethash :pcons *buffer-pool*)))
+  (or (and (buffer-pool-running-p)
+           (sb-ext:atomic-pop (first (gethash :pcons *buffer-pool*))))
       (progn
-        (sb-ext:atomic-incf (bps-pcons *buffer-pool-stats*))
+        (when (buffer-pool-running-p)
+          (sb-ext:atomic-incf (bps-pcons *buffer-pool-stats*)))
         (%make-pcons))))
-

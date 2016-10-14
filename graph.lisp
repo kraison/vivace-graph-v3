@@ -1,7 +1,7 @@
 (in-package :graph-db)
 
 (defun make-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package replay-txn-dir)
+                   replication-key package replay-txn-dir (buffer-pool-p t))
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))
@@ -12,7 +12,8 @@
          (dirty-file (format nil "~A/.dirty" location)))
     (unless (probe-file path)
       (error "Unable to open graph location ~A" path))
-    (ensure-buffer-pool)
+    (when buffer-pool-p
+      (ensure-buffer-pool))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
                   (* 1024 1024 1000)))
@@ -69,7 +70,7 @@
       graph)))
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package)
+                   replication-key package (buffer-pool-p t))
   (let ((path (first (directory (ensure-directories-exist location))))
         (dirty-file (format nil "~A/.dirty" location))
         (schema-file (format nil "~A/schema.dat" location)))
@@ -78,8 +79,9 @@
     (when (probe-file dirty-file)
       (error "~A exists;  graph not closed properly.  Run recovery." dirty-file))
     (log:info "Opening graph.")
-    (log:info "Initializing buffer pool.")
-    (ensure-buffer-pool)
+    (when buffer-pool-p
+      (log:info "Initializing buffer pool.")
+      (ensure-buffer-pool))
     (let* ((heap (open-memory (format nil "~A/heap.dat" path)))
            (graph
             (make-instance
