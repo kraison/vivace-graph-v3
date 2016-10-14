@@ -10,6 +10,7 @@
   :version "1.0"
   :depends-on (:bordeaux-threads
                :alexandria
+               :trivial-shell
                :iterate
                :cffi
                :osicat
