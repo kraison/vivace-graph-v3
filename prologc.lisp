@@ -444,7 +444,7 @@
                            clauses))))))
       (when *prolog-trace*
         (format t "TRACE: Adding ~A to ~A~%" func *functor*))
-      (set-functor-fn *functor* ( func)))))
+      (set-functor-fn *functor* (eval func)))))
 
 (defun compile-body (body cont bindings)
   "Compile the body of a clause."
