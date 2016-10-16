@@ -17,6 +17,7 @@
 (defmethod mapped-file-length ((mapped-file mapped-file))
   (osicat-posix:stat-size (osicat-posix:fstat (m-fd mapped-file))))
 
+#+sbcl
 (defmethod set-byte :around (mf offset byte)
   (handler-case
       (call-next-method)
@@ -30,6 +31,7 @@
   ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
   (setf (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset) byte))
 
+#+sbcl
 (defmethod get-byte :around (mf offset)
   (handler-case
       (call-next-method)
@@ -41,6 +43,7 @@
   (declare (type word offset))
   (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset))
 
+#+sbcl
 (defmethod get-bytes :around (mf offset length)
   (handler-case
       (call-next-method)
@@ -55,6 +58,7 @@
       (setf (aref vec i) (get-byte mapped-file (+ i offset))))
     vec))
 
+#+sbcl
 (defmethod set-bytes :around (mf vec offset length)
   (handler-case
       (call-next-method)

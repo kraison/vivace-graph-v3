@@ -10,7 +10,9 @@
                 (format s "#<INDEX-LIST (HEAD ~A)>"
                         (index-list-head il)))))
   heap
-  (cache (make-hash-table :weakness :value :synchronized t))
+  (cache
+   #+sbcl (make-hash-table :weakness :value :synchronized t)
+   #+ccl (make-hash-table :weak :value :shared t))
   head
   (lock (make-rw-lock))
   dirty-p)
@@ -96,9 +98,14 @@
       ;;(setf (gethash address (index-list-cache il)) pcons)
       ;; Update index-list values
       ;;(log:debug "OLD HEAD: ~A" (index-list-head il))
+      #+sbcl
       (sb-ext:cas (index-list-head il)
                   (index-list-head il)
                   address)
+      #+ccl
+      (ccl::conditional-store (index-list-head il)
+                              (index-list-head il)
+                              address)
       ;;(log:debug "NEW HEAD: ~A" (index-list-head il))
       il)))
 

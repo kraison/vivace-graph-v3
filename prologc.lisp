@@ -6,17 +6,28 @@
 (defstruct (prolog-gensym
              (:conc-name pg-))
   (counter 0 :type (unsigned-byte 64))
+  #+ccl (lock (ccl:make-lock))
   (symbols nil :type list))
 
 (defvar *prolog-gensym* (make-prolog-gensym))
 
 (defun prolog-gensym (&optional (thing "PROVE"))
+  #+sbcl
   (or (sb-ext:atomic-pop (pg-symbols *prolog-gensym*))
       (let ((num (sb-ext:atomic-incf (pg-counter *prolog-gensym*))))
-        (make-symbol (format nil "~A~D" thing num)))))
+        (make-symbol (format nil "~A~D" thing num))))
+  #+ccl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (or (pop (pg-symbols *prolog-gensym*))
+        (let ((num (incf (pg-counter *prolog-gensym*))))
+          (make-symbol (format nil "~A~D" thing num))))))
 
 (defun release-prolog-symbol (symbol)
-  (sb-ext:atomic-push symbol (pg-symbols *prolog-gensym*)))
+  #+sbcl
+  (sb-ext:atomic-push symbol (pg-symbols *prolog-gensym*))
+  #+ccl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (push symbol (pg-symbols *prolog-gensym*))))
 
 (defun trace-prolog () (setq *prolog-trace* t))
 (defun untrace-prolog () (setq *prolog-trace* nil))

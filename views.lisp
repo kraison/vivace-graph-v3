@@ -4,8 +4,9 @@
 
 (defstruct view-group
   class-name
-  (dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
-  (table (make-hash-table :test 'eql :synchronized t))
+  ;;(dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
+  (table #+sbcl (make-hash-table :test 'eql :synchronized t)
+         #+ccl (make-hash-table :test 'eql :shared t))
   (lock (make-rw-lock)))
 
 (defstruct (view
@@ -236,7 +237,7 @@
       (when (lookup-view-group class-name graph)
         (let ((view-group (gethash class-name (views graph))))
           (when view-group
-            (sb-ext:with-locked-hash-table ((view-group-table view-group))
+            (with-locked-hash-table ((view-group-table view-group))
               (loop for view-name being the hash-keys in (view-group-table view-group)
                    do
                    (push (cons class-name view-name) views)))))))
@@ -267,7 +268,7 @@
                  (when (lookup-view-group class-name graph)
                    (let ((view-group (gethash class-name (views graph))))
                      (when view-group
-                       (sb-ext:with-locked-hash-table ((view-group-table view-group))
+                       (with-locked-hash-table ((view-group-table view-group))
                          (loop for view being the hash-values in (view-group-table view-group)
                             collecting view)))))))
              ancestor-classes))))
@@ -275,6 +276,7 @@
 (defmethod lookup-views ((graph graph) (node node))
   (lookup-views graph (class-name (class-of node))))
 
+#|
 ;; Not currently used
 (defmethod set-view-group-dirty ((graph graph) (class-name symbol))
   (let ((view-group (lookup-view-group class-name graph)))
@@ -284,6 +286,7 @@
 (defmethod set-view-group-clean ((graph graph) (class-name symbol))
   (let ((view-group (lookup-view-group class-name graph)))
     (sb-concurrency:open-gate (view-group-dirty-p view-group))))
+|#
 
 (defmethod compile-view-code ((view view))
   (setf (view-map-fn view)

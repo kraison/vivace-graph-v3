@@ -13,7 +13,7 @@
               (values :data-integrity-issues
                       problems))
             (progn
-              (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
+              (multiple-value-bind (sec msec) (gettimeofday)
                 (let ((snap-file (format nil "~A/txn-log/snap-~D.~6,'0D"
                                          (location graph) sec msec)))
                   (setq count (backup graph

@@ -49,8 +49,16 @@
   )
 
 (defun sxhash-ve-key (k) (sxhash (%hash k)))
-(sb-ext:define-hash-table-test ve-key-equal sxhash-ve-key)
-(defun make-ve-cache () (make-hash-table :test 've-key-equal :synchronized t :weakness :value))
+#+sbcl (sb-ext:define-hash-table-test ve-key-equal sxhash-ve-key)
+
+(defun make-ve-cache ()
+  #+ccl
+  (make-hash-table :test 've-key-equal
+                   :hash-function 'sxhash-ve-key
+                   :shared t
+                   :weak :value)
+  #+sbcl
+  (make-hash-table :test 've-key-equal :synchronized t :weakness :value))
 
 (defstruct (ve-index
              (:constructor %make-ve-index))
