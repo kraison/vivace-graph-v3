@@ -234,7 +234,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (key-deserializer 'deserialize)
   (value-serializer 'identity)
   (value-deserializer 'identity)
-  (node-cache (make-hash-table :test 'eq :weakness :value :synchronized t))
+  (node-cache
+   #+sbcl (make-hash-table :test 'eq :weakness :value :synchronized t)
+   #+ccl (make-hash-table :test 'eq :weak :value :shared t))
   (length-lock #+sbcl (sb-thread:make-mutex)
                #+ccl (ccl:make-lock))
   (locks (map-into (make-array 1000)
