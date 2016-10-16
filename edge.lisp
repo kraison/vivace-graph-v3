@@ -28,13 +28,14 @@
 (let ((random-states (list (make-random-state)
                            (progn (sleep 1) (make-random-state)))))
   (defun gen-edge-id ()
-    (let* ((now (format nil "~,6F~6D~' :@/graph-db::print-byte-array/"
-                        (coerce (gettimeofday) 'double-float)
-                        (random 1000000 (nth (random 2) random-states))
-                        (get-random-bytes 16)))
-           (id (uuid:uuid-to-byte-array
-                (uuid:make-v5-uuid *edge-namespace* now))))
-      id)))
+    (multiple-value-bind (sec msec) (gettimeofday)
+      (let* ((now (format nil "~,6F~6D~' :@/graph-db::print-byte-array/"
+                          (coerce (+ sec (/ msec 1000000)) 'double-float)
+                          (random 1000000 (nth (random 2) random-states))
+                          (get-random-bytes 16)))
+             (id (uuid:uuid-to-byte-array
+                  (uuid:make-v5-uuid *edge-namespace* now))))
+        id))))
 
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
                    to weight written-p heap-written-p type-idx-written-p

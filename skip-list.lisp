@@ -235,8 +235,11 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (value-serializer 'identity)
   (value-deserializer 'identity)
   (node-cache (make-hash-table :test 'eq :weakness :value :synchronized t))
-  (length-lock (sb-thread:make-mutex))
-  (locks (map-into (make-array 1000) 'sb-thread:make-mutex)))
+  (length-lock #+sbcl (sb-thread:make-mutex)
+               #+ccl (ccl:make-lock))
+  (locks (map-into (make-array 1000)
+                   #+ccl 'ccl:make-lock
+                   #+sbcl 'sb-thread:make-mutex)))
 
 (defun make-head (skip-list &key key value)
   (let ((node (make-skip-node skip-list key value (%sl-max-level skip-list))))
@@ -255,7 +258,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
     node))
 
 (defmethod serialize-skip-list-header ((heap memory) (address integer) (skip-list skip-list))
-  (declare (type sb-ext:word address))
+  #+sbcl (declare (type sb-ext:word address))
   (set-byte heap address +skip-list+)
   (serialize-uint64 heap (%sl-length skip-list) (1+ address))
   (serialize-uint64 heap (%sl-head-pointer skip-list) (+ 1 8 address))
@@ -263,7 +266,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (+ +skip-list-header-size+ address))
 
 (defmethod deserialize-skip-list-header ((heap memory) (address integer))
-  (declare (type sb-ext:word address))
+  #+sbcl (declare (type sb-ext:word address))
   (let ((type-byte (get-byte heap address)))
     (declare (type (integer 0 255) type-byte))
     (unless (= type-byte +skip-list+)
@@ -362,6 +365,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
 (defun lock-skip-node (skip-list node &key (waitp t) timeout)
   (let ((mutex (aref (%sl-locks skip-list)
                      (mod (%sn-addr node) (length (%sl-locks skip-list))))))
+    #+sbcl
     (let ((inner-lock-p (eq (sb-thread::mutex-%owner mutex)
                             sb-thread:*current-thread*))
           (got-it nil))
@@ -371,10 +375,15 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                (sb-thread:grab-mutex mutex
                                                      :waitp waitp
                                                      :timeout timeout))))
-            mutex)))))
+            mutex)))
+    #+ccl
+    (ccl:grab-lock mutex)))
 
 (defun unlock-skip-node (skip-list lock)
   (declare (ignore skip-list))
+  #+ccl
+  (ccl:release-lock lock)
+  #+sbcl
   (sb-thread:release-mutex lock))
 
 (defun find-in-skip-list (skip-list key &optional preds succs)
@@ -443,7 +452,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
          (when node
            (when (not (%sn-marked-p skip-list node))
              (loop until (%sn-fully-linked-p skip-list node) do
-                  (sb-thread:thread-yield))
+                  #+ccl (ccl:process-allow-schedule)
+                  #+sbcl (sb-thread:thread-yield))
              (unless (%sl-duplicates-allowed-p skip-list)
                ;;(error 'skip-list-duplicate-error
                ;;:skip-list skip-list :key key :value value)
@@ -502,8 +512,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                         (sval (funcall (%sl-value-serializer skip-list) value)))
                    (if (<= (length sval) (length old-sval))
                        (progn
-                         (sb-ext:cas (%sn-value node) (%sn-value node) value)
-                         (sb-ext:cas (%sn-svalue node) (%sn-svalue node) sval)
+                         #+sbcl (sb-ext:cas (%sn-value node) (%sn-value node) value)
+                         #+sbcl (sb-ext:cas (%sn-svalue node) (%sn-svalue node) sval)
+                         #+ccl (ccl::conditional-store (%sn-value node) (%sn-value node) value)
+                         #+ccl (ccl::conditional-store (%sn-svalue node) (%sn-svalue node) sval)
                          (let* ((offset (+ (%sn-addr node)
                                            8 1 1
                                            (length skey)
@@ -663,6 +675,55 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (format out "~(~2,'0X~)" byte))
          uuid)))
 
+(defun nshuffle (sequence)
+  (loop for i from (length sequence) downto 2
+     do (rotatef (elt sequence (random i))
+                 (elt sequence (1- i))))
+  sequence)
+
+(defun sl-perf-test (&optional (data-set-size 10000))
+  (let* ((heap (create-memory "/var/tmp/sl.dat" (* 1024 1024 100))))
+    (unwind-protect
+         (let ((sl (make-skip-list :heap heap
+                                   :head-key (format nil "~A" (code-char 0))
+                                   :head-value +null-key+
+                                   :tail-key (format nil "~A" (code-char 65535))
+                                   :tail-value +max-key+
+                                   :key-equal 'string=
+                                   :key-comparison 'string<
+                                   :key-serializer 'serialize
+                                   :key-deserializer 'deserialize
+                                   :value-serializer 'serialize
+                                   :value-deserializer 'deserialize)))
+           (let* ((ids (make-array (list data-set-size)
+                                   :initial-contents
+                                   (loop for i from 1 to data-set-size collecting (string-uuid (gen-id)))))
+                  (keys (make-array (list data-set-size)
+                                    :initial-contents
+                                    (nshuffle (loop for x from 0 below data-set-size
+                                                 collecting (format nil "~12,'0d" x))))))
+             (log:debug "ABOUT TO START ADDING ITEMS")
+             (let ((start (get-internal-real-time)))
+               (dotimes (i data-set-size)
+                 (add-to-skip-list sl
+                                   (svref keys i)
+                                   (svref ids i)))
+               (log:debug "ADDED ~A nodes in ~F"
+                          data-set-size
+                          (/ (- (get-internal-real-time) start) INTERNAL-TIME-UNITS-PER-SECOND)))
+             (let ((start (get-internal-real-time)))
+               (let ((list (skip-list-to-list sl)))
+                 (log:debug "DUMPED LIST IN ~F"
+                            (/ (- (get-internal-real-time) start) INTERNAL-TIME-UNITS-PER-SECOND))
+                 (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
+                 (log:debug "HEIGHTS: ~A" (analyze-sl-heights sl))
+                 list))))
+      (progn
+        (if (memory-magic-byte-corrupt-p heap)
+            (log:debug "Heap corrupt: 0x~X" (memory-magic-byte-corrupt-p heap)))
+        (close-memory heap)
+        (delete-file "/var/tmp/sl.dat")))))
+
 (defun sl-string-test ()
   (let* ((heap (create-memory "/var/tmp/sl.dat" (* 1024 1024 100))))
     (unwind-protect
@@ -680,20 +741,21 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (let* ((ids (loop for i from 1 to 1000 collecting (string-uuid (gen-id))))
                   (i 0))
              (log:debug "ABOUT TO START ADDING ITEMS")
-             (time
+             (let ((start (get-internal-real-time)))
               (dolist (id ids)
                 (log:debug "ADDING ~S:~S" id i)
                 (add-to-skip-list sl (format nil "~12,'0d" i) id)
                 (when (memory-magic-byte-corrupt-p heap)
                   (log:debug "Heap corrupt: 0x~X" (memory-magic-byte-corrupt-p heap))
                   (error "Corrupt heap!"))
-                (incf i)))
-             (log:debug "~A" (time (find-in-skip-list sl (format nil "~12,'0d" 500))))
-             (let ((list (time (skip-list-to-list sl))))
-               (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
-               ;;(log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 0)))
-               )
-             (terpri)
+                (incf i))
+              (log:debug "ADDED 1000 nodes in ~A" (- (get-internal-real-time) start)))
+             (log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 500)))
+             (let ((start (get-internal-real-time)))
+               (let ((list (skip-list-to-list sl)))
+                 (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
+                 ;;(log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 0)))
+                 (log:debug "DUMPED LIST IN ~A" (- (get-internal-real-time) start))))
              (dolist (i '(1 500 100 999))
                (let ((node (find-in-skip-list sl (format nil "~12,'0d" i)))
                      (new-id (format nil "NEW~A" (string-uuid (gen-id)))))

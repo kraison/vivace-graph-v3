@@ -51,8 +51,16 @@
   )
 
 (defun sxhash-vev-key (k) (%hash k))
+#+sbcl
 (sb-ext:define-hash-table-test vev-key-equal sxhash-vev-key)
-(defun make-vev-cache () (make-hash-table :test 'vev-key-equal :synchronized t :weakness :value))
+(defun make-vev-cache ()
+  #+ccl
+  (make-hash-table :test 'vev-key-equal
+                   :hash-function 'sxhash-vev-key
+                   :shared t
+                   :weak :value)
+  #+sbcl
+  (make-hash-table :test 'vev-key-equal :synchronized t :weakness :value))
 
 (defstruct (vev-index
              (:constructor %make-vev-index))
@@ -194,4 +202,3 @@
         (close-vev-index table)
         (cl-fad:delete-directory-and-files "/var/tmp/vev2/")))))
 |#
-

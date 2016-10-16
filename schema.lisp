@@ -2,8 +2,12 @@
 
 (defstruct schema
   (lock (make-recursive-lock))
-  (type-table (make-hash-table :test 'eql :synchronized t))
-  (class-locks (make-hash-table :test 'eql :synchronized t))
+  (type-table
+   #+sbcl (make-hash-table :test 'eql :synchronized t)
+   #+ccl (make-hash-table :test 'eql :shared t))
+  (class-locks
+   #+sbcl (make-hash-table :test 'eql :synchronized t)
+   #+ccl (make-hash-table :test 'eql :shared t))
   (next-edge-id 1 :type (unsigned-byte 16))
   (next-vertex-id 1 :type (unsigned-byte 16)))
 
@@ -48,9 +52,11 @@
   (let ((schema (make-schema)))
     (setf (schema graph) schema)
     (setf (gethash :edge (schema-type-table (schema graph)))
-          (make-hash-table :test 'eql :synchronized t))
+          #+sbcl (make-hash-table :test 'eql :synchronized t)
+          #+ccl (make-hash-table :test 'eql :shared t))
     (setf (gethash :vertex (schema-type-table (schema graph)))
-          (make-hash-table :test 'eql :synchronized t))
+          #+sbcl (make-hash-table :test 'eql :synchronized t)
+          #+ccl (make-hash-table :test 'eql :shared t))
     (setf (gethash 'edge (schema-class-locks schema))
           (make-rw-lock))
     (setf (gethash 'vertex (schema-class-locks schema))
@@ -60,7 +66,14 @@
 (defmethod save-schema ((schema schema) (graph graph))
   (with-recursive-lock-held ((schema-lock schema))
     (let ((schema-file (format nil "~A/schema.dat" (location graph))))
-      (cl-store:store (schema graph) schema-file))))
+      (let ((locks (schema-class-locks schema))
+            (schema-lock (schema-lock schema)))
+        (setf (schema-class-locks schema) nil)
+        (setf (schema-lock schema) nil)
+        (cl-store:store (schema graph) schema-file)
+        (setf (schema-lock schema) schema-lock)
+        (setf (schema-class-locks schema) locks)
+        schema))))
 
 (defmethod get-next-type-id ((schema schema) parent)
   (with-recursive-lock-held ((schema-lock schema))
@@ -175,8 +188,8 @@ replication for a quick schema compatibility check."
                   :package (package-name *package*)
                   :constructor ',constructor)))
            ;; FIXME: why is this necessary when inheriting from another node subclass?
-           (unless (sb-mop:class-finalized-p (find-class ',name))
-             (sb-mop:finalize-inheritance (find-class ',name)))
+           (unless (class-finalized-p (find-class ',name))
+             (finalize-inheritance (find-class ',name)))
            (defun ,predicate (thing)
              (typep thing ',name))
            (defun ,lookup-fn (id &key include-deleted-p)

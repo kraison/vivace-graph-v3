@@ -74,7 +74,7 @@
                         (byte 8 (* i 8)) int)))
        int)
      (let ((int 0)) ;; data-pointer
-       (declare (type sb-ext:word int))
+       #+sbcl (declare (type sb-ext:word int))
        (dotimes (i 8)
          (setq int (dpb (get-byte mf (incf offset))
                         (byte 8 (* i 8)) int)))
@@ -231,7 +231,7 @@
    working private version of instance."
   ;;(log:debug "slot-value-using-class~%  '~A'~%  '~A'" class
   ;;(sb-pcl:slot-definition-name slot))
-  (let* ((slot-name (sb-pcl:slot-definition-name slot))
+  (let* ((slot-name (slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
     (cond ((member slot-name (persistent-slot-names class))
            ;; FIXME: Check for txn and give current revision's value
@@ -250,7 +250,7 @@
    version of instance."
   ;;(log:debug "setf slot-value-using-class~%  '~A'~%  '~A'~%  '~A'" new-value class
   ;;(sb-pcl:slot-definition-name slot))
-  (let* ((slot-name (sb-pcl:slot-definition-name slot))
+  (let* ((slot-name (slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
     (cond ((member slot-name (persistent-slot-names class))
            ;; FIXME: Check for txn and handle
@@ -278,16 +278,28 @@
     hash))
 
 (defun sxhash-node (node) (%hash (id node)))
-(sb-ext:define-hash-table-test node-equal sxhash-node)
+#+sbcl (sb-ext:define-hash-table-test node-equal sxhash-node)
 (defun make-node-table (&key weakness synchronized)
+  #+ccl
+  (make-hash-table :test 'node-equal
+                   :hash-function 'sxhash-node
+                   :weakness weakness
+                   :shared synchronized)
+  #+sbcl
   (make-hash-table :test 'node-equal
                    :weakness weakness
                    :synchronized synchronized))
 
 (defun id-equal (x y) (equalp x y))
 (defun sxhash-id-array (id) (%hash id))
-(sb-ext:define-hash-table-test id-equal sxhash-id-array)
+#+sbcl (sb-ext:define-hash-table-test id-equal sxhash-id-array)
 (defun make-id-table (&key weakness synchronized)
+  #+ccl
+  (make-hash-table :test 'id-equal
+                   :hash-function 'sxhash-id-array
+                   :weak weakness
+                   :shared synchronized)
+  #+sbcl
   (make-hash-table :test 'id-equal
                    :weakness weakness
                    :synchronized synchronized))

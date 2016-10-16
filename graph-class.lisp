@@ -1,6 +1,10 @@
 (in-package :graph-db)
 
-(defvar *graphs* (make-hash-table :test 'equal :synchronized t))
+(defvar *graphs*
+  #+sbcl
+  (make-hash-table :test 'equal :synchronized t)
+  #+ccl
+  (make-hash-table :test 'equal :shared t))
 
 (defclass graph ()
   ((graph-name :accessor graph-name :initarg :graph-name)
@@ -27,9 +31,13 @@
                :initform (make-recursive-lock))
    (views :accessor views :initarg :views)
    (write-stats :accessor write-stats :initarg :write-stats
-                :initform (make-hash-table :test 'eq :synchronized t))
+                :initform
+                #+ccl (make-hash-table :test 'eq :shared t)
+                #+sbcl (make-hash-table :test 'eq :synchronized t))
    (read-stats :accessor read-stats :initarg :read-stats
-               :initform (make-hash-table :test 'eq :synchronized t))))
+               :initform
+               #+ccl (make-hash-table :test 'eq :shared t)
+               #+sbcl (make-hash-table :test 'eq :synchronized t))))
 
 (defmethod print-object ((graph graph) stream)
   (print-unreadable-object (graph stream :type t :identity t)

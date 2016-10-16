@@ -7,8 +7,12 @@
                 (declare (ignore d))
                 (format s "#<TYPE-INDEX ~A" (type-index-table i)))))
   table
-  (locks (map-into (make-array +max-node-types+) 'sb-thread:make-mutex))
-  (cache (make-hash-table :test 'eq :synchronized t)))
+  (locks (map-into (make-array +max-node-types+)
+                   #+ccl 'make-lock
+                   #+sbcl 'sb-thread:make-mutex))
+  (cache
+   #+sbcl (make-hash-table :test 'eq :synchronized t)
+   #+ccl (make-hash-table :test 'eq :shared t)))
 
 (defun make-type-index (location heap)
   (let* ((table (mmap-file location
@@ -39,7 +43,7 @@
 (defmethod type-index-push ((uuid array) (type-id integer) (idx type-index)
                             &key unless-present)
   (let ((lock (aref (type-index-locks idx) type-id)))
-    (sb-thread:with-recursive-lock (lock)
+    (with-lock (lock)
       (let ((il (gethash type-id (type-index-cache idx))))
         (if unless-present
             (index-list-pushnew uuid il)
@@ -52,7 +56,7 @@
 
 (defmethod type-index-remove ((uuid array) (type-id integer) (idx type-index))
   (let ((lock (aref (type-index-locks idx) type-id)))
-    (sb-thread:with-recursive-lock (lock)
+    (with-lock (lock)
       (let ((il (gethash type-id (type-index-cache idx))))
         (remove-from-index-list uuid il)
         (serialize-index-list (type-index-table idx)
@@ -62,4 +66,3 @@
 
 (defmethod get-type-index-list ((idx type-index) (type-id integer))
   (gethash type-id (type-index-cache idx)))
-

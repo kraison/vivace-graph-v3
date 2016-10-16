@@ -36,9 +36,9 @@
   (next-split 0 :type (UNSIGNED-BYTE 64))
   (next-overflow-pointer 1 :type (UNSIGNED-BYTE 64))
   (count 0 :type (UNSIGNED-BYTE 64))
-  (count-lock (make-rw-lock))
-  (split-lock (make-rw-lock))
-  (overflow-lock (make-rw-lock))
+  count-lock
+  split-lock
+  overflow-lock
   config
   table
   overflow
@@ -124,10 +124,11 @@
   (setf (%lhash-next-split lhash) value))
 
 (defun read-lhash-next-split (lhash)
-  (%lhash-next-split lhash))
+  (with-read-lock ((%lhash-split-lock lhash))
+    (%lhash-next-split lhash)))
 
 (defun incf-lhash-next-split (lhash)
-  (sb-ext:atomic-incf (%lhash-next-split lhash))
+  (incf (%lhash-next-split lhash))
   (set-lhash-next-split lhash (%lhash-next-split lhash))
   (%lhash-next-split lhash))
 
@@ -139,43 +140,49 @@
   (%lhash-next-overflow-pointer lhash))
 
 (defun incf-lhash-next-overflow-pointer (lhash &optional (delta 1))
-  (sb-ext:atomic-incf (%lhash-next-overflow-pointer lhash) delta)
+  (incf (%lhash-next-overflow-pointer lhash) delta)
   (set-lhash-next-overflow-pointer lhash (%lhash-next-overflow-pointer lhash))
   (%lhash-next-overflow-pointer lhash))
 
 (defun set-lhash-count (lhash value)
-  (serialize-uint64 (%lhash-config lhash) value +lhash-count-offset+)
-  (setf (%lhash-count lhash) value))
+  (let ((lock (%lhash-count-lock lhash)))
+    (with-write-lock (lock)
+      (serialize-uint64 (%lhash-config lhash) value +lhash-count-offset+)
+      (setf (%lhash-count lhash) value))))
 
 (defun read-lhash-count (lhash)
-  (with-read-lock ((%lhash-count-lock lhash))
-    (%lhash-count lhash)))
+  (let ((lock (%lhash-count-lock lhash)))
+    (with-read-lock (lock)
+      (%lhash-count lhash))))
 
 (defun incf-lhash-count (lhash)
-  (with-write-lock ((%lhash-count-lock lhash))
-    (sb-ext:atomic-incf (%lhash-count lhash))
-    (serialize-uint64 (%lhash-config lhash)
-                      (%lhash-count lhash)
-                      +lhash-count-offset+)
-    (%lhash-count lhash)))
+  (let ((lock (%lhash-count-lock lhash)))
+    (with-write-lock (lock)
+      (incf (%lhash-count lhash))
+      (serialize-uint64 (%lhash-config lhash)
+                        (%lhash-count lhash)
+                        +lhash-count-offset+)
+      (%lhash-count lhash))))
 
 (defun decf-lhash-count (lhash)
-  (with-write-lock ((%lhash-count-lock lhash))
-    (sb-ext:atomic-decf (%lhash-count lhash))
-    (serialize-uint64 (%lhash-config lhash)
-                      (%lhash-count lhash)
-                      +lhash-count-offset+)
-    (%lhash-count lhash)))
+  (let ((lock (%lhash-count-lock lhash)))
+    (with-write-lock (lock)
+      (decf (%lhash-count lhash))
+      (serialize-uint64 (%lhash-config lhash)
+                        (%lhash-count lhash)
+                        +lhash-count-offset+)
+      (%lhash-count lhash))))
 
 (defun set-lhash-level (lhash value)
   (serialize-uint64 (%lhash-config lhash) value +lhash-level-offset+)
   (setf (%lhash-level lhash) value))
 
 (defun read-lhash-level (lhash)
-  (%lhash-level lhash))
+  (with-read-lock ((%lhash-split-lock lhash))
+    (%lhash-level lhash)))
 
 (defun incf-lhash-level (lhash)
-  (sb-ext:atomic-incf (%lhash-level lhash))
+  (incf (%lhash-level lhash))
   (set-lhash-level lhash (%lhash-level lhash))
   (%lhash-level lhash))
 
@@ -238,7 +245,10 @@
                              :value-serializer value-serializer
                              :value-deserializer value-deserializer)))
     (cl-store:store lhash (merge-pathnames "struct.dat" location))
-    (setf (%lhash-config lhash)
+    (setf (%lhash-count-lock lhash) (make-rw-lock)
+          (%lhash-split-lock lhash) (make-rw-lock)
+          (%lhash-overflow-lock lhash) (make-rw-lock)
+          (%lhash-config lhash)
           (mmap-file (merge-pathnames "config.dat" location)
                      :size (+ (* 8 8) key-bytes))
           (%lhash-table lhash)
@@ -266,7 +276,9 @@
     (serialize-uint64 (%lhash-config lhash) bucket-bytes +lhash-bucket-bytes-offset+)
     (funcall (%lhash-key-serializer lhash) (%lhash-config lhash) null-key +lhash-null-key-offset+)
     (dotimes (i max-locks)
-      (setf (svref (%lhash-lock-vector lhash) i) (sb-thread:make-mutex)))
+      (setf (svref (%lhash-lock-vector lhash) i)
+            #+sbcl (sb-thread:make-mutex)
+            #+ccl (make-lock)))
     lhash))
 
 (defun open-lhash (location)
@@ -279,6 +291,9 @@
                 (mmap-file (merge-pathnames "table.dat" location) :create-p nil)
                 (%lhash-overflow lhash)
                 (mmap-file (merge-pathnames "overflow.dat" location) :create-p nil)
+                (%lhash-count-lock lhash) (make-rw-lock)
+                (%lhash-split-lock lhash) (make-rw-lock)
+                (%lhash-overflow-lock lhash) (make-rw-lock)
                 (%lhash-lock-vector lhash)
                 (make-array (list (%lhash-max-locks lhash))))
           (unless (= +lhash-magic-byte+ (get-byte (%lhash-table lhash) 0))
@@ -307,7 +322,9 @@
                 (%lhash-null-key lhash)
                 (funcall (%lhash-key-deserializer lhash) (%lhash-config lhash) +lhash-null-key-offset+))
           (dotimes (i (%lhash-max-locks lhash))
-            (setf (svref (%lhash-lock-vector lhash) i) (sb-thread:make-mutex))))
+            (setf (svref (%lhash-lock-vector lhash) i)
+                  #+sbcl (sb-thread:make-mutex)
+                  #+ccl (make-lock))))
       (error (c)
         (log:debug "Cannot open lhash: ~S" c)
         (munmap-file (%lhash-config lhash))
@@ -338,14 +355,17 @@
   (let ((lock (svref (%lhash-lock-vector lhash)
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
-        (sb-thread:release-mutex lock)
+        #+sbcl (sb-thread:release-mutex lock)
+        #+ccl (ccl:release-lock lock)
       (log:debug "RELEASED LOCK: ~A" lock))))
 
 (defun grab-lhash-lock (lhash index &key (wait-p t) timeout)
   (let ((lock (svref (%lhash-lock-vector lhash)
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
-        (sb-thread:grab-mutex lock :waitp wait-p :timeout timeout)
+        #+sbcl (sb-thread:grab-mutex lock :waitp wait-p :timeout timeout)
+        ;; FIXME honor wait-p and timeout for CCL
+        #+ccl (ccl:grab-lock lock)
       (log:debug "GOT LOCK: ~A" lock))))
 
 (defmacro with-locked-hash-key ((lhash key) &body body)
@@ -355,12 +375,20 @@
          (let* ((,k ,key)
                 (,bucket (hash ,lh (read-lhash-level ,lh) ,k))
                 (,lock (lookup-lhash-lock ,lhash ,bucket)))
+           #+ccl
+           (ccl:with-lock-grabbed (,lock)
+             ,@body)
+           #+sbcl
            (sb-thread:with-recursive-lock (,lock)
              ,@body))))))
 
 (defmacro with-locked-hash-bucket ((lhash bucket) &body body)
   (with-gensyms (lock)
     `(let ((,lock (lookup-lhash-lock ,lhash ,bucket)))
+       #+ccl
+       (ccl:with-lock-grabbed (,lock)
+         ,@body)
+       #+sbcl
        (sb-thread:with-recursive-lock (,lock)
          ,@body))))
 
@@ -573,7 +601,7 @@
   (with-write-lock ((%lhash-split-lock lhash))
     ;;(log:info "SPLIT ~A GOT LOCK!" lhash)
     (let ((*rehashing-bucket* t))
-      (let ((bucket (read-lhash-next-split lhash)))
+      (let ((bucket (%lhash-next-split lhash))) ;; (read-lhash-next-split lhash)))
         ;;(log:info "SPLITTING ~A BUCKET ~A" lhash bucket)
         (unless (>= (mapped-file-length (%lhash-table lhash))
                     (1+ (* (%lhash-bucket-bytes lhash)
@@ -585,7 +613,7 @@
                                     +data-extent-size+)))
         (rehash-bucket lhash bucket)
         (incf-lhash-next-split lhash)
-        (when (= (read-lhash-next-split lhash)
+        (when (= (%lhash-next-split lhash) ;; (read-lhash-next-split lhash)
                  (* (%lhash-base-buckets lhash)
                     (expt 2 (read-lhash-level lhash))))
           (set-lhash-next-split lhash 0)

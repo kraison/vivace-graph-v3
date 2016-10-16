@@ -110,8 +110,17 @@
 (defvar *functor* nil "The Prolog functor currently being compiled.")
 (defvar *select-list* nil "Accumulator for prolog selects.")
 (defvar *cont* nil "Continuation container for step-wise queries.")
+
+#+sbcl
 (defvar *prolog-global-functors* (make-hash-table :synchronized t))
+#+sbcl
 (defvar *user-functors* (make-hash-table :synchronized t :test 'eql))
+
+#+ccl
+(defvar *prolog-global-functors* (make-hash-table :shared t))
+#+ccl
+(defvar *user-functors* (make-hash-table :shared t :test 'eql))
+
 (defparameter *prolog-trace* nil)
 (alexandria:define-constant +unbound+ :unbound)
 (alexandria:define-constant +no-bindings+ '((t . t)) :test 'equalp)

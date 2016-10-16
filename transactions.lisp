@@ -1033,7 +1033,7 @@ left in the stream."
 (defun call-with-locks (locks fun)
   (if (endp locks)
       (funcall fun)
-      (sb-thread:with-recursive-lock ((first locks))
+      (with-lock ((first locks))
         (call-with-locks (cdr locks) fun))))
 
 

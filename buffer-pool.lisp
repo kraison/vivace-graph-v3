@@ -1,12 +1,16 @@
 (in-package :graph-db)
 
-(defvar *buffer-pool* (make-hash-table :test 'eq :synchronized t))
+(defvar *buffer-pool*
+  #+sbcl (make-hash-table :test 'eq :synchronized t)
+  #+ccl (make-hash-table :test 'eq :shared t))
 (defvar *buffer-pool-stats* nil)
 (defvar *buffer-pool-thread* nil)
 (defvar *stop-buffer-pool* nil)
 (defvar *buffer-pool-low-water-mark* 1000)
 (defvar *free-memory-low-water-mark* 10485760)
 (defparameter *allow-force-gc-p* nil)
+#+ccl
+(defvar *buffer-pool-lock* (make-lock))
 
 (defstruct (buffer-pool-stats
              (:conc-name bps-))
@@ -46,7 +50,9 @@
         (progn
           (log:warn "VG forcing a full GC, ~A bytes dynamic space available"
                     free-memory)
-          (sb-ext:gc :full t))
+          #+sbcl (sb-ext:gc :full t)
+          #+ccl (gc)
+          )
         (let ((stats (dump-buffer-pool-stats)))
           (dolist (stat (cdr (assoc :available-buffers stats)))
             (when (< (cdr stat) *buffer-pool-low-water-mark*)
@@ -56,13 +62,21 @@
                            (- 1000000 (cdr stat)))
                  (dotimes (i (- 1000000 (cdr stat)))
                    (let ((b (make-byte-vector 16)))
-                     (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*))))))
+                     #+sbcl
+                     (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*)))
+                     #+ccl
+                     (ccl:with-lock-grabbed (*buffer-pool-lock*)
+                       (push b (first (gethash 16 *buffer-pool*)))))))
                 ((8 18 24 34)
                  (log:info "BUFFER-POOL: Refreshing byte-vector-~D buffers (~D)"
                            (car stat) (- 100000 (cdr stat)))
                  (dotimes (i (- 100000 (cdr stat)))
                    (let ((b (make-byte-vector (car stat))))
-                     (sb-ext:atomic-push b (first (gethash (car stat) *buffer-pool*))))))
+                     #+sbcl
+                     (sb-ext:atomic-push b (first (gethash (car stat) *buffer-pool*)))
+                     #+ccl
+                     (ccl:with-lock-grabbed (*buffer-pool-lock*)
+                       (push b (first (gethash (car stat) *buffer-pool*)))))))
                 (:skip-node
                  (log:info "BUFFER-POOL: Refreshing skip-node buffers (~D)"
                            (- 1000000 (cdr stat)))
@@ -98,55 +112,91 @@
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing pcons buffer")
     (let ((p (%make-pcons)))
-      (sb-ext:atomic-push p (first (gethash :pcons *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push p (first (gethash :pcons *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push p (first (gethash :pcons *buffer-pool*)))))))
 
 (defun make-vertex-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing vertex buffer")
     (let ((v (make-instance 'vertex)))
-      (sb-ext:atomic-push v (first (gethash :vertex *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push v (first (gethash :vertex *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push v (first (gethash :vertex *buffer-pool*)))))))
 
 (defun make-edge-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing edge buffer")
     (let ((e (make-instance 'edge)))
-      (sb-ext:atomic-push e (first (gethash :edge *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push e (first (gethash :edge *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push e (first (gethash :edge *buffer-pool*)))))))
 
 (defun make-skip-node-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing skip-node buffer")
     (let ((s (%make-skip-node)))
-      (sb-ext:atomic-push s (first (gethash :skip-node *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push s (first (gethash :skip-node *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push s (first (gethash :skip-node *buffer-pool*)))))))
 
 (defun make-byte-vector-8-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing byte-vector-buffer-8")
     (let ((b (make-byte-vector 8)))
-      (sb-ext:atomic-push b (first (gethash 8 *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push b (first (gethash 8 *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push b (first (gethash 8 *buffer-pool*)))))))
 
 (defun make-byte-vector-16-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing byte-vector-buffer-16")
     (let ((b (make-byte-vector 16)))
-      (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push b (first (gethash 16 *buffer-pool*)))))))
 
 (defun make-byte-vector-18-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing byte-vector-buffer-18")
     (let ((b (make-byte-vector 18)))
-      (sb-ext:atomic-push b (first (gethash 18 *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push b (first (gethash 18 *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push b (first (gethash 18 *buffer-pool*)))))))
 
 (defun make-byte-vector-24-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing byte-vector-buffer-24")
     (let ((b (make-byte-vector 24)))
-      (sb-ext:atomic-push b (first (gethash 24 *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push b (first (gethash 24 *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push b (first (gethash 24 *buffer-pool*)))))))
 
 (defun make-byte-vector-34-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing byte-vector-buffer-34")
     (let ((b (make-byte-vector 34)))
-      (sb-ext:atomic-push b (first (gethash 34 *buffer-pool*))))))
+      #+sbcl
+      (sb-ext:atomic-push b (first (gethash 34 *buffer-pool*)))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push b (first (gethash 34 *buffer-pool*)))))))
 
 (defun buffer-pool-running-p ()
   (and (threadp *buffer-pool-thread*)
@@ -158,7 +208,9 @@
            *buffer-pool-thread*))
   (setq *stop-buffer-pool* nil)
   (reset-buffer-pool-stats)
-  (setq *buffer-pool* (make-hash-table :test 'eq :synchronized t))
+  (setq *buffer-pool*
+        #+sbcl (make-hash-table :test 'eq :synchronized t)
+        #+ccl (make-hash-table :test 'eq :shared t))
   (setf (gethash :vertex *buffer-pool*)
         (list nil)
         (gethash :edge *buffer-pool*)
@@ -195,17 +247,49 @@
              (thread-alive-p *buffer-pool-thread*))
     (join-thread *buffer-pool-thread*)))
 
+(defun buffer-incf-stat (size)
+  (when (buffer-pool-running-p)
+    (case size
+      (8
+       #+ccl
+       (ccl:with-lock-grabbed (*buffer-pool-lock*)
+         (incf (bps-buffer-8 *buffer-pool-stats*)))
+       #+sbcl
+       (sb-ext:atomic-incf (bps-buffer-8 *buffer-pool-stats*)))
+      (16
+       #+ccl
+       (ccl:with-lock-grabbed (*buffer-pool-lock*)
+         (incf (bps-buffer-16 *buffer-pool-stats*)))
+       #+sbcl
+       (sb-ext:atomic-incf (bps-buffer-16 *buffer-pool-stats*)))
+      (18
+       #+ccl
+       (ccl:with-lock-grabbed (*buffer-pool-lock*)
+         (incf (bps-buffer-18 *buffer-pool-stats*)))
+       #+sbcl
+       (sb-ext:atomic-incf (bps-buffer-18 *buffer-pool-stats*)))
+      (24
+       #+ccl
+       (ccl:with-lock-grabbed (*buffer-pool-lock*)
+         (incf (bps-buffer-24 *buffer-pool-stats*)))
+       #+sbcl
+       (sb-ext:atomic-incf (bps-buffer-24 *buffer-pool-stats*)))
+      (34
+       #+ccl
+       (ccl:with-lock-grabbed (*buffer-pool-lock*)
+         (incf (bps-buffer-34 *buffer-pool-stats*)))
+       #+sbcl
+       (sb-ext:atomic-incf (bps-buffer-34 *buffer-pool-stats*))))))
+
 (defun get-buffer (size)
   (or (and (buffer-pool-running-p)
-           (sb-ext:atomic-pop (first (gethash size *buffer-pool*))))
+           #+sbcl
+           (sb-ext:atomic-pop (first (gethash size *buffer-pool*)))
+           #+ccl
+           (ccl:with-lock-grabbed (*buffer-pool-lock*)
+             (pop (first (gethash size *buffer-pool*)))))
       (progn
-        (when (buffer-pool-running-p)
-          (case size
-            (8  (sb-ext:atomic-incf (bps-buffer-8 *buffer-pool-stats*)))
-            (16 (sb-ext:atomic-incf (bps-buffer-16 *buffer-pool-stats*)))
-            (18 (sb-ext:atomic-incf (bps-buffer-18 *buffer-pool-stats*)))
-            (24 (sb-ext:atomic-incf (bps-buffer-24 *buffer-pool-stats*)))
-            (34 (sb-ext:atomic-incf (bps-buffer-34 *buffer-pool-stats*)))))
+        (buffer-incf-stat size)
         (make-byte-vector size))))
 
 (defun release-buffer (buffer)
@@ -213,37 +297,73 @@
     (let ((size (length buffer)))
       (dotimes (i size)
         (setf (aref buffer i) 0))
+      #+ccl
+      (ccl:with-lock-grabbed (*buffer-pool-lock*)
+        (push buffer (first (gethash size *buffer-pool*))))
+      #+sbcl
       (sb-ext:atomic-push buffer (first (gethash size *buffer-pool*)))
       nil)))
 
 (defun get-vertex-buffer ()
   (or (and (buffer-pool-running-p)
+           #+ccl
+           (ccl:with-lock-grabbed (*buffer-pool-lock*)
+             (pop (first (gethash :vertex *buffer-pool*))))
+           #+sbcl
            (sb-ext:atomic-pop (first (gethash :vertex *buffer-pool*))))
       (progn
         (when (buffer-pool-running-p)
+          #+ccl
+          (ccl:with-lock-grabbed (*buffer-pool-lock*)
+            (incf (bps-vertex *buffer-pool-stats*)))
+          #+sbcl
           (sb-ext:atomic-incf (bps-vertex *buffer-pool-stats*)))
         (make-instance 'vertex))))
 
 (defun get-edge-buffer ()
   (or (and (buffer-pool-running-p)
+           #+ccl
+           (ccl:with-lock-grabbed (*buffer-pool-lock*)
+             (pop (first (gethash :edge *buffer-pool*))))
+           #+sbcl
            (sb-ext:atomic-pop (first (gethash :edge *buffer-pool*))))
       (progn
         (when (buffer-pool-running-p)
+          #+ccl
+          (ccl:with-lock-grabbed (*buffer-pool-lock*)
+            (incf (bps-edge *buffer-pool-stats*)))
+          #+sbcl
           (sb-ext:atomic-incf (bps-edge *buffer-pool-stats*)))
         (make-instance 'edge))))
 
 (defun get-skip-node-buffer ()
   (or (and (buffer-pool-running-p)
+           #+ccl
+           (ccl:with-lock-grabbed (*buffer-pool-lock*)
+             (pop (first (gethash :skip-node *buffer-pool*))))
+           #+sbcl
            (sb-ext:atomic-pop (first (gethash :skip-node *buffer-pool*))))
       (progn
         (when (buffer-pool-running-p)
+          #+ccl
+          (ccl:with-lock-grabbed (*buffer-pool-lock*)
+            (incf (bps-skip-node *buffer-pool-stats*)))
+          #+sbcl
           (sb-ext:atomic-incf (bps-skip-node *buffer-pool-stats*)))
         (%make-skip-node))))
 
 (defun get-pcons-buffer ()
   (or (and (buffer-pool-running-p)
+           #+ccl
+           (ccl:with-lock-grabbed (*buffer-pool-lock*)
+             (pop (first (gethash :pcons *buffer-pool*))))
+           #+sbcl
            (sb-ext:atomic-pop (first (gethash :pcons *buffer-pool*))))
       (progn
         (when (buffer-pool-running-p)
+          #+ccl
+          (ccl:with-lock-grabbed (*buffer-pool-lock*)
+            (incf (bps-pcons *buffer-pool-stats*)))
+          #+sbcl
           (sb-ext:atomic-incf (bps-pcons *buffer-pool-stats*)))
         (%make-pcons))))

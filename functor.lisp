@@ -20,9 +20,14 @@
 
 (defun add-functor-clause (functor clause)
   (with-recursive-lock-held ((functor-lock functor))
+    #+sbcl
     (sb-ext:cas (cdr (last (functor-clauses functor)))
                 (cdr (last (functor-clauses functor)))
                 (list clause))
+    #+ccl
+    (ccl::conditional-store (cdr (last (functor-clauses functor)))
+                            (cdr (last (functor-clauses functor)))
+                            (list clause))
     (prolog-compile functor))
   (functor-clauses functor))
 
@@ -31,7 +36,10 @@
 
 (defun reset-functor (functor)
   (with-recursive-lock-held ((functor-lock functor))
+    #+sbcl
     (sb-ext:cas (functor-clauses functor) (functor-clauses functor) nil)
+    #+ccl
+    (ccl::conditional-store (functor-clauses functor) (functor-clauses functor) nil)
     (prolog-compile functor))
   nil)
 

@@ -33,14 +33,14 @@
   ;; FIXME: respect order and uniqueness
   ;;        currently bfs, global uniqueness.
   (declare (ignore order uniqueness))
-  (let ((queue (sb-concurrency:make-queue :initial-contents
-                                          (list
-                                           (make-instance 'traversal
-                                                          :end-vertex vertex))))
+  (let ((queue (make-queue :elements
+                           (list
+                            (make-instance 'traversal
+                                           :end-vertex vertex))))
         (result-table (make-hash-table :test 'equalp))
         (memory (make-hash-table :test 'equalp)))
-    (loop until (sb-concurrency:queue-empty-p queue) do
-         (let* ((traversal (sb-concurrency:dequeue queue))
+    (loop until (empty-queue-p queue) do
+         (let* ((traversal (dequeue queue))
                 (vertex (end-vertex traversal)))
            (unless (and max-depth
                         (> (depth traversal) max-depth))
@@ -53,7 +53,7 @@
                                                       edge)))
                               (unless (gethash to-vertex memory)
                                 (setf (gethash to-vertex memory) t)
-                                (sb-concurrency:enqueue new-traversal queue))
+                                (enqueue queue new-traversal))
                               (when (typep edge edge-type)
                                 (setf (gethash to-vertex result-table)
                                       new-traversal))))
@@ -69,7 +69,7 @@
                                                       edge)))
                               (unless (gethash from-vertex memory)
                                 (setf (gethash from-vertex memory) t)
-                                (sb-concurrency:enqueue new-traversal queue))
+                                (enqueue queue new-traversal))
                               (when (typep edge edge-type)
                                 (setf (gethash from-vertex result-table)
                                       new-traversal))))
