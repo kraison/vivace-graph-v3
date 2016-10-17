@@ -740,6 +740,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                    :key-deserializer 'deserialize
                                    :value-serializer 'serialize
                                    :value-deserializer 'deserialize)))
+           (format t "SKIP-LIST: ~S~%" sl)
            (let* ((ids (loop for i from 1 to 1000 collecting (string-uuid (gen-id))))
                   (i 0))
              (log:debug "ABOUT TO START ADDING ITEMS")
