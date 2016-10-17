@@ -17,13 +17,18 @@
 (defmethod mapped-file-length ((mapped-file mapped-file))
   (osicat-posix:stat-size (osicat-posix:fstat (m-fd mapped-file))))
 
-#+sbcl
 (defmethod set-byte :around (mf offset byte)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
-      (set-byte mf offset byte))))
+      (set-byte mf offset byte))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-byte mf offset byte))
+    ))
 
 (defmethod set-byte ((mapped-file mapped-file) offset byte)
   (declare (type word offset))
@@ -31,11 +36,15 @@
   ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
   (setf (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset) byte))
 
-#+sbcl
 (defmethod get-byte :around (mf offset)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-byte mf offset))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-byte mf offset))))
 
@@ -43,11 +52,15 @@
   (declare (type word offset))
   (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset))
 
-#+sbcl
 (defmethod get-bytes :around (mf offset length)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-bytes mf offset length))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-bytes mf offset length))))
 
@@ -58,11 +71,15 @@
       (setf (aref vec i) (get-byte mapped-file (+ i offset))))
     vec))
 
-#+sbcl
 (defmethod set-bytes :around (mf vec offset length)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-bytes mf offset length))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (set-bytes mf offset length))))
 
