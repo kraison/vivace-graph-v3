@@ -76,7 +76,7 @@
   (let ((view-groups (lookup-view-groups graph node))
         (sleep 0.001))
     (when view-groups
-      ;;(log:debug "LOCKING VIEW GROUPS FOR ~A: ~A" node view-groups)
+      (log:debug "LOCKING VIEW GROUPS FOR ~A: ~A" node view-groups)
       (let ((tries 0))
         (loop until (> tries max-tries) do
              (incf tries)
@@ -90,10 +90,9 @@
                              (push lock locks)
                              (error "~A" group)))))
                  (error (c)
-                   ;;(log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
-                   ;;(log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
-                   ;;
-                   ;;node tries)
+                   (log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
+                   (log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
+                              node tries)
                    (map nil (lambda (lock)
                               (when (rw-lock-p lock)
                                 (release-write-lock lock)))
@@ -101,7 +100,7 @@
                    (sleep (* tries sleep)))
                  (:no-error (rv)
                    (declare (ignore rv))
-                   ;;(log:debug "LOCKED VIEW GROUPS FOR ~A!" node)
+                   (log:debug "LOCKED VIEW GROUPS FOR ~A!" node)
                    (return-from lock-view-groups (nreverse locks))))))
         (log:error "max-tries exceeded trying to lock views for ~A" node)
         (error 'view-lock-error
@@ -322,13 +321,13 @@
   "Add node to view."
   (compile-view-code view)
   (let ((*view-rv* nil))
-    ;;(log:debug "ADDING TO ~A" view)
-    ;;(log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
+    (log:debug "ADDING TO ~A" view)
+    (log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
     (funcall (view-map-fn view) node)
-    ;;(log:debug "VIEW-RV: ~S" *view-rv*)
+    (log:debug "VIEW-RV: ~S" *view-rv*)
     (mapcar (lambda (rv)
               (destructuring-bind (key val) rv
-                ;;(log:debug "VIEW: Adding ~S:~S to ~S" key val (view-skip-list view))
+                (log:debug "VIEW: Adding ~S:~S to ~S" key val (view-skip-list view))
                 (add-to-skip-list (view-skip-list view)
                                   (list key (id node))
                                   val)

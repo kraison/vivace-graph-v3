@@ -410,6 +410,10 @@ characters.~@:>" string (length string)))
   `(sb-thread:with-recursive-lock (,lock)
      (progn ,@body)))
 
+(defun make-semaphore ()
+  #+sbcl (sb-thread:make-semaphore)
+  #+ccl (ccl:make-semaphore))
+
 (defmacro with-locked-hash-table ((table) &body body)
   #+ccl
   `(progn ,@body)
@@ -430,3 +434,21 @@ characters.~@:>" string (length string)))
 #+ccl
 (defun make-rw-lock ()
   (ccl:make-read-write-lock))
+
+#+ccl
+(defun rw-lock-p (thing)
+  (ccl::read-write-lock-p thing))
+
+#+ccl
+(defun acquire-write-lock (lock &key wait-p)
+  (declare (ignore wait-p))
+  (let ((locked (ccl:make-lock-acquisition)))
+    (declare (dynamic-extent locked))
+    (ccl::write-lock-rwlock lock locked)
+    (when (ccl::lock-acquisition.status locked)
+      lock)))
+
+#+ccl
+(defun release-write-lock (lock)
+  (declare (ignore wait-p))
+  (ccl::unlock-rwlock lock))
