@@ -379,7 +379,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                                      :timeout timeout))))
             mutex)))
     #+ccl
-    (ccl:grab-lock mutex)))
+    (and (ccl:grab-lock mutex) mutex)))
 
 (defun unlock-skip-node (skip-list lock)
   (declare (ignore skip-list))
@@ -446,12 +446,14 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
     (values the-node level-found preds succs)))
 
 (defun add-to-skip-list (skip-list key value)
+  (log:debug "ADDING ~A/~A TO ~A" key value skip-list)
   (let ((top-level (random-level (%sl-max-level skip-list)))
         (preds (make-array (%sl-max-level skip-list)))
         (succs (make-array (%sl-max-level skip-list))))
     (loop
        (let ((node (find-in-skip-list skip-list key preds succs)))
          (when node
+           (log:debug "WORKING ON ~A" node)
            (when (not (%sn-marked-p skip-list node))
              (loop until (%sn-fully-linked-p skip-list node) do
                   #+ccl (ccl:process-allow-schedule)
@@ -462,7 +464,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                (let ((*print-pretty* nil))
                  (log:error "ATTEMPT TO INSERT DUP KV '~A/~A' IN ~A" key value skip-list))
                (return-from add-to-skip-list nil)))))
-       ;;(log:debug "~S / ~S:~%  ~S~%  ~S~%" key value (elt preds 0) (elt succs 0))
+       (log:debug "~S / ~S:~%  ~S~%  ~S~%" key value (elt preds 0) (elt succs 0))
        (let ((locks nil) pred succ prev-pred (valid-p t))
          (unwind-protect
               (progn
@@ -483,13 +485,16 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                            (%sn-addr succ)))))
                 (when valid-p
                   (let ((node (make-skip-node skip-list key value top-level)))
-                    ;;(log:debug "Adding ~A" node)
+                    (log:debug "Adding ~A" node)
                     (loop for level from 0 to (1- top-level) do
+                         (log:debug "Setting pointer at level ~A" level)
                          (set-node-pointer skip-list node level
                                            (%sn-addr (aref succs level)))
                          (set-node-pointer skip-list (aref preds level) level
                                            (%sn-addr node)))
+                    (log:debug "Setting ~A to fully linked" node)
                     (set-node-fully-linked skip-list node)
+                    (log:debug "Updating list count for ~A" skip-list)
                     (incf-skip-list-count skip-list)
                     (return-from add-to-skip-list node))))
            (dolist (lock (nreverse locks))
