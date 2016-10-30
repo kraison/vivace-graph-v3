@@ -120,16 +120,17 @@
             (name product)
             like-qty)))
 
-(map-view (lambda (key id value)
-            (declare (ignore id))
-            (let ((product (lookup-vertex key)))
-              (cons product value)))
-          'likes
-          'popularity
-          :collect-p t)
+(map-reduced-view (lambda (key id value)
+                    (declare (ignore id))
+                    (let ((product (lookup-vertex key)))
+                      (cons product value)))
+                  'likes
+                  'popularity
+                  :collect-p t)
 
 (map-vertices (lambda (person)
-                (format t "~A is a person~%" person))
+                (format t "~A is a person~%" person)
+                person)
               *graph*
               :collect-p t
               :vertex-type 'person)
