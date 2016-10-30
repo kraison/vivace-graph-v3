@@ -48,11 +48,22 @@
        (yield (last-name person) nil)))))
 
 ;; This will only index customers
-(def-view email :greaterp (customer :test-graph)
+(def-view email :lessp (customer :test-graph)
   (:map
    (lambda (customer)
      (when (email customer)
        (yield (email customer) nil)))))
+
+;; Example of a map-reduce view
+(def-view popularity :greaterp (likes :test-graph)
+  (:map
+   (lambda (like-edge)
+     (yield (string-id (to like-edge)) 1)))
+  (:reduce
+   (lambda (keys values)
+     (declare (ignore keys))
+     (apply '+ values))))
+
 
 (defun lookup-people-by-last-name (last-name)
   (let ((people (invoke-graph-view 'person 'last-name :key last-name)))
@@ -108,6 +119,14 @@
             (first-name person)
             (name product)
             like-qty)))
+
+(map-view (lambda (key id value)
+            (declare (ignore id))
+            (let ((product (lookup-vertex key)))
+              (cons product value)))
+          'likes
+          'popularity
+          :collect-p t)
 
 (map-vertices (lambda (person)
                 (format t "~A is a person~%" person))
