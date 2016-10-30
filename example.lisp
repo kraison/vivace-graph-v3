@@ -109,4 +109,20 @@
             (name product)
             like-qty)))
 
+(map-vertices (lambda (person)
+                (format t "~A is a person~%" person))
+              *graph*
+              :collect-p t
+              :vertex-type 'person)
+
+(map-edges (lambda (edge)
+             (let ((how-much (weight edge))
+                   (product (lookup-vertex (to edge))))
+               (cons product how-much)))
+           *graph*
+           :collect-p t
+           :edge-type 'likes
+           :vertex (lookup-customer-by-email "joe@blow.com")
+           :direction :out)
+
 (close-graph *graph*)
