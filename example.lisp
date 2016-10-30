@@ -91,6 +91,7 @@
     ;; (make-edge 'sells m1 p1 1 nil)
     (make-sells :from m1 :to p2)
     (make-likes :from c1 :to p1 :weight 100.0)
+    (make-likes :from c1 :to p2 :weight 20.0)
     (make-likes :from c2 :to p2 :weight 50.0)))
 
 ;;; Now run some queries
