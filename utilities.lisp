@@ -418,7 +418,7 @@ characters.~@:>" string (length string)))
   #+ccl
   `(progn ,@body)
   #+sbcl
-  `(sb-thread:with-locked-hash-table (,table)
+  `(sb-ext:with-locked-hash-table (,table)
      (progn ,@body)))
 
 #+ccl
