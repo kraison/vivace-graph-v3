@@ -67,13 +67,14 @@
                             :data-pointer pointer)))
       (change-class v subclass))))
 
-(defun make-vertex-table (location &key (key-test 'uuid-array-equal))
+(defun make-vertex-table (location &key (key-test 'uuid-array-equal)
+                                     (base-buckets (expt 2 17)))
   (let ((table
          (make-lhash :test key-test
                      :location location
                      :value-bytes +node-header-size+
                      :bucket-size 24
-                     :buckets (expt 2 17)
+                     :buckets base-buckets
                      :key-serializer 'serialize-key
                      :key-deserializer 'deserialize-key
                      :value-serializer 'serialize-vertex-head

@@ -107,13 +107,14 @@
                          (ieee-floats:decode-float64 int)))))
       (change-class e subclass))))
 
-(defun make-edge-table (location &key (key-test 'uuid-array-equal))
+(defun make-edge-table (location &key (key-test 'uuid-array-equal)
+                                   (base-buckets (expt 2 18)))
   (let ((table
          (make-lhash :test key-test
                      :location location
                      :value-bytes +edge-header-size+
                      :bucket-size 24
-                     :buckets (expt 2 18)
+                     :buckets base-buckets
                      :key-serializer 'serialize-key
                      :key-deserializer 'deserialize-key
                      :value-serializer 'serialize-edge-head

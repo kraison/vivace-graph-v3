@@ -1,7 +1,10 @@
 (in-package :graph-db)
 
-(defun make-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package replay-txn-dir (buffer-pool-p t))
+(defun make-graph (name location &key master-p slave-p master-host
+                                   replication-port replication-key package
+                                   replay-txn-dir (buffer-pool-p t)
+                                   (vertex-buckets (expt 2 17))
+                                   (edge-buckets (expt 2 18)))
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))
@@ -30,9 +33,11 @@
              :replication-key replication-key
              :replication-port replication-port
              :vertex-table (make-vertex-table
-                            (format nil "~A/vertex/" path))
+                            (format nil "~A/vertex/" path)
+                            :base-buckets vertex-buckets)
              :edge-table (make-edge-table
-                          (format nil "~A/edge/" path))
+                          (format nil "~A/edge/" path)
+                          :base-buckets edge-buckets)
              :heap heap
              :indexes (create-memory
                        (format nil "~A/indexes.dat" path)
@@ -70,7 +75,7 @@
       graph)))
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package (buffer-pool-p t))
+                   replication-key package (buffer-pool-p t) (gc-heap-p t))
   (let ((path (first (directory (ensure-directories-exist location))))
         (dirty-file (format nil "~A/.dirty" location))
         (schema-file (format nil "~A/schema.dat" location)))
@@ -123,7 +128,8 @@
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph)
-        (gc-heap graph)
+        (when gc-heap-p
+          (gc-heap graph))
         (recover-transactions graph))
       (when slave-p
         (setf (master-host graph) master-host))
