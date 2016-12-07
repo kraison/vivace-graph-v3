@@ -75,4 +75,4 @@
                        (push (cons (string-id e) c) problems))))
                  graph :include-deleted-p include-deleted-p)
       (terpri)
-      problems)))
+      (or problems graph))))

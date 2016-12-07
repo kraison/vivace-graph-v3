@@ -663,6 +663,55 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (format out "~(~2,'0X~)" byte))
          uuid)))
 
+(defun nshuffle (sequence)
+  (loop for i from (length sequence) downto 2
+     do (rotatef (elt sequence (random i))
+                 (elt sequence (1- i))))
+  sequence)
+
+(defun sl-perf-test (&optional (data-set-size 10000))
+  (let* ((heap (create-memory "/var/tmp/sl.dat" (* 1024 1024 100))))
+    (unwind-protect
+         (let ((sl (make-skip-list :heap heap
+                                   :head-key (format nil "~A" (code-char 0))
+                                   :head-value +null-key+
+                                   :tail-key (format nil "~A" (code-char 65535))
+                                   :tail-value +max-key+
+                                   :key-equal 'string=
+                                   :key-comparison 'string<
+                                   :key-serializer 'serialize
+                                   :key-deserializer 'deserialize
+                                   :value-serializer 'serialize
+                                   :value-deserializer 'deserialize)))
+           (let* ((ids (make-array (list data-set-size)
+                                   :initial-contents
+                                   (loop for i from 1 to data-set-size collecting (string-uuid (gen-id)))))
+                  (keys (make-array (list data-set-size)
+                                    :initial-contents
+                                    (nshuffle (loop for x from 0 below data-set-size
+                                                 collecting (format nil "~12,'0d" x))))))
+             (log:debug "ABOUT TO START ADDING ITEMS")
+             (let ((start (get-internal-real-time)))
+               (dotimes (i data-set-size)
+                 (add-to-skip-list sl
+                                   (svref keys i)
+                                   (svref ids i)))
+               (log:debug "ADDED ~A nodes in ~F"
+                          data-set-size
+                          (/ (- (get-internal-real-time) start) INTERNAL-TIME-UNITS-PER-SECOND)))
+             (let ((start (get-internal-real-time)))
+               (let ((list (skip-list-to-list sl)))
+                 (log:debug "DUMPED LIST IN ~F"
+                            (/ (- (get-internal-real-time) start) INTERNAL-TIME-UNITS-PER-SECOND))
+                 (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
+                 (log:debug "HEIGHTS: ~A" (analyze-sl-heights sl))
+                 list))))
+      (progn
+        (if (memory-magic-byte-corrupt-p heap)
+            (log:debug "Heap corrupt: 0x~X" (memory-magic-byte-corrupt-p heap)))
+        (close-memory heap)
+        (delete-file "/var/tmp/sl.dat")))))
+
 (defun sl-string-test ()
   (let* ((heap (create-memory "/var/tmp/sl.dat" (* 1024 1024 100))))
     (unwind-protect
@@ -680,20 +729,21 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (let* ((ids (loop for i from 1 to 1000 collecting (string-uuid (gen-id))))
                   (i 0))
              (log:debug "ABOUT TO START ADDING ITEMS")
-             (time
+             (let ((start (get-internal-real-time)))
               (dolist (id ids)
                 (log:debug "ADDING ~S:~S" id i)
                 (add-to-skip-list sl (format nil "~12,'0d" i) id)
                 (when (memory-magic-byte-corrupt-p heap)
                   (log:debug "Heap corrupt: 0x~X" (memory-magic-byte-corrupt-p heap))
                   (error "Corrupt heap!"))
-                (incf i)))
-             (log:debug "~A" (time (find-in-skip-list sl (format nil "~12,'0d" 500))))
-             (let ((list (time (skip-list-to-list sl))))
-               (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
-               ;;(log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 0)))
-               )
-             (terpri)
+                (incf i))
+              (log:debug "ADDED 1000 nodes in ~A" (- (get-internal-real-time) start)))
+             (log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 500)))
+             (let ((start (get-internal-real-time)))
+               (let ((list (skip-list-to-list sl)))
+                 (log:debug "SL SIZE: ~A (should be ~A)" (length list) (%sl-length sl))
+                 ;;(log:debug "~A" (find-in-skip-list sl (format nil "~12,'0d" 0)))
+                 (log:debug "DUMPED LIST IN ~A" (- (get-internal-real-time) start))))
              (dolist (i '(1 500 100 999))
                (let ((node (find-in-skip-list sl (format nil "~12,'0d" i)))
                      (new-id (format nil "NEW~A" (string-uuid (gen-id)))))

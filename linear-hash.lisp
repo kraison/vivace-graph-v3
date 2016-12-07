@@ -50,7 +50,16 @@
   (value-serializer 'serialize-uint64)
   (value-deserializer 'deserialize-uint64))
 
+(defmethod uuid-array-equal ((x simple-vector) (y simple-vector) &optional _a _b)
+  (declare (optimize (speed 3) (safety 0)))
+  (declare (ignore _a _b))
+  (dotimes (i 16)
+    (unless (= (svref x i) (svref y i))
+      (return-from uuid-array-equal nil)))
+  t)
+
 (defmethod uuid-array-equal ((x array) (y array) &optional _a _b)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
   (dotimes (i 16)
     (unless (= (aref x i) (aref y i))
@@ -58,6 +67,7 @@
   t)
 
 (defmethod uuid-array-equal ((x array) (y mpointer) &optional _a _b)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
   (dotimes (i 16)
     (unless (= (aref x i) (get-byte (mpointer-mmap y) (+ i (mpointer-loc y))))
@@ -65,6 +75,7 @@
   t)
 
 (defmethod uuid-array-equal ((x mpointer) (y array) &optional _a _b)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
   (dotimes (i 16)
     (unless (= (aref y i) (get-byte (mpointer-mmap x) (+ i (mpointer-loc x))))
@@ -72,6 +83,7 @@
   t)
 
 (defmethod uuid-array-equal ((x mpointer) (y mpointer) &optional _a _b)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
   (dotimes (i 16)
     (unless (= (get-byte (mpointer-mmap x) (+ i (mpointer-loc x)))
@@ -80,6 +92,7 @@
   t)
 
 (defmethod uuid-array-equal ((x array) (y mapped-file) &optional offset1 _)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _))
   (dotimes (i 16)
     (unless (= (aref x i) (get-byte y (+ i offset1)))
@@ -87,6 +100,7 @@
   t)
 
 (defmethod uuid-array-equal ((x mapped-file) (y array) &optional offset1 _)
+  (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _))
   (dotimes (i 16)
     (unless (= (aref y i) (get-byte x (+ i offset1)))
@@ -94,6 +108,7 @@
   t)
 
 (defmethod uuid-array-equal ((x mapped-file) (y mapped-file) &optional offset-x offset-y)
+  (declare (optimize (speed 3) (safety 0)))
   (dotimes (i 16)
     (unless (= (get-byte x (+ i offset-x))
                (get-byte y (+ i offset-y)))

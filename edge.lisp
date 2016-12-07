@@ -37,8 +37,8 @@
       id)))
 
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
-                   to weight written-p heap-written-p type-idx-written-p
-                   ve-written-p vev-written-p views-written-p)
+                     to weight written-p heap-written-p type-idx-written-p
+                     ve-written-p vev-written-p views-written-p)
   (let ((edge (get-edge-buffer)))
     (when id (setf (id edge) id))
     (when from (setf (from edge) from))
@@ -142,7 +142,9 @@
     (ve-index-remove (ve-index-out graph) out-ve-key (id edge))))
 
 (defmethod add-to-vev-index ((edge edge) (graph graph) &key unless-present)
-  (let ((vev-key (make-vev-key :in-id (to edge) :out-id (from edge) :type-id (type-id edge)))
+  (let ((vev-key (make-vev-key :in-id (to edge)
+                               :out-id (from edge)
+                               :type-id (type-id edge)))
         (table (vev-index-table (vev-index graph))))
     ;;(log:debug "add-to-vev-index: ~A" vev-key)
     ;;(log:debug "add-to-vev-index: EDGE: ~A" edge)
@@ -165,7 +167,9 @@
         (cache-index-list (vev-index graph) vev-key index-list)))))
 
 (defmethod remove-from-vev-index ((edge edge) (graph graph))
-  (let ((vev-key (make-vev-key :in-id (to edge) :out-id (from edge) :type-id (type-id edge)))
+  (let ((vev-key (make-vev-key :in-id (to edge)
+                               :out-id (from edge)
+                               :type-id (type-id edge)))
         (table (vev-index-table (vev-index graph))))
     (with-locked-hash-key (table vev-key)
       (let ((index-list (%lhash-get table vev-key)))
@@ -291,7 +295,7 @@
            index-list))))))
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
-                  include-deleted-p to-vertex from-vertex)
+                  include-deleted-p to-vertex from-vertex exclude-edge-types)
   ;; FIXME: need to handle subclasses when edge-type is specified
   (let ((result nil))
     (cond ((and edge-type to-vertex from-vertex)
@@ -316,13 +320,21 @@
                               (funcall fn edge)))))
                     index-list))))))
           ((and to-vertex from-vertex)
-           (let ((mapper (lambda (edge-type-id)
-                           (map-edges fn graph
-                                      :collect-p collect-p
-                                      :edge-type edge-type-id
-                                      :from-vertex from-vertex
-                                      :to-vertex to-vertex
-                                      :include-deleted-p include-deleted-p))))
+           (let ((mapper
+                  (lambda (edge-type-id)
+                    (when (or (zerop edge-type-id)
+                              (null exclude-edge-types)
+                              (not
+                               (member (node-type-name
+                                        (lookup-node-type-by-id edge-type-id :edge))
+                                       exclude-edge-types)))
+                      (map-edges fn graph
+                                 :collect-p collect-p
+                                 :edge-type edge-type-id
+                                 :from-vertex from-vertex
+                                 :to-vertex to-vertex
+                                 :exclude-edge-types exclude-edge-types
+                                 :include-deleted-p include-deleted-p)))))
              (if collect-p
                  (setq result (mapcan mapper (list-edge-types)))
                  (dolist (type-id (list-edge-types))
@@ -353,13 +365,21 @@
                               (funcall fn edge)))))
                     index-list))))))
           (vertex
-           (let ((mapper (lambda (edge-type-id)
-                           (map-edges fn graph
-                                      :collect-p collect-p
-                                      :edge-type edge-type-id
-                                      :vertex vertex
-                                      :direction direction
-                                      :include-deleted-p include-deleted-p))))
+           (let ((mapper
+                  (lambda (edge-type-id)
+                    (when (or (zerop edge-type-id)
+                              (null exclude-edge-types)
+                              (not
+                               (member (node-type-name
+                                        (lookup-node-type-by-id edge-type-id :edge))
+                                       exclude-edge-types)))
+                      (map-edges fn graph
+                                 :collect-p collect-p
+                                 :edge-type edge-type-id
+                                 :vertex vertex
+                                 :direction direction
+                                 :exclude-edge-types exclude-edge-types
+                                 :include-deleted-p include-deleted-p)))))
              (if collect-p
                  (setq result (mapcan mapper (list-edge-types)))
                  (dolist (type-id (list-edge-types))
@@ -386,7 +406,8 @@
                           (let ((edge (cdr pair)))
                             (when (and (written-p edge)
                                        (or include-deleted-p
-                                           (active-edge-p edge)))
+                                           (active-edge-p edge))
+                                       (not (member (type-of edge) exclude-edge-types)))
                               (setf (id edge) (car pair))
                               (if collect-p
                                   (push (funcall fn edge) result)
