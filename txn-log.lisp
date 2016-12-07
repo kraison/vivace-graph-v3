@@ -31,7 +31,7 @@
     (when file
       (values file (file-write-date file)))))
 
-(defmethod replay ((graph graph) txn-dir package-name)
+(defmethod replay ((graph graph) txn-dir package-name &key (check-integrity-p t))
   (let ((snapshot (find-newest-snapshot txn-dir)))
     (when snapshot
       (recreate-graph graph snapshot :package-name package-name))
@@ -42,5 +42,6 @@
              (regenerate-view graph class-name view-name)))
          (all-views graph))
     (log:debug "Checking data integrity.")
-    (or (check-data-integrity graph)
-                graph)))
+    (if check-integrity-p
+        (check-data-integrity graph)
+        graph)))

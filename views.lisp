@@ -89,9 +89,10 @@
                              (push lock locks)
                              (error "~A" group)))))
                  (error (c)
-                   (log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
-                   (log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
-                              node tries)
+                   ;;(log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
+                   ;;(log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
+                   ;;
+                   ;;node tries)
                    (map nil (lambda (lock)
                               (when (rw-lock-p lock)
                                 (release-write-lock lock)))
@@ -539,20 +540,17 @@
                           :view-name view-name))
                  (let* ((lookup-fn (view-lookup-fn view))
                         (skip-list (view-skip-list view))
-                        (cursor (if (and (null start-key)
-                                         (null key)
-                                         (null end-key))
+                        (cursor (if (and (null start-key) (null key) (null end-key))
                                     (make-cursor skip-list)
-                                    (make-range-cursor
-                                     skip-list
-                                     (list (cond (key key)
-                                                 (start-key start-key)
-                                                 (t +min-sentinel+))
-                                           +null-key+)
-                                     (list (cond (key key)
-                                                 (end-key end-key)
-                                                 (t +max-sentinel+))
-                                           +max-key+))))
+                                    (make-range-cursor skip-list
+                                                       (list (cond (key key)
+                                                                   (start-key start-key)
+                                                                   (t +min-sentinel+))
+                                                      +null-key+)
+                                                (list (cond (key key)
+                                                            (end-key end-key)
+                                                            (t +max-sentinel+))
+                                                      +max-key+))))
                  (result nil) (found-count 0) (cursor-count 0))
             (loop
                for node = (cursor-next cursor)
@@ -614,8 +612,7 @@
                  (when (and (equalp +null-key+ (second (%sn-key node)))
                             (or (null start-key)
                                 (or (equal (first (%sn-key node)) start-key)
-                                    (funcall comparator start-key
-                                             (first (%sn-key node))))))
+                                    (funcall comparator start-key (first (%sn-key node))))))
                    (incf total-count)
                    (when (or (null skip) (> total-count skip))
                      (if collect-p
@@ -654,8 +651,7 @@
                      (let ((node (find-in-skip-list (view-skip-list view)
                                                     (list key +null-key+))))
                        (when node
-                         (default-map-fn (first (%sn-key node)) nil
-                           (%sn-value node)))))
+                         (default-map-fn (first (%sn-key node)) nil (%sn-value node)))))
                     (key
                      (map-view 'default-map-fn
                                class-name view-name

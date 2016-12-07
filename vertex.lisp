@@ -1,6 +1,8 @@
 (in-package :graph-db)
 
-(defclass vertex (node) () (:metaclass node-class))
+(defclass vertex (node)
+  ()
+  (:metaclass node-class))
 
 (defmethod print-object ((node vertex) stream)
   (format stream "#<~A ~S REV ~S>"
