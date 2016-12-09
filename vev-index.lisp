@@ -17,6 +17,7 @@
 
 (defmethod %hash ((vev-key vev-key))
   (declare (optimize (speed 3) (safety 0)))
+  #|
   (let ((hash 5381))
     (dotimes (i 16)
       (let ((item (aref (vev-key-in-id vev-key) i)))
@@ -24,7 +25,11 @@
     (dotimes (i 16)
       (let ((item (aref (vev-key-out-id vev-key) i)))
         (setf hash (+ (+ hash (ash hash -5)) item))))
-    (+ (+ hash (ash hash -5)) (vev-key-type-id vev-key))))
+    (+ (+ hash (ash hash -5) (vev-key-type-id vev-key))))
+  |#
+  (+ (%hash (vev-key-in-id vev-key))
+     (%hash (vev-key-out-id vev-key))
+     (vev-key-type-id vev-key)))
 
 (declaim (inline %vev-key-equal))
 (defun %vev-key-equal (key1 key2)

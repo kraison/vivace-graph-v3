@@ -271,11 +271,22 @@
 
 (defmethod %hash ((key #.(class-of (make-array 16 :element-type '(unsigned-byte 8)))))
   ;;(declare (type (array (unsigned-byte 8) (16)) key))
+  #|
   (let ((hash 5381))
     (dotimes (i 16)
       (let ((item (elt key i)))
         (setf hash (+ (+ hash (ash hash -5)) item))))
     hash))
+  |#
+  ;; & 0xFF) << 24)
+  (declare (optimize (speed 3) (safety 0)))
+  (let ((int (aref key 0)))
+    (loop
+       for subscript from 1 to 15
+       for shift from 8 by 8
+       do
+         (incf int (ash (logand (aref key subscript) #xFF) shift)))
+    int))
 
 (defun sxhash-node (node) (%hash (id node)))
 (sb-ext:define-hash-table-test node-equal sxhash-node)

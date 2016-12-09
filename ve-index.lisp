@@ -15,11 +15,14 @@
 
 (defmethod %hash ((ve-key ve-key))
   (declare (optimize (speed 3) (safety 0)))
+  #|
   (let ((hash 5381))
     (dotimes (i 16)
       (let ((item (aref (ve-key-id ve-key) i)))
         (setf hash (+ (+ hash (ash hash -5)) item))))
     (+ (+ hash (ash hash -5)) (ve-key-type-id ve-key))))
+  |#
+  (+ (%hash (ve-key-id ve-key)) (ve-key-type-id ve-key)))
 
 (declaim (inline %ve-key-equal))
 (defun %ve-key-equal (key1 key2)
