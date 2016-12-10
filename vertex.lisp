@@ -6,28 +6,20 @@
 
 (defmethod print-object ((node vertex) stream)
   (format stream "#<~A ~S REV ~S>"
-          (type-of node) (uuid:byte-array-to-uuid (id node))
+          (type-of node) (string-id (id node))
           (revision node)))
 
 (defgeneric vertex-p (thing)
   (:method ((thing vertex)) t)
   (:method (thing) nil))
 
-(let ((random-states (list (make-random-state)
-                           (progn (sleep 1) (make-random-state)))))
-  (defun gen-vertex-id ()
-    (let* ((now (format nil "~,6F~6D~' :@/graph-db::print-byte-array/"
-                        (coerce (gettimeofday) 'double-float)
-                        (random 1000000 (nth (random 2) random-states))
-                        (get-random-bytes 16)))
-           (id (uuid:uuid-to-byte-array
-                (uuid:make-v5-uuid *vertex-namespace* now))))
-      id)))
-
 (defun %make-vertex (&key id type-id revision deleted-p data-pointer data bytes
                      written-p heap-written-p type-idx-written-p views-written-p)
   (let ((vertex (get-vertex-buffer)))
-    (when id (setf (id vertex) id))
+    (cond (id
+           (setf (id vertex) id))
+          ((equalp +null-key+ (id vertex))
+           (setf (id vertex) (gen-vertex-id))))
     (when type-id (setf (type-id vertex) type-id))
     (when revision (setf (revision vertex) revision))
 
@@ -114,7 +106,7 @@
                              'vertex
                              (node-type-name type-meta)))
                (bytes (when data (serialize data)))
-               (v (%make-vertex :id (or id (gen-vertex-id))
+               (v (%make-vertex :id id ;; (or id (gen-vertex-id))
                                 :type-id (if (eq type-meta :generic)
                                              0
                                              (node-type-id type-meta))

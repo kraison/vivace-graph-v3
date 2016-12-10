@@ -374,7 +374,7 @@ no data are not written."
   (print-unreadable-object (write stream :type t)
     (format stream "for ~A ~A"
             (class-name (class-of (node write)))
-            (uuid:byte-array-to-uuid (id write)))))
+            (string-id (id write)))))
 
 (defclass tx-create (tx-write) ())
 

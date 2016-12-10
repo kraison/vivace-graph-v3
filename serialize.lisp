@@ -270,16 +270,6 @@
   "Encode a UUID."
   (uuid:uuid-to-byte-array uuid +uuid+))
 
-(defmethod deserialize-help ((become (eql +guid+)) (bytes array))
-  "Decode a GUID."
-  (declare (type (array (unsigned-byte 8)) bytes))
-  (declare (type integer become))
-  (byte-array-to-guid bytes))
-
-(defmethod serialize ((guid guid))
-  "Encode a GUID."
-  (guid-to-byte-array guid +guid+))
-
 (defmethod deserialize-help ((become (eql +positive-integer+)) (bytes array))
   "Decode a positive integer."
   (declare (type (array (unsigned-byte 8)) bytes))

@@ -8,7 +8,7 @@
 
 (defmethod print-object ((node node) stream)
   (format stream "#<~A ~S REV ~S>"
-          (type-of node) (uuid:byte-array-to-uuid (id node))
+          (type-of node) (string-id (id node))
           (revision node)))
 
 (defmethod flags-as-int ((n node))

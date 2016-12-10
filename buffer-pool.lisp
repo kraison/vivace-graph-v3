@@ -103,13 +103,13 @@
 (defun make-vertex-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing vertex buffer")
-    (let ((v (make-instance 'vertex)))
+    (let ((v (make-instance 'vertex :id (gen-vertex-id))))
       (sb-ext:atomic-push v (first (gethash :vertex *buffer-pool*))))))
 
 (defun make-edge-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing edge buffer")
-    (let ((e (make-instance 'edge)))
+    (let ((e (make-instance 'edge :id (gen-edge-id))))
       (sb-ext:atomic-push e (first (gethash :edge *buffer-pool*))))))
 
 (defun make-skip-node-buffer ()

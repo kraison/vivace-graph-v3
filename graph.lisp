@@ -3,8 +3,8 @@
 (defun make-graph (name location &key master-p slave-p master-host
                                    replication-port replication-key package
                                    replay-txn-dir (buffer-pool-p t)
-                                   (vertex-buckets (expt 2 17))
-                                   (edge-buckets (expt 2 18)))
+                                   (vertex-buckets 8)
+                                   (edge-buckets 8))
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))

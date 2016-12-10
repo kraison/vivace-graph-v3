@@ -69,6 +69,14 @@
      clear-bucket rehash-bucket split-lhash
      lhash-get lhash-remove serialized-equal
      uuid-array-equal))
+  (let ((random-states (list (make-random-state)
+                             (progn (sleep 1) (make-random-state)))))
+    (defun gen-test-id ()
+      (let* ((now (format nil "~,6F~6D~' :@/graph-db::print-byte-array/"
+                          (coerce (gettimeofday) 'double-float)
+                          (random 1000000 (nth (random 2) random-states))
+                          (get-random-bytes 16))))
+        now)))
 
   (defun analyze-lhash-test ()
     (flet ((lnow ()
@@ -86,33 +94,25 @@
                    (let ((time (- (lnow) cycle-start)))
                      (dbg "~A (~F)" i time))
                    (setq cycle-start (lnow)))
-                 (let ((uuid (gen-id)) (value (random sb-ext:most-positive-word)))
+                 (let ((uuid (gen-vertex-id)) ;;(gen-id))
+                       (value (random sb-ext:most-positive-word)))
                    ;;(dbg "~%ADDING ~A / ~A" uuid value)
                    (push (cons uuid value) table)
-                   (lhash-insert lhash uuid value)
-                   ;;(dbg "LOOKING UP ~A" uuid)
-                   #|
-                   (let ((v2 (lhash-get lhash uuid)))
-                   (if (eql value v2)
-                         ;;(dbg "SUCCESSFULLY FOUND ~A / ~A" uuid v2) ;
-                   nil
-                   (dbg "VALUES FOR ~A NOT = ~A / ~A" uuid value v2)))
-                   |#
-                   ))
+                   (lhash-insert lhash uuid value)))
                (let ((total-time (- (lnow) start)))
                  (dbg "done in ~F seconds" total-time)
-               (dolist (pair (nreverse table))
-                 ;;(dbg "~%LOOKING FOR ~A" pair)
-                 (let ((v2 (lhash-get lhash (car pair))))
-                   (unless (eql (cdr pair) v2)
-                     (dbg "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
-                          (car pair) v2 (cdr pair)))))
+;                 (dolist (pair (nreverse table))
+;                   ;;(dbg "~%LOOKING FOR ~A" pair)
+;                   (let ((v2 (lhash-get lhash (car pair))))
+;                     (unless (eql (cdr pair) v2)
+;                       (dbg "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
+;                            (car pair) v2 (cdr pair)))))
                  (let ((result 0) (bucket-count (bucket-count lhash)))
                    (dotimes (bucket bucket-count)
                      (let* ((offset (bucket-offset lhash bucket))
                             (items (read-bucket lhash (%lhash-table lhash) offset)))
                        (incf result (length items))
-                       (dbg "B~6,'0D ITEMS ~S" bucket (length items))
+                       ;;(dbg "B~6,'0D ITEMS ~S" bucket (length items))
                        ;;(dolist (i items)
                        ;;  (dbg " ~S" i))
                        ))
@@ -207,7 +207,7 @@
                (loop until (null uuids) do
                (let ((pair (pop uuids)))
                (incf count)
-                        ;;(dbg "REMOVING ~A" (car pair)) ;
+                        ;;(dbg "REMOVING ~A" (car pair))
                (lhash-remove lhash (car pair))
                ))
                (dolist (ids (list uuids new-uuids))
@@ -227,7 +227,7 @@
 #|
                  (let* ((start4 (lnow)))
                (dolist (pair new-uuids)
-                     ;;(dbg "~%LOOKING FOR ~A" pair) ;
+                     ;;(dbg "~%LOOKING FOR ~A" pair)
                (let ((v2 (lhash-get lhash (car pair))))
                (unless (eql v2 (cdr pair))
                (error "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"

@@ -21,26 +21,18 @@
 
 (defmethod print-object ((node node) stream)
   (format stream "#<~A ~S REV ~S (~S -> ~S)>"
-          (type-of node) (uuid:byte-array-to-uuid (id node))
-          (revision node) (uuid:byte-array-to-uuid (from node))
-          (uuid:byte-array-to-uuid (to node))))
-
-(let ((random-states (list (make-random-state)
-                           (progn (sleep 1) (make-random-state)))))
-  (defun gen-edge-id ()
-    (let* ((now (format nil "~,6F~6D~' :@/graph-db::print-byte-array/"
-                        (coerce (gettimeofday) 'double-float)
-                        (random 1000000 (nth (random 2) random-states))
-                        (get-random-bytes 16)))
-           (id (uuid:uuid-to-byte-array
-                (uuid:make-v5-uuid *edge-namespace* now))))
-      id)))
+          (type-of node) (string-id (id node))
+          (revision node) (string-id (from node))
+          (string-id (to node))))
 
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
                      to weight written-p heap-written-p type-idx-written-p
                      ve-written-p vev-written-p views-written-p)
   (let ((edge (get-edge-buffer)))
-    (when id (setf (id edge) id))
+    (cond (id
+           (setf (id edge) id))
+          ((equalp +null-key+ (id edge))
+           (setf (id edge) (gen-edge-id))))
     (when from (setf (from edge) from))
     (when to (setf (to edge) to))
     (when weight (setf (weight edge) weight))
@@ -208,7 +200,7 @@
                              (node-type-name type-meta)))
                (bytes (when data (serialize data)))
                (e (%make-edge
-                   :id (or id (gen-edge-id))
+                   :id id ;; (or id (gen-edge-id))
                    :type-id (if (eq type-meta :generic)
                                 0
                                 (node-type-id type-meta))

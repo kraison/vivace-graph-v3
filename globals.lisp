@@ -30,8 +30,10 @@
 (alexandria:define-constant +data-extent-size+ (* 1024 1024 100))
 
 ;; Key namespaces
-(defvar *vertex-namespace* (uuid:make-uuid-from-string "2140DCE1-3208-4354-8696-5DF3076D1CEB"))
-(defvar *edge-namespace* (uuid:make-uuid-from-string "0392C7B5-A38B-466F-92E5-5A7493C2775A"))
+(defvar *vertex-namespace* (uuid:uuid-to-byte-array
+                            (uuid:make-uuid-from-string "2140DCE1-3208-4354-8696-5DF3076D1CEB")))
+(defvar *edge-namespace* (uuid:uuid-to-byte-array
+                          (uuid:make-uuid-from-string "0392C7B5-A38B-466F-92E5-5A7493C2775A")))
 
 ;; Sentinel values for skip lists
 (alexandria:define-constant +min-sentinel+ :gmin)
@@ -96,7 +98,6 @@
 ;; User-defined type identifiers for serializing. Start at 100
 (alexandria:define-constant +uuid+ 100)
 (alexandria:define-constant +timestamp+ 101)
-(alexandria:define-constant +guid+ 102)
 
 (defparameter *initial-extents* 10)
 (defparameter *max-locks* 10000)

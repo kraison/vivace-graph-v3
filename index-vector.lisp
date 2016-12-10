@@ -10,7 +10,7 @@
                    (index-vector-address i)
                    (index-vector-size i)
                    (map 'list
-                        #'uuid:byte-array-to-uuid
+                        #'string-id
                         (index-vector-vector i))))))
       (:constructor %make-index-vector))
   (address 0 :type (unsigned-byte 64))

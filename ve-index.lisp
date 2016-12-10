@@ -6,7 +6,7 @@
                 (declare (ignore d))
                 (let ((*print-base* 10))
                   (format s "#<VE-KEY ~S ~S>"
-                          (uuid:byte-array-to-uuid (ve-key-id i))
+                          (string-id (ve-key-id i))
                           (ve-key-type-id i))))))
   (id +null-key+ :type (simple-array (unsigned-byte 8) (16))) ;; node-id
   (type-id 0 :type (integer 0 65535))) ;; type-id
@@ -126,6 +126,7 @@
 (defmethod close-ve-index ((index ve-index))
   (close-lhash (ve-index-table index)))
 
+(declaim (inline cache-index-list))
 (defmethod cache-index-list ((index ve-index) (key ve-key) (il index-list))
   (setf (gethash key (ve-index-cache index)) il))
 
