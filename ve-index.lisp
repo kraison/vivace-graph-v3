@@ -48,7 +48,7 @@
       (%ve-key-equal key1 key2)))
   )
 
-(defun sxhash-ve-key (k) (%hash k))
+(defun sxhash-ve-key (k) (sxhash (%hash k)))
 (sb-ext:define-hash-table-test ve-key-equal sxhash-ve-key)
 (defun make-ve-cache () (make-hash-table :test 've-key-equal :synchronized t :weakness :value))
 

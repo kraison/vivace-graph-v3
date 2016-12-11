@@ -288,7 +288,7 @@
          (incf int (ash (logand (aref key subscript) #xFF) shift)))
     int))
 
-(defun sxhash-node (node) (%hash (id node)))
+(defun sxhash-node (node) (sxhash (%hash (id node))))
 (sb-ext:define-hash-table-test node-equal sxhash-node)
 (defun make-node-table (&key weakness synchronized)
   (make-hash-table :test 'node-equal
@@ -296,7 +296,7 @@
                    :synchronized synchronized))
 
 (defun id-equal (x y) (equalp x y))
-(defun sxhash-id-array (id) (%hash id))
+(defun sxhash-id-array (id) (sxhash (%hash id)))
 (sb-ext:define-hash-table-test id-equal sxhash-id-array)
 (defun make-id-table (&key weakness synchronized)
   (make-hash-table :test 'id-equal
