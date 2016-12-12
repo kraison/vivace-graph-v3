@@ -121,7 +121,11 @@
 (defun make-vertex-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing vertex buffer")
+<<<<<<< HEAD
     (let ((v (make-instance 'vertex :id (gen-vertex-id))))
+=======
+    (let ((v (make-instance 'vertex)))
+>>>>>>> 2fa1d84cd2ae0aaefd0c3aa2a5c44fa76c24f5dd
       #+sbcl
       (sb-ext:atomic-push v (first (gethash :vertex *buffer-pool*)))
       #+ccl
@@ -131,7 +135,11 @@
 (defun make-edge-buffer ()
   (let ((*package* (find-package :graph-db)))
     ;;(log:debug "refreshing edge buffer")
+<<<<<<< HEAD
     (let ((e (make-instance 'edge :id (gen-edge-id))))
+=======
+    (let ((e (make-instance 'edge)))
+>>>>>>> 2fa1d84cd2ae0aaefd0c3aa2a5c44fa76c24f5dd
       #+sbcl
       (sb-ext:atomic-push e (first (gethash :edge *buffer-pool*)))
       #+ccl

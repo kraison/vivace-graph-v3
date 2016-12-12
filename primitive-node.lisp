@@ -294,12 +294,17 @@
 
 (defun id-equal (x y) (equalp x y))
 <<<<<<< HEAD
+<<<<<<< HEAD
 (defun sxhash-id-array (id) (sxhash (%hash id)))
 (sb-ext:define-hash-table-test id-equal sxhash-id-array)
 =======
 (defun sxhash-id-array (id) (%hash id))
 #+sbcl (sb-ext:define-hash-table-test id-equal sxhash-id-array)
 >>>>>>> Port to Clozure Common Lisp;  only minimally tested.  Compiles and works for a basic database.
+=======
+(defun sxhash-id-array (id) (%hash id))
+#+sbcl (sb-ext:define-hash-table-test id-equal sxhash-id-array)
+>>>>>>> 2fa1d84cd2ae0aaefd0c3aa2a5c44fa76c24f5dd
 (defun make-id-table (&key weakness synchronized)
   #+ccl
   (make-hash-table :test 'id-equal

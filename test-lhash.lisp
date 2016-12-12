@@ -68,7 +68,7 @@
      remove-from-bucket read-bucket
      clear-bucket rehash-bucket split-lhash
      lhash-get lhash-remove serialized-equal
-     uuid-array-equal))
+     uuid-array-equal)))
 
   (defun analyze-lhash-test ()
     (flet ((lnow ()
@@ -119,7 +119,6 @@
                     (analyze-lhash lhash)))))
           (delete-lhash lhash)))))
 
-<<<<<<< HEAD
   (defun test-lhash ()
     (flet ((lnow ()
              (multiple-value-bind (sec msec) (osicat-posix:gettimeofday)
@@ -228,6 +227,104 @@
                (dbg "~A LOOKUPS IN ~F seconds"
                (length new-uuids) (- (lnow) start4))))
                |#
+(defun test-lhash ()
+  (flet ((lnow ()
+           (multiple-value-bind (sec msec) (osicat-posix:gettimeofday)
+             (+ sec (/ msec 1000000)))))
+    (let ((lhash (make-lhash :test 'uuid-array-equal
+                             :location "/var/tmp/lhash/"
+                             :buckets 8))
+          (table nil))
+      (dbg "~A" lhash)
+      (unwind-protect
+           (let* ((start (lnow)) (cycle-start (lnow)))
+             (dotimes (i 1000)
+               (when (zerop (mod i 100))
+                 (let ((time (- (lnow) cycle-start)))
+                   (dbg "~A (~F)" i time))
+                 (setq cycle-start (lnow)))
+               (let ((uuid (gen-id)) (value (random 18446744073709551615)))
+                 ;;(dbg "~%ADDING ~A / ~A" uuid value)
+                 (push (cons uuid value) table)
+                 (lhash-insert lhash uuid value)
+                 ;;(dbg "LOOKING UP ~A" uuid)
+                 (let ((v2 (lhash-get lhash uuid)))
+                   (if (eql value v2)
+                       ;;(dbg "SUCCESSFULLY FOUND ~A / ~A" uuid v2)
+                       nil
+                       (dbg "VALUES FOR ~A NOT = ~A / ~A" uuid value v2)))
+                 ;;(dbg "REMOVING ~A / ~A" uuid value)
+                 ;;(lhash-remove lhash uuid)
+                 ;;(dbg "REMOVED? ~A" (null (lhash-get lhash uuid)))
+                 (let ((l 0))
+                   (map-lhash (lambda (i) (declare (ignore i)) (incf l)) lhash :collect-p nil)
+                   (unless (= (1+ i) l)
+                     (dbg "Length is wrong: ~S != ~S" (1+ i) l)))
+                 ))
+             (dbg "done in ~F seconds" (- (lnow) start))
+             (dbg "LENGTH: ~S" (length (map-lhash (lambda (i) i) lhash :collect-p t)))
+             (dolist (pair (nreverse table))
+               ;;(dbg "~%LOOKING FOR ~A" pair)
+               (let ((v2 (lhash-get lhash (car pair))))
+                 (unless (eql (cdr pair) v2)
+                   (dbg "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
+                        (car pair) v2 (cdr pair))))))
+        (delete-lhash lhash)))))
+
+(defun test-lhash2 (&key profile-p)
+;  (init-buffer-pool)
+;  (when profile-p
+;    (sb-profile:reset)
+;    (profile-lhash))
+  (flet ((lnow ()
+           (multiple-value-bind (sec msec) (osicat-posix:gettimeofday)
+             (+ sec (/ msec 1000000)))))
+    (let ((uuids (loop for i from 0 below 1000000
+                    collecting (cons (gen-id)
+                                     (random 18446744073709551615))))
+          (lhash (make-lhash :test 'uuid-array-equal
+                             :location "/var/tmp/lhash/"
+                             :bucket-size 24
+                             :buckets (expt 2 20))))
+      ;;:buckets (expt 2 8))))
+      (dbg "~A" lhash)
+      (unwind-protect
+           (let* ((start (lnow)))
+             (dolist (pair uuids)
+               (lhash-insert lhash (car pair) (cdr pair)))
+             (dbg "done")
+             (dbg "~A INSERTS IN ~F seconds" (length uuids) (- (lnow) start))
+             (let* ((start2 (lnow)))
+               (dolist (pair uuids)
+                 ;;(dbg "~%LOOKING FOR ~A" pair)
+                 (let ((v2 (lhash-get lhash (car pair))))
+                   (unless (eql (cdr pair) v2)
+                     (error "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
+                            (car pair) v2 (cdr pair)))))
+               (dbg "~A LOOKUPS IN ~F seconds" (length uuids) (- (lnow) start2)))
+             #|
+             (let* ((start3 (lnow)) (count 0) (new-uuids nil))
+             (loop until (null uuids) do
+             (let ((pair (pop uuids)))
+             (incf count)
+                        ;;(dbg "REMOVING ~A" (car pair)) ; ;
+             (lhash-remove lhash (car pair))
+             ))
+             (dolist (ids (list uuids new-uuids))
+             (dolist (p2 ids)
+             (unless (equalp p2 pair)
+             (let ((v2 (lhash-get lhash (car p2))))
+             (unless (eql (cdr p2) v2)
+             (error
+             "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
+             (car p2) v2 (cdr p2))))))))
+             (let ((pair (cons (gen-id)
+             (random sb-ext:most-positive-word))))
+             (lhash-insert lhash (car pair) (cdr pair))
+             (push pair new-uuids)))
+             |#
+;;                 (dbg "~A DELETIONS IN ~F seconds" count (- (lnow) start3)))
+#|
 =======
 (defun test-lhash ()
   (flet ((lnow ()
@@ -327,16 +424,6 @@
              |#
 ;;                 (dbg "~A DELETIONS IN ~F seconds" count (- (lnow) start3)))
 #|
-             (let* ((start4 (lnow)))
-             (dolist (pair new-uuids)
-                     ;;(dbg "~%LOOKING FOR ~A" pair) ; ;
-             (let ((v2 (lhash-get lhash (car pair))))
-             (unless (eql v2 (cdr pair))
-             (error "GOT WRONG VALUE FOR ~A. GOT ~A, SHOULD BE ~A"
-             (car pair) v2 (cdr v2)))))
-             (dbg "~A LOOKUPS IN ~F seconds"
-             (length new-uuids) (- (lnow) start4))))
-      |#
                )
           (progn
             (dbg "~A" lhash)

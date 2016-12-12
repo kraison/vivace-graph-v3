@@ -50,7 +50,6 @@
 
 (defun sxhash-ve-key (k) (sxhash (%hash k)))
 #+sbcl (sb-ext:define-hash-table-test ve-key-equal sxhash-ve-key)
-
 (defun make-ve-cache ()
   #+ccl
   (make-hash-table :test 've-key-equal
