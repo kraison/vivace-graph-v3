@@ -20,9 +20,15 @@
 (defmethod set-byte :around (mf offset byte)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
-      (set-byte mf offset byte))))
+      (set-byte mf offset byte))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-byte mf offset byte))
+    ))
 
 (defmethod set-byte ((mapped-file mapped-file) offset byte)
   (declare (type word offset))
@@ -33,7 +39,12 @@
 (defmethod get-byte :around (mf offset)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-byte mf offset))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-byte mf offset))))
 
@@ -44,7 +55,12 @@
 (defmethod get-bytes :around (mf offset length)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-bytes mf offset length))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-bytes mf offset length))))
 
@@ -58,7 +74,12 @@
 (defmethod set-bytes :around (mf vec offset length)
   (handler-case
       (call-next-method)
+    #+sbcl
     (sb-kernel::memory-fault-error (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-bytes mf offset length))
+    #+ccl
+    (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (set-bytes mf offset length))))
 

@@ -27,7 +27,9 @@
                    (t 'graph))
              :graph-name name
              :location path
-             :views (make-hash-table :synchronized t)
+             :views
+             #+sbcl (make-hash-table :synchronized t)
+             #+ccl (make-hash-table :shared t)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -95,7 +97,9 @@
                    (t 'graph))
              :graph-name name
              :location path
-             :views (make-hash-table :synchronized t)
+             :views
+             #+sbcl (make-hash-table :synchronized t)
+             #+ccl (make-hash-table :shared t)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key

@@ -3,7 +3,9 @@
 (defvar *rest-port* 8080)
 (defvar *rest-app* nil)
 (defvar *clack-app* nil)
-(defvar *rest-procedures* (make-hash-table :synchronized t :test 'equalp))
+(defvar *rest-procedures*
+  #+sbcl (make-hash-table :synchronized t :test 'equalp)
+  #+ccl (make-hash-table :shared t :test 'equalp))
 (defvar *rest-passwd-file* "rpasswd")
 (defvar *htpasswd-bin* "/usr/bin/htpasswd")
 

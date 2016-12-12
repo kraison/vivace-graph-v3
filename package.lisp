@@ -1,8 +1,24 @@
 (in-package #:cl-user)
 
 (defpackage #:graph-db
-  (:use #:cl #:bordeaux-threads #:local-time #:sb-mop #:sb-pcl)
-  (:shadowing-import-from "SB-EXT" "WORD")
+  (:use #:cl
+        #:bordeaux-threads
+        #:local-time
+        #+ccl #:closer-mop
+        #+sbcl #:sb-mop
+        #+sbcl #:sb-pcl)
+  #+sbcl (:shadowing-import-from "SB-EXT" "WORD")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "STANDARD-METHOD")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "FINALIZE-INHERITANCE")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "STANDARD-GENERIC-FUNCTION")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "DEFMETHOD")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "DEFGENERIC")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "STANDARD-CLASS")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "COMPUTE-DISCRIMINATING-FUNCTION")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "COMPUTE-APPLICABLE-METHODS-USING-CLASSES")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "COMPUTE-EFFECTIVE-METHOD")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "METHOD-FUNCTION")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "MAKE-METHOD-LAMBDA")
   (:export #:make-graph
            #:open-graph
            #:close-graph
@@ -57,14 +73,14 @@
            #:with-write-locked-class
            #:with-read-locked-class
            #:schema-class-locks
-           #:make-rw-lock
-           #:with-read-lock
-           #:with-write-lock
-           #:acquire-read-lock
-           #:release-read-lock
-           #:acquire-write-lock
-           #:release-write-lock
-           #:rw-lock-p
+           #+sbcl #:make-rw-lock
+           #+sbcl #:with-read-lock
+           #+sbcl #:with-write-lock
+           #+sbcl #:acquire-read-lock
+           #+sbcl #:release-read-lock
+           #+sbcl #:acquire-write-lock
+           #+sbcl #:release-write-lock
+           #+sbcl #:rw-lock-p
 
            #:vertex
            #:edge

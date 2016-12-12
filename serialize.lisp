@@ -9,7 +9,8 @@
 (defgeneric deserialize (object))
 (defgeneric serialized-equal (x y))
 
-(let ((length-table (make-hash-table :synchronized t)))
+(let ((length-table #+sbcl (make-hash-table :synchronized t)
+                    #+ccl (make-hash-table :shared t)))
   (defun encode-length (int)
     (declare (type integer int))
     (or (gethash int length-table)
@@ -358,13 +359,13 @@
 (defmethod deserialize-help ((become (eql +string+)) (bytes array))
   (declare (type (array (unsigned-byte 8)) bytes))
   (declare (type (integer 0 255) become))
-  (sb-ext:octets-to-string bytes))
+  (babel:octets-to-string bytes))
 
 (defmethod serialize ((string string))
   "Unicode aware string encoding. Not as efficient as it could be: creates 2
-arrays: one to get sbcl's internal byte representation of the string, and then
+arrays: one to get lisp's internal byte representation of the string, and then
 another for prepending our code and the length of the object."
-  (let* ((unicode (sb-ext:string-to-octets string))
+  (let* ((unicode (babel:string-to-octets string))
 	 (vector-length (length unicode))
 	 (encoded-length (encode-length vector-length))
 	 (length-of-encoded-length (length encoded-length))

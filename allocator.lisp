@@ -20,14 +20,18 @@
                 (format s "#<MEMORY :LOCATION ~S :SIZE ~S :DATA-OFFSET ~S>"
                         (memory-location m) (memory-size m) (memory-data-offset m)))))
   location size mmap
-  (free-list (make-hash-table :synchronized t))
+  (free-list
+   #+sbcl (make-hash-table :synchronized t)
+   #+ccl (make-hash-table :shared t))
   free-list-thread
   (pointer 0 :type (UNSIGNED-BYTE 64))
   (lock (make-rw-lock))
   extent-size data-offset
   (bin-locks (map-into (make-array +memory-bin-count+) 'make-recursive-lock))
   (cache-lock (make-rw-lock))
-  (cache (make-hash-table :synchronized t :weakness :value)))
+  (cache
+   #+sbcl (make-hash-table :synchronized t :weakness :value)
+   #+ccl (make-hash-table :shared t :weak :value)))
 
 (defmethod set-byte ((memory memory) offset byte)
   (declare (type word offset))
@@ -101,6 +105,11 @@
   (let ((lock (gensym)))
     `(let ((bin (mod (sxhash ,size) +memory-bin-count+)))
        (let ((,lock (aref (memory-bin-locks ,memory) bin)))
+         #+ccl
+         ;; FIXME: honor wait-p for CCL
+         (ccl:with-lock-grabbed (,lock)
+           ,@body)
+         #+sbcl
          (sb-thread:with-recursive-lock (,lock :wait-p ,wait-p)
            ,@body)))))
 
@@ -295,6 +304,7 @@
                allocation-offset memory))
       (values allocation-offset data-size))))
 
+#+sbcl
 (defun test-allocator ()
   (let ((memory (create-memory "/var/tmp/testmem.dat" 10240))
         (pointers nil) (threads nil)

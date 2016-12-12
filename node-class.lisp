@@ -2,7 +2,7 @@
 
 (defclass node-class (standard-class) nil)
 
-(defmethod sb-mop:validate-superclass ((class node-class) (super standard-class))
+(defmethod validate-superclass ((class node-class) (super standard-class))
   "Node classes may inherit from ordinary classes."
   t)
 
@@ -37,7 +37,7 @@
   (map 'list 'slot-definition-name
        (remove-if-not #'(lambda (i)
                           (or (persistent-p i) (ephemeral-p i)))
-                      (sb-pcl:class-slots instance))))
+                      (class-slots instance))))
 
 (defmethod meta-slot-names ((instance node-class))
   "Return a list of metadata slot names for an instance."
@@ -47,7 +47,7 @@
               (remove-if-not #'(lambda (i)
                                  (meta-p i))
 
-               (sb-pcl:class-slots instance)))))
+               (class-slots instance)))))
     ;;(log:debug "meta-slot-names(~A): ~A" instance names)
     names))
 
@@ -58,7 +58,7 @@
          (map 'list 'slot-definition-name
               (remove-if-not #'(lambda (i)
                                  (persistent-p i))
-                             (sb-pcl:class-slots instance)))))
+                             (class-slots instance)))))
     ;;(log:debug "persistent-slot-names(~A): ~A" instance names)
     names))
 
@@ -69,7 +69,7 @@
          (map 'list 'slot-definition-name
               (remove-if-not #'(lambda (i)
                                  (ephemeral-p i))
-                             (sb-pcl:class-slots instance)))))
+                             (class-slots instance)))))
     ;;(log:debug "ephemeral-slot-names(~A): ~A" instance names)
     names))
 
@@ -108,7 +108,7 @@
   ;;(log:debug "Finding subclasses for ~A" class)
   (let ((result nil))
     (labels ((find-them (class)
-               (let ((subclasses (sb-mop:class-direct-subclasses class)))
+               (let ((subclasses (class-direct-subclasses class)))
                  ;;(log:debug "Found subclasses for ~A: ~A" class subclasses)
                  (dolist (subclass subclasses)
                    (unless (find subclass result)
@@ -126,8 +126,9 @@
 (defmethod find-ancestor-classes ((class node-class))
   (delete-if (lambda (class)
                (find (class-name class)
-                     '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)))
-             (sb-mop:compute-class-precedence-list class)))
+                     #+sbcl '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)
+                     #+ccl '(edge vertex node STANDARD-OBJECT T)))
+             (compute-class-precedence-list class)))
 
 (defmethod find-graph-parent-classes ((class node-class))
   (let ((classes
@@ -135,7 +136,7 @@
                       (or (eq (class-name class) 'vertex)
                           (eq (class-name class) 'edge)
                           (eq (class-name class) 'primitive-node)))
-                    (sb-mop:class-direct-superclasses class))))
+                    (class-direct-superclasses class))))
     (remove-duplicates
      (nconc classes
             (mapcan 'find-graph-parent-classes classes)))))

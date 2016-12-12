@@ -23,8 +23,15 @@
      :do (format stream "~A" (code-char x))))
 
 (defun gettimeofday ()
+  #+sbcl
   (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
-    (+ sec (/ msec 1000000))))
+    (+ sec (/ msec 1000000)))
+  #+(and ccl (not windows))
+  (ccl:rlet ((tv :timeval))
+    (let ((err (ccl:external-call "gettimeofday" :address tv :address (ccl:%null-ptr) :int)))
+      (assert (zerop err) nil "gettimeofday failed")
+      (values (ccl:pref tv :timeval.tv_sec)
+         (ccl:pref tv :timeval.tv_usec)))))
 
 (defvar *unix-epoch-difference*
   (encode-universal-time 0 0 0 1 1 1970 0))
@@ -156,7 +163,10 @@ characters.~@:>" string (length string)))
     array))
 
 (defun free-memory ()
-  (- (sb-kernel::dynamic-space-size) (sb-kernel:dynamic-usage)))
+  #+sbcl
+  (- (sb-kernel::dynamic-space-size) (sb-kernel:dynamic-usage))
+  #+ccl
+  (ccl::%freebytes))
 
 (defun djb-hash (seq)
   ;; Not used
@@ -371,3 +381,74 @@ characters.~@:>" string (length string)))
          (key-vector> (subseq v1 1) (subseq v2 1)))
         (t
          nil)))
+
+#+ccl
+(defun do-grab-lock-with-timeout (lock whostate timeout)
+  (if timeout
+      (or (ccl:try-lock lock)
+          (ccl:process-wait-with-timeout whostate
+                                         (round
+                                          (* timeout ccl:*ticks-per-second*))
+                                         #'ccl:try-lock (list lock)))
+      (ccl:grab-lock lock)))
+
+#+ccl
+(defun do-with-lock (lock whostate timeout fn)
+  (if timeout
+      (and
+       (do-grab-lock-with-timeout lock whostate timeout)
+       (unwind-protect
+            (funcall fn)
+         (ccl:release-lock lock)))
+      (ccl:with-lock-grabbed (lock) (funcall fn))))
+
+(defmacro with-lock ((lock &key whostate timeout) &body body)
+  "Wait for lock available, then execute the body while holding the lock."
+  #+ccl
+  `(do-with-lock ,lock ,whostate ,timeout (lambda () ,@body))
+  #+sbcl
+  `(sb-thread:with-recursive-lock (,lock)
+     (progn ,@body)))
+
+(defun make-semaphore ()
+  #+sbcl (sb-thread:make-semaphore)
+  #+ccl (ccl:make-semaphore))
+
+(defmacro with-locked-hash-table ((table) &body body)
+  #+ccl
+  `(progn ,@body)
+  #+sbcl
+  `(sb-ext:with-locked-hash-table (,table)
+     (progn ,@body)))
+
+#+ccl
+(defmacro with-read-lock ((lock) &body body)
+  `(ccl:with-read-lock (,lock)
+     (progn ,@body)))
+
+#+ccl
+(defmacro with-write-lock ((lock) &body body)
+  `(ccl:with-write-lock (,lock)
+     (progn ,@body)))
+
+#+ccl
+(defun make-rw-lock ()
+  (ccl:make-read-write-lock))
+
+#+ccl
+(defun rw-lock-p (thing)
+  (ccl::read-write-lock-p thing))
+
+#+ccl
+(defun acquire-write-lock (lock &key wait-p)
+  (declare (ignore wait-p))
+  (let ((locked (ccl:make-lock-acquisition)))
+    (declare (dynamic-extent locked))
+    (ccl::write-lock-rwlock lock locked)
+    (when (ccl::lock-acquisition.status locked)
+      lock)))
+
+#+ccl
+(defun release-write-lock (lock)
+  (declare (ignore wait-p))
+  (ccl::unlock-rwlock lock))

@@ -209,7 +209,7 @@
     :accessor highest-transaction-id))
   (:default-initargs
    :socket nil
-    :mailbox (sb-concurrency:make-mailbox)
+    :mailbox (make-mailbox)
     :highest-transaction-id 0))
 
 (defgeneric add-slave-session (session graph)
@@ -225,7 +225,7 @@
 (defgeneric broadcast-to-slaves (object graph)
   (:method (object graph)
     (dolist (session (slaves graph))
-      (sb-concurrency:send-message (mailbox session) object))))
+      (send-message (mailbox session) object))))
 
 (defmethod replicate-transaction (tx graph)
   (broadcast-to-slaves tx graph))
@@ -273,7 +273,7 @@ on SOCKET."
                  (loop
                     (when (stop-replication-p graph)
                       (return))
-                    (let ((tx (sb-concurrency:receive-message mailbox :timeout 1)))
+                    (let ((tx (receive-message mailbox :timeout 1)))
                       (case tx
                         ((nil)
                          ;; Hit timeout, do nothing
@@ -303,9 +303,10 @@ on SOCKET."
            (let ((socket (usocket:socket-accept listener
                                                 :element-type '(unsigned-byte 8))))
              (log:debug "Got a connection: ~A" socket)
-             (sb-thread:make-thread (make-slave-session-handler graph
-                                                                socket)
-                                    :name "slave session")))))))
+             (bordeaux-threads:make-thread
+              (make-slave-session-handler graph
+                                          socket)
+              :name "slave session")))))))
 
 
 (defgeneric check-handshake-plist (plist graph)
@@ -453,10 +454,11 @@ retryable network error, retries with an exponential retry timeout."
   (declare (ignore package))
   (setf (stop-replication-p graph) nil)
   (setf (replication-listener graph)
-        (sb-thread:make-thread 'server-accept-loop
-                               :arguments (list graph)
-                               :name (format nil "server listener for ~A"
-                                             (graph-name graph)))))
+        (bordeaux-threads:make-thread
+         'server-accept-loop
+         :arguments (list graph)
+         :name (format nil "server listener for ~A"
+                       (graph-name graph)))))
 
 (defmethod stop-replication ((graph master-graph))
   (setf (stop-replication-p graph) t)
@@ -470,9 +472,10 @@ retryable network error, retries with an exponential retry timeout."
   (declare (ignore package))
   (setf (stop-replication-p graph) nil)
   (setf (slave-thread graph)
-        (sb-thread:make-thread 'slave-loop
-                               :arguments (list graph)
-                               :name (format nil "~A-repl-slave-thread" (graph-name graph)))))
+        (bordeaux-threads:make-thread
+         'slave-loop
+         :arguments (list graph)
+         :name (format nil "~A-repl-slave-thread" (graph-name graph)))))
 
 (defmethod stop-replication ((graph slave-graph))
   (setf (stop-replication-p graph) t)
