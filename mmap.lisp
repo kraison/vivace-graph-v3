@@ -31,7 +31,7 @@
     ))
 
 (defmethod set-byte ((mapped-file mapped-file) offset byte)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (declare (type (integer 0 255) byte))
   ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
   (setf (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset) byte))
@@ -49,7 +49,7 @@
       (get-byte mf offset))))
 
 (defmethod get-byte ((mapped-file mapped-file) offset)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset))
 
 (defmethod get-bytes :around (mf offset length)
@@ -65,7 +65,7 @@
       (get-bytes mf offset length))))
 
 (defmethod get-bytes ((mapped-file mapped-file) offset length)
-  (declare (type word offset length))
+  #+sbcl (declare (type word offset length))
   (let ((vec (make-byte-vector length)))
     (dotimes (i length)
       (setf (aref vec i) (get-byte mapped-file (+ i offset))))
@@ -84,7 +84,7 @@
       (set-bytes mf offset length))))
 
 (defmethod set-bytes ((mapped-file mapped-file) vec offset length)
-  (declare (type word offset length))
+  #+sbcl (declare (type word offset length))
   (dotimes (i length)
     (set-byte mapped-file (+ i offset) (aref vec i)))
   vec)
@@ -164,7 +164,7 @@
     mapped-file))
 
 (defmethod serialize-uint64 ((mf mapped-file) int offset)
-  (declare (type word int offset))
+  #+sbcl (declare (type word int offset))
   ;;(log:debug "MMAP: SERIALIZING UINT64 ~A TO ADDR ~A" int offset)
   (dotimes (i 8)
     ;;(log:debug "WRITING BYTE ~X" (ldb (byte 8 0) int))
@@ -176,9 +176,9 @@
 
 (defmethod deserialize-uint64 ((mf mapped-file) offset)
   "Decode a UINT64."
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (let ((int 0))
-    (declare (type word int))
+    #+sbcl (declare (type word int))
     (dotimes (i 8)
       (setq int (dpb (get-byte mf (+ i offset)) (byte 8 (* i 8)) int)))
     int))
@@ -186,20 +186,20 @@
 (defmethod deserialize-uint64 ((array array) offset)
   "Decode a UINT64."
   (let ((int 0))
-    (declare (type word int))
+    #+sbcl (declare (type word int))
     (dotimes (i 8)
       (setq int (dpb (aref array (+ i offset)) (byte 8 (* i 8)) int)))
     int))
 
 (defmethod incf-uint64 ((mf mapped-file) offset)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (let ((int (deserialize-uint64 mf offset)))
     (incf int)
     (serialize-uint64 mf int offset)
     int))
 
 (defmethod decf-uint64 ((mf mapped-file) offset)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (let ((int (deserialize-uint64 mf offset)))
     (serialize-uint64 mf (decf int) offset)
     int))
@@ -214,14 +214,14 @@
 
 (defmethod serialize-uint32 ((mf mapped-file) int offset)
   (declare (type uint32 int))
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (dotimes (i 4)
     (set-byte mf offset (ldb (byte 8 (* i 8)) int))
     (incf offset))
   (incf offset))
 
 (defmethod deserialize-uint32 ((mf mapped-file) offset)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (let ((int 0))
     (declare (type uint32 int))
     (dotimes (i 4)
@@ -230,14 +230,14 @@
 
 (defmethod serialize-uint40 ((mf mapped-file) int offset)
   (declare (type uint40 int))
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (dotimes (i 5)
     (set-byte mf offset (ldb (byte 8 (* i 8)) int))
     (incf offset))
   (incf offset))
 
 (defmethod deserialize-uint40 ((mf mapped-file) offset)
-  (declare (type word offset))
+  #+sbcl (declare (type word offset))
   (let ((int 0))
     (declare (type uint40 int))
     (dotimes (i 5)
