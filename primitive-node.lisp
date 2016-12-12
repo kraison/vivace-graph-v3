@@ -270,15 +270,6 @@
     nil))
 
 (defmethod %hash ((key #.(class-of (make-array 16 :element-type '(unsigned-byte 8)))))
-  ;;(declare (type (array (unsigned-byte 8) (16)) key))
-  #|
-  (let ((hash 5381))
-    (dotimes (i 16)
-      (let ((item (elt key i)))
-        (setf hash (+ (+ hash (ash hash -5)) item))))
-    hash))
-  |#
-  ;; & 0xFF) << 24)
   (declare (optimize (speed 3) (safety 0)))
   (let ((int (aref key 0)))
     (loop
