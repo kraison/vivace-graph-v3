@@ -419,7 +419,7 @@
       (unless (>= (mapped-file-length (%lhash-overflow lhash))
                   (+ (read-lhash-next-overflow-pointer lhash)
                      (%lhash-bucket-bytes lhash)))
-        (log:info "SPLIT: extending overflow ~A" (%lhash-overflow lhash))
+        ;;(log:info "SPLIT: extending overflow ~A" (%lhash-overflow lhash))
         (extend-mapped-file (%lhash-overflow lhash)
                             ;;(%lhash-bucket-bytes lhash)
                             +data-extent-size+))
@@ -597,7 +597,7 @@
                          (cdr pair))))))
 
 (defun rehash-bucket (lhash bucket)
-  (log:info "REHASHING BUCKET ~A" bucket)
+  ;;(log:info "REHASHING BUCKET ~A" bucket)
   (with-locked-hash-bucket (lhash bucket)
     (let ((pairs (read-bucket lhash
                               (%lhash-table lhash)
@@ -618,7 +618,7 @@
                            (cdr pair))))))))
 
 (defun split-lhash (lhash)
-  (log:info "SPLIT ~A TRING TO GET LOCK ~A!" lhash (%lhash-split-lock lhash))
+  ;;(log:info "SPLIT ~A TRING TO GET LOCK ~A!" lhash (%lhash-split-lock lhash))
   (with-write-lock ((%lhash-split-lock lhash))
     ;;(log:info "SPLIT ~A GOT LOCK!" lhash)
     (let ((*rehashing-bucket* t))
