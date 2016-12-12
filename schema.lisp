@@ -155,6 +155,7 @@ replication for a quick schema compatibility check."
                  (gethash (node-type-parent-type meta)
                           (schema-type-table (schema graph))))
         (node-type-id meta))
+  (finalize-inheritance (find-class (node-type-name meta)))
   (save-schema (schema graph) graph))
 
 (defmacro def-node-type (name parent-types slot-specs graph-name)
@@ -188,8 +189,9 @@ replication for a quick schema compatibility check."
                   :package (package-name *package*)
                   :constructor ',constructor)))
            ;; FIXME: why is this necessary when inheriting from another node subclass?
-           (unless (class-finalized-p (find-class ',name))
-             (finalize-inheritance (find-class ',name)))
+           ;;(unless (class-finalized-p (find-class ',name))
+           (finalize-inheritance (find-class ',name))
+           ;;)
            (defun ,predicate (thing)
              (typep thing ',name))
            (defun ,lookup-fn (id &key include-deleted-p)

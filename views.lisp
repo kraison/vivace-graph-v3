@@ -76,7 +76,7 @@
   (let ((view-groups (lookup-view-groups graph node))
         (sleep 0.001))
     (when view-groups
-      (log:debug "LOCKING VIEW GROUPS FOR ~A: ~A" node view-groups)
+      ;;(log:debug "LOCKING VIEW GROUPS FOR ~A: ~A" (type-of node) view-groups)
       (let ((tries 0))
         (loop until (> tries max-tries) do
              (incf tries)
@@ -90,9 +90,10 @@
                              (push lock locks)
                              (error "~A" group)))))
                  (error (c)
-                   (log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
-                   (log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
-                              node tries)
+                   (declare (ignore c))
+                   ;;(log:debug "UNABLE TO ACQUIRE LOCK: ~A" c)
+                   ;;(log:debug "UNABLE TO LOCK VIEW GROUPS FOR ~A; TRY ~A. WAITING"
+                   ;;node tries)
                    (map nil (lambda (lock)
                               (when (rw-lock-p lock)
                                 (release-write-lock lock)))
@@ -100,9 +101,9 @@
                    (sleep (* tries sleep)))
                  (:no-error (rv)
                    (declare (ignore rv))
-                   (log:debug "LOCKED VIEW GROUPS FOR ~A!" node)
+                   ;;(log:debug "LOCKED VIEW GROUPS FOR ~A!" node)
                    (return-from lock-view-groups (nreverse locks))))))
-        (log:error "max-tries exceeded trying to lock views for ~A" node)
+        ;;(log:error "max-tries exceeded trying to lock views for ~A" node)
         (error 'view-lock-error
                :message
                (format nil "max-tries exceeded trying to view-lock ~A" node))))))
@@ -141,7 +142,7 @@
                  (view-group (make-view-group :class-name view-group-name)))
             (setf (gethash view-group-name view-table) view-group)
             (dolist (view (rest view-data))
-              (log:info "RESTORING ~S VIEW ~S" view-group-name (cdr (assoc :name view)))
+              ;;(log:info "RESTORING ~S VIEW ~S" view-group-name (cdr (assoc :name view)))
               (let* ((view-name (cdr (assoc :name view)))
                      (v (make-view :name view-name
                                    :class-name view-group-name
@@ -168,7 +169,8 @@
                                           :key-deserializer 'view-key-deserialize
                                           :value-serializer 'serialize
                                           :value-deserializer 'deserialize))
-                    (log:info "~A didn't have a pointer; cannot restore skip list!" v))
+                    ;;(log:info "~A didn't have a pointer; cannot restore skip list!" v)
+                    )
                 (setf (gethash view-name (view-group-table view-group)) v)))))))
     (setf (views graph) view-table)))
 
@@ -203,7 +205,7 @@
       (unless view
         (error "Cannot delete view ~A/~A: view does not exist"
                class-name view-name))
-      (log:info "Deleting ~A" view)
+      ;;(log:info "Deleting ~A" view)
       (when (skip-list-p (view-skip-list view))
         (delete-skip-list (view-skip-list view)))
       (remhash view-name (view-group-table
@@ -319,15 +321,16 @@
 
 (defmethod add-to-view ((graph graph) (view view) (node node))
   "Add node to view."
+  ;;(log:debug "Adding ~A to ~A" node view)
   (compile-view-code view)
   (let ((*view-rv* nil))
-    (log:debug "ADDING TO ~A" view)
-    (log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
+    ;;(log:debug "ADDING TO ~A" view)
+    ;;(log:debug "VIEW: Calling ~S on ~S" (view-map-fn view) node)
     (funcall (view-map-fn view) node)
-    (log:debug "VIEW-RV: ~S" *view-rv*)
+    ;;(log:debug "VIEW-RV: ~S" *view-rv*)
     (mapcar (lambda (rv)
               (destructuring-bind (key val) rv
-                (log:debug "VIEW: Adding ~S:~S to ~S" key val (view-skip-list view))
+                ;;(log:debug "VIEW: Adding ~S:~S to ~S" key val (view-skip-list view))
                 (add-to-skip-list (view-skip-list view)
                                   (list key (id node))
                                   val)

@@ -1,8 +1,9 @@
 (ql:quickload :graph-db)
-(use-package :graph-db)
+(in-package :graph-db)
+
 (defvar *graph-name* :test-graph)
 (defvar *graph-path* "/var/tmp/test-graph/")
-(setq *graph* (make-graph *graph-name* *graph-path*))
+(log:config :all :sane :d :nopretty :thread :daily "/var/tmp/graph.log")
 
 ;;; Types
 (defun email-p (x)
@@ -38,6 +39,8 @@
 (def-edge sells ()
  ()
  :test-graph)
+
+(setq *graph* (make-graph *graph-name* *graph-path*))
 
 ;;; Indexes
 ;; This will index both customers and people

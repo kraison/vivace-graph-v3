@@ -9,6 +9,7 @@
         #+sbcl #:sb-pcl)
   #+sbcl (:shadowing-import-from "SB-EXT" "WORD")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "STANDARD-METHOD")
+  #+ccl (:shadowing-import-from "CLOSER-MOP" "FINALIZE-INHERITANCE")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "STANDARD-GENERIC-FUNCTION")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "DEFMETHOD")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "DEFGENERIC")
