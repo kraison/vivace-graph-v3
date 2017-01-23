@@ -1,7 +1,7 @@
 (in-package :graph-db)
 
 (defmethod snapshot ((graph graph) &key include-deleted-p
-                     (check-data-integrity-p t))
+                                     (check-data-integrity-p t))
   (let ((count nil))
     (with-recursive-lock-held ((txn-lock graph))
       (let ((problems (when check-data-integrity-p
@@ -9,11 +9,15 @@
                                               :include-deleted-p
                                               include-deleted-p))))
         (if problems
-            (return-from snapshot
-              (values :data-integrity-issues
-                      problems))
             (progn
-              (multiple-value-bind (sec msec) (gettimeofday)
+              (log:error "data integrity errors on ~A" graph)
+              (dolist (problem problems)
+                (log:error "data integrity: ~A" problem))
+              (return-from snapshot
+                (values :data-integrity-issues
+                        problems)))
+            (progn
+              (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
                 (let ((snap-file (format nil "~A/txn-log/snap-~D.~6,'0D"
                                          (location graph) sec msec)))
                   (setq count (backup graph

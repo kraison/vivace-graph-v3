@@ -62,6 +62,7 @@
                       (handler-case
                           (maybe-init-node-data v :graph graph)
                         (error (c)
+                          (log:error "data integrity ~A: ~A" (string-id v) c)
                           (push (cons (string-id v) c) problems))))
                     graph :include-deleted-p include-deleted-p)
       (map-edges (lambda (e)
@@ -72,7 +73,8 @@
                    (handler-case
                        (maybe-init-node-data e :graph graph)
                      (error (c)
+                       (log:error "data integrity ~A: ~A" (string-id e) c)
                        (push (cons (string-id e) c) problems))))
                  graph :include-deleted-p include-deleted-p)
       (terpri)
-      (or problems graph))))
+      problems)))
