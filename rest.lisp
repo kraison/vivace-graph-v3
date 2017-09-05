@@ -26,6 +26,27 @@
            username)))
 
 (defun auth-rest-user (username password)
+  (with-open-file (stream *rest-passwd-file*)
+    (do ((line (read-line stream nil :eof)
+               (read-line stream nil :eof)))
+        ((eql line :eof))
+      (let ((pair (cl-ppcre:split "\\:" line)))
+        (when (equalp (first pair) username)
+          (destructuring-bind (_ hash salt enc)
+              (cl-ppcre:split "\\$" (second pair))
+            (declare (ignore _ enc))
+            (multiple-value-bind (out err exit-code)
+                (trivial-shell:shell-command
+                 (format nil "openssl passwd -~A -salt ~A ~A"
+                         hash salt password))
+              (declare (ignore exit-code err))
+              (setq out (cl-ppcre:regex-replace-all "\\s+$" out ""))
+              (log:warn "GOT ~A FOR ~A" out (second pair))
+              (return-from auth-rest-user
+                (equalp out (second pair))))))))))
+
+#|
+  ;; This only works with newer versions of htpasswd;  see openssl version above
   (multiple-value-bind (out err exit-code)
       (trivial-shell:shell-command
        (format nil "~A -vb ~A ~A ~A"
@@ -35,6 +56,7 @@
                password))
     (declare (ignore out err))
     (eq 0 exit-code)))
+|#
 
 (defmacro with-rest-auth ((username password) &body body)
   `(if (auth-rest-user ,username ,password)
@@ -95,6 +117,23 @@
       (mapcar (lambda (slot-name)
                 (cons slot-name (slot-value edge slot-name)))
               (data-slots (find-class class-name)))))))
+
+(defmethod json-encode-edge-list (seq)
+  (json-rpc::encode-json-to-string
+   (map 'list
+        (lambda (edge)
+          (let* ((class (class-of edge))
+                 (class-name (class-name class)))
+            (nconc
+             (list (cons :id (string-id edge))
+                   (cons :type (json:lisp-to-camel-case
+                                (symbol-name class-name)))
+                   (cons :from (string-id (from edge)))
+                   (cons :to (string-id (to edge))))
+             (mapcar (lambda (slot-name)
+                       (cons slot-name (slot-value edge slot-name)))
+                     (data-slots (find-class class-name))))))
+        seq)))
 
 (defmethod json-encode ((vertex vertex))
   (let* ((class (class-of vertex))
@@ -311,6 +350,20 @@
       (with-rest-edge ((get-param params :node-id))
         (mark-deleted edge)))))
 
+(defun rest-list-edges (params)
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (with-rest-vertex ((get-param params :node-id))
+        (json-encode-edge-list
+         (nconc (map-edges 'identity *graph*
+                           :direction :out
+                           :collect-p t
+                           :vertex vertex)
+                (map-edges 'identity *graph*
+                           :direction :in
+                           :collect-p t
+                           :vertex vertex)))))))
+
 (defun start-rest (&optional (port *rest-port*))
   (prog1
       (setq *rest-app* (make-instance 'ningle:<app>))
@@ -319,6 +372,9 @@
 
           (ningle:route *rest-app* "/graph/:graph-name/vertex/:node-id" :method :get)
           'rest-get-vertex
+
+          (ningle:route *rest-app* "/graph/:graph-name/vertex/:node-id/edges" :method :get)
+          'rest-list-edges
 
           (ningle:route *rest-app* "/graph/:graph-name/vertex/:node-id" :method :delete)
           'rest-delete-vertex
