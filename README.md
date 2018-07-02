@@ -9,6 +9,10 @@ It currently only works with SBCL versions >= 1.045 and Clozure CL, though it wo
 
 To get started, please see example.lisp.
 
+### Announcement, 2018-07-01
+
+The author is currently on sabattical, and is looking for help maintaining this codebase while he is away (and after he returns).  There are currently 11 outstanding issues and very little documentation.  Please let kevin@chatsubolabs.com know if you are interested in helping out.
+
 ### Announcement, 2016-12-12
 
 Folks, I recently checked in a few breaking changes to the VG3 repo that
