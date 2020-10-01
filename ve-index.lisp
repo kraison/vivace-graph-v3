@@ -30,7 +30,7 @@
   (and (= (ve-key-type-id key1) (ve-key-type-id key2))
        (equalp (ve-key-id key1) (ve-key-id key2))))
 
-(defgeneric ve-key-equal (x y &optional offset1 offset1)
+(defgeneric ve-key-equal (x y &optional offset1 offset2)
   (:method ((key1 ve-key) (key2 ve-key) &optional _a _b)
     (declare (ignore _a _b))
     (%ve-key-equal key1 key2))

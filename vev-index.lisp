@@ -38,7 +38,7 @@
        (equalp (vev-key-out-id key1) (vev-key-out-id key2))
        (equalp (vev-key-in-id key1) (vev-key-in-id key2))))
 
-(defgeneric vev-key-equal (x y &optional offset1 offset1)
+(defgeneric vev-key-equal (x y &optional offset1 offset2)
   (:method ((key1 vev-key) (key2 vev-key) &optional _a _b)
     (declare (ignore _a _b))
     (%vev-key-equal key1 key2))
