@@ -146,6 +146,7 @@
   (setf (m-pointer mapped-file) nil)
   nil)
 
+#+linux
 (defmethod extend-mapped-file ((mapped-file mapped-file) (length integer))
   (log:debug "EXTENDING MMAP ~A" mapped-file)
   (let ((ptr (osicat-posix:mremap (m-pointer mapped-file)
@@ -153,6 +154,25 @@
                                   (+ length (mapped-file-length mapped-file))
                                   osicat-posix:MREMAP-MAYMOVE)))
     (setf (m-pointer mapped-file) ptr)
+    (osicat-posix:lseek (m-fd mapped-file)
+                        (1- (+ length (mapped-file-length mapped-file)))
+                        osicat-posix:seek-set)
+    (cffi:with-foreign-string (null (format nil "~A" (code-char 0)))
+      (cffi:foreign-funcall "write"
+                            :int (m-fd mapped-file)
+                            :pointer null
+                            size 1))
+    mapped-file))
+
+#+darwin
+(defmethod extend-mapped-file ((mapped-file mapped-file) (length integer))
+  (log:debug "EXTENDING MMAP ~A" mapped-file)
+  (let ((len (mapped-file-length mapped-file)))
+    (munmap-file mapped-file)
+    (setf (m-pointer mapped-file)
+          (osicat-posix:mmap (cffi:null-pointer) (+ len length)
+                             (logior osicat-posix:PROT-READ osicat-posix:PROT-WRITE)
+                             osicat-posix:MAP-SHARED (m-fd mapped-file) 0))
     (osicat-posix:lseek (m-fd mapped-file)
                         (1- (+ length (mapped-file-length mapped-file)))
                         osicat-posix:seek-set)
