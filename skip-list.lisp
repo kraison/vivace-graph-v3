@@ -115,9 +115,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
             (%sn-level node) level
             (%sn-flags node) 0
             (%sn-pointers node) (if pointers
-                                    (make-array level :element-type #+(or sbcl ccl) 'word #-(or sbcl ccl) '(unsigned-byte 64)
+                                    (make-array level :element-type 'word
                                                 :initial-contents pointers)
-                                    (make-array level :element-type  #+(or sbcl ccl) 'word #-(or sbcl ccl) '(unsigned-byte 64))))
+                                    (make-array level :element-type  'word)))
       (setf (gethash addr (%sl-node-cache skip-list)) node))))
 
 (defun set-node-pointer (skip-list node level addr)
