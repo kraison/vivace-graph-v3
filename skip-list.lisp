@@ -381,7 +381,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                                      :waitp waitp
                                                      :timeout timeout))))
             mutex)))
-    #+lispworks (mp:process-lock mutex nil timeout)
+    #+lispworks (progn (mp:process-lock mutex nil timeout)
+                       mutex)
     #+ccl
     (and (ccl:grab-lock mutex) mutex)))
 

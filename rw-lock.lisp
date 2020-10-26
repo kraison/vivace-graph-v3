@@ -28,7 +28,7 @@
 (defun lock-unused-p (rw-lock)
   (with-recursive-lock-held ((lock-lock rw-lock))
     (and (= 0 (lock-readers rw-lock))
-	 (= 0 (#+sbcl sb-thread:semaphore-count #+lispworks mp:semaphore-count (lock-semaphore rw-lock)))
+	 (= #+sbcl 0 #+lispworks 1 (#+sbcl sb-thread:semaphore-count #+lispworks mp:semaphore-count (lock-semaphore rw-lock)))
 	 (null (lock-writer rw-lock))
 	 (empty-queue-p (lock-writer-queue rw-lock)))))
 

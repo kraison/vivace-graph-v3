@@ -1,5 +1,6 @@
 (in-package :graph-db)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
 (defclass node-class (standard-class) nil)
 
 (defmethod validate-superclass ((class node-class) (super standard-class))
@@ -141,6 +142,7 @@
     (remove-duplicates
      (nconc classes
             (mapcan 'find-graph-parent-classes classes)))))
+)
 
 (defclass node ()
   ((id :accessor id :initform +null-key+ :initarg :id :meta t
