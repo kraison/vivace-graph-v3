@@ -6,6 +6,7 @@
   class-name
   ;;(dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
   (table #+sbcl (make-hash-table :test 'eql :synchronized t)
+         #+lispworks (make-hash-table :test 'eql :single-thread nil)
          #+ccl (make-hash-table :test 'eql :shared t))
   (lock (make-rw-lock)))
 

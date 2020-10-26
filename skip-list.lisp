@@ -115,9 +115,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
             (%sn-level node) level
             (%sn-flags node) 0
             (%sn-pointers node) (if pointers
-                                    (make-array level :element-type 'word
+                                    (make-array level :element-type #+(or sbcl ccl) 'word #-(or sbcl ccl) '(unsigned-byte 64)
                                                 :initial-contents pointers)
-                                    (make-array level :element-type 'word)))
+                                    (make-array level :element-type  #+(or sbcl ccl) 'word #-(or sbcl ccl) '(unsigned-byte 64))))
       (setf (gethash addr (%sl-node-cache skip-list)) node))))
 
 (defun set-node-pointer (skip-list node level addr)
@@ -236,11 +236,14 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (value-deserializer 'identity)
   (node-cache
    #+sbcl (make-hash-table :test 'eq :weakness :value :synchronized t)
+   #+lispworks (make-hash-table :test 'eq :weak-kind :value :single-thread nil)
    #+ccl (make-hash-table :test 'eq :weak :value :shared t))
   (length-lock #+sbcl (sb-thread:make-mutex)
+               #+lispworks (mp:make-lock)
                #+ccl (ccl:make-lock))
   (locks (map-into (make-array 1000)
                    #+ccl 'ccl:make-lock
+                   #+lispworks 'mp:make-lock
                    #+sbcl 'sb-thread:make-mutex)))
 
 (defun make-head (skip-list &key key value)
@@ -378,6 +381,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                                      :waitp waitp
                                                      :timeout timeout))))
             mutex)))
+    #+lispworks (mp:process-lock mutex nil timeout)
     #+ccl
     (and (ccl:grab-lock mutex) mutex)))
 
@@ -385,6 +389,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (declare (ignore skip-list))
   #+ccl
   (ccl:release-lock lock)
+  #+lispworks
+  (mp:process-unlock lock)
   #+sbcl
   (sb-thread:release-mutex lock))
 
@@ -457,6 +463,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (when (not (%sn-marked-p skip-list node))
              (loop until (%sn-fully-linked-p skip-list node) do
                   #+ccl (ccl:process-allow-schedule)
+                  #+lispworks (mp:yield)
                   #+sbcl (sb-thread:thread-yield))
              (unless (%sl-duplicates-allowed-p skip-list)
                ;;(error 'skip-list-duplicate-error
@@ -521,6 +528,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                        (progn
                          #+sbcl (sb-ext:cas (%sn-value node) (%sn-value node) value)
                          #+sbcl (sb-ext:cas (%sn-svalue node) (%sn-svalue node) sval)
+                         #+lispworks (sys:compare-and-swap (%sn-value node) (%sn-value node) value)
+                         #+lispworks (sys:compare-and-swap (%sn-svalue node) (%sn-svalue node) sval)
                          #+ccl (ccl::conditional-store (%sn-value node) (%sn-value node) value)
                          #+ccl (ccl::conditional-store (%sn-svalue node) (%sn-svalue node) sval)
                          (let* ((offset (+ (%sn-addr node)

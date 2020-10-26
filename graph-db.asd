@@ -18,8 +18,8 @@
                :uuid
                :split-sequence
                #+sbcl :sb-concurrency
-               #+ccl :closer-mop
-               #+ccl :trivial-timeout
+               #+(or ccl lispworks) :closer-mop
+               #+(or ccl lispworks) :trivial-timeout
                :cl-store
                :local-time
                :ieee-floats
@@ -37,9 +37,9 @@
                (:file "utilities" :depends-on ("globals"))
                (:file "queue" :depends-on ("utilities"))
                (:file "mailbox" :depends-on ("queue"))
-               #+sbcl (:file "rw-lock" :depends-on ("queue"))
-               #+sbcl (:file "mmap" :depends-on ("rw-lock"))
-               #-sbcl (:file "mmap" :depends-on ("queue"))
+               #+(or sbcl lispworks) (:file "rw-lock" :depends-on ("queue"))
+               #+(or sbcl lispworks) (:file "mmap" :depends-on ("rw-lock"))
+               #-(or sbcl lispworks) (:file "mmap" :depends-on ("queue"))
                (:file "pcons" :depends-on ("mmap"))
                (:file "node-id" :depends-on ("package"))
                (:file "buffer-pool" :depends-on ("pcons" "node-id"))

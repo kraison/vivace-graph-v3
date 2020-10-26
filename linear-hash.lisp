@@ -298,6 +298,7 @@
     (dotimes (i max-locks)
       (setf (svref (%lhash-lock-vector lhash) i)
             #+sbcl (sb-thread:make-mutex)
+            #+lispworks (mp:make-lock)
             #+ccl (make-lock)))
     lhash))
 
@@ -344,6 +345,7 @@
           (dotimes (i (%lhash-max-locks lhash))
             (setf (svref (%lhash-lock-vector lhash) i)
                   #+sbcl (sb-thread:make-mutex)
+                  #+lispworks (mp:make-lock)
                   #+ccl (make-lock))))
       (error (c)
         (log:debug "Cannot open lhash: ~S" c)
@@ -376,6 +378,7 @@
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
         #+sbcl (sb-thread:release-mutex lock)
+        #+lispworks (mp:process-unlock lock)
         #+ccl (ccl:release-lock lock)
       (log:debug "RELEASED LOCK: ~A" lock))))
 
@@ -384,6 +387,7 @@
                      (mod index (%lhash-max-locks lhash)))))
     (prog1
         #+sbcl (sb-thread:grab-mutex lock :waitp wait-p :timeout timeout)
+        #+lispworks (mp:process-lock lock nil timeout)
         ;; FIXME honor wait-p and timeout for CCL
         #+ccl (ccl:grab-lock lock)
       (log:debug "GOT LOCK: ~A" lock))))
@@ -398,6 +402,9 @@
            #+ccl
            (ccl:with-lock-grabbed (,lock)
              ,@body)
+           #+lispworks
+           (mp:with-lock (,lock)
+             ,@body)
            #+sbcl
            (sb-thread:with-recursive-lock (,lock)
              ,@body))))))
@@ -407,6 +414,9 @@
     `(let ((,lock (lookup-lhash-lock ,lhash ,bucket)))
        #+ccl
        (ccl:with-lock-grabbed (,lock)
+         ,@body)
+       #+lispworks
+       (mp:with-lock (,lock)
          ,@body)
        #+sbcl
        (sb-thread:with-recursive-lock (,lock)

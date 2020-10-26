@@ -229,9 +229,9 @@
 (defmethod slot-value-using-class :around ((class node-class) instance slot)
   "Around method that is alternate-version aware and will show values for the current,
    working private version of instance."
-  ;;(log:debug "slot-value-using-class~%  '~A'~%  '~A'" class
-  ;;(sb-pcl:slot-definition-name slot))
-  (let* ((slot-name (slot-definition-name slot))
+  (log:trace "slot-value-using-class~%  '~A'~%  '~A'" class (slot-definition-name slot))
+  (let* (#+lispworks(slot (closer-mop::find-slot slot class))
+         (slot-name (slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
     (cond ((member slot-name (persistent-slot-names class))
            ;; FIXME: Check for txn and give current revision's value
@@ -250,7 +250,8 @@
    version of instance."
   ;;(log:debug "setf slot-value-using-class~%  '~A'~%  '~A'~%  '~A'" new-value class
   ;;(sb-pcl:slot-definition-name slot))
-  (let* ((slot-name (slot-definition-name slot))
+  (let* (#+lispworks(slot (closer-mop::find-slot slot class))
+         (slot-name (slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
     (cond ((member slot-name (persistent-slot-names class))
            ;; FIXME: Check for txn and handle
@@ -282,11 +283,21 @@
 (defun sxhash-node (node) (sxhash (%hash (id node))))
 #+sbcl (sb-ext:define-hash-table-test node-equal sxhash-node)
 (defun make-node-table (&key weakness synchronized)
+  #+lispworks
+  (make-hash-table :test 'node-equal
+                   :hash-function 'sxhash-node
+                   :weak-kind weakness
+                   :single-thread (not synchronized))
   #+ccl
   (make-hash-table :test 'node-equal
                    :hash-function 'sxhash-node
                    :weakness weakness
                    :shared synchronized)
+  #+lispworks
+  (make-hash-table :test 'node-equal
+                   :hash-function 'sxhash-node
+                   :weak-kind weakness
+                   :single-thread (not synchronized))
   #+sbcl
   (make-hash-table :test 'node-equal
                    :weakness weakness
@@ -296,6 +307,12 @@
 (defun sxhash-id-array (id) (sxhash (%hash id)))
 #+sbcl (sb-ext:define-hash-table-test id-equal sxhash-id-array)
 (defun make-id-table (&key weakness synchronized)
+  #+lispworks
+  (make-hash-table :test 'id-equal
+                   :hash-function 'sxhash-id-array
+                   :weak-kind weakness
+                   :single-thread (not synchronized))
+
   #+ccl
   (make-hash-table :test 'id-equal
                    :hash-function 'sxhash-id-array

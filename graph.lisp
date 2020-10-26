@@ -11,7 +11,8 @@
     (error ":REPLICATION-PORT is required for master and slave graphs"))
   (when (and slave-p (not master-host))
     (error ":MASTER-HOST required for slave graphs"))
-  (let* ((path (first (directory (ensure-directories-exist location))))
+  (ensure-directories-exist location)
+  (let* ((path (pathname location))
          (dirty-file (format nil "~A/.dirty" location)))
     (unless (probe-file path)
       (error "Unable to open graph location ~A" path))
@@ -30,6 +31,7 @@
              :views
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
+             #+lispworks (make-hash-table :single-thread nil)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -100,6 +102,7 @@
              :views
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
+             #+lispworks (make-hash-table :single-thread nil)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key

@@ -2,6 +2,7 @@
 
 (defvar *buffer-pool*
   #+sbcl (make-hash-table :test 'eq :synchronized t)
+  #+lispworks (make-hash-table :test 'eq :single-thread nil)
   #+ccl (make-hash-table :test 'eq :shared t))
 (defvar *buffer-pool-stats* nil)
 (defvar *buffer-pool-thread* nil)
@@ -64,6 +65,8 @@
                    (let ((b (make-byte-vector 16)))
                      #+sbcl
                      (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*)))
+                     #+lispworks
+                     (sys:atomic-push b (car (gethash 16 *buffer-pool*)))
                      #+ccl
                      (ccl:with-lock-grabbed (*buffer-pool-lock*)
                        (push b (first (gethash 16 *buffer-pool*)))))))
@@ -74,6 +77,8 @@
                    (let ((b (make-byte-vector (car stat))))
                      #+sbcl
                      (sb-ext:atomic-push b (first (gethash (car stat) *buffer-pool*)))
+                     #+lispworks
+                     (sys:atomic-push b (car (gethash (car stat) *buffer-pool*)))
                      #+ccl
                      (ccl:with-lock-grabbed (*buffer-pool-lock*)
                        (push b (first (gethash (car stat) *buffer-pool*)))))))
@@ -114,6 +119,8 @@
     (let ((p (%make-pcons)))
       #+sbcl
       (sb-ext:atomic-push p (first (gethash :pcons *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push p (car (gethash :pcons *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push p (first (gethash :pcons *buffer-pool*)))))))
@@ -124,6 +131,8 @@
     (let ((v (make-instance 'vertex :id (gen-vertex-id))))
       #+sbcl
       (sb-ext:atomic-push v (first (gethash :vertex *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push v (car (gethash :vertex *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push v (first (gethash :vertex *buffer-pool*)))))))
@@ -134,6 +143,8 @@
     (let ((e (make-instance 'edge :id (gen-edge-id))))
       #+sbcl
       (sb-ext:atomic-push e (first (gethash :edge *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push e (car (gethash :edge *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push e (first (gethash :edge *buffer-pool*)))))))
@@ -144,6 +155,8 @@
     (let ((s (%make-skip-node)))
       #+sbcl
       (sb-ext:atomic-push s (first (gethash :skip-node *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push s (car (gethash :skip-node *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push s (first (gethash :skip-node *buffer-pool*)))))))
@@ -154,6 +167,8 @@
     (let ((b (make-byte-vector 8)))
       #+sbcl
       (sb-ext:atomic-push b (first (gethash 8 *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push b (car (gethash 8 *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push b (first (gethash 8 *buffer-pool*)))))))
@@ -164,6 +179,8 @@
     (let ((b (make-byte-vector 16)))
       #+sbcl
       (sb-ext:atomic-push b (first (gethash 16 *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push b (car (gethash 16 *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push b (first (gethash 16 *buffer-pool*)))))))
@@ -174,6 +191,8 @@
     (let ((b (make-byte-vector 18)))
       #+sbcl
       (sb-ext:atomic-push b (first (gethash 18 *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push b (car (gethash 18 *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push b (first (gethash 18 *buffer-pool*)))))))
@@ -184,6 +203,8 @@
     (let ((b (make-byte-vector 24)))
       #+sbcl
       (sb-ext:atomic-push b (first (gethash 24 *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push b (car (gethash 24 *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push b (first (gethash 24 *buffer-pool*)))))))
@@ -194,6 +215,8 @@
     (let ((b (make-byte-vector 34)))
       #+sbcl
       (sb-ext:atomic-push b (first (gethash 34 *buffer-pool*)))
+      #+lispworks
+      (sys:atomic-push b (car (gethash 34 *buffer-pool*)))
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push b (first (gethash 34 *buffer-pool*)))))))
@@ -210,6 +233,7 @@
   (reset-buffer-pool-stats)
   (setq *buffer-pool*
         #+sbcl (make-hash-table :test 'eq :synchronized t)
+        #+lispworks (make-hash-table :test 'eq :single-thread nil)
         #+ccl (make-hash-table :test 'eq :shared t))
   (setf (gethash :vertex *buffer-pool*)
         (list nil)
@@ -254,30 +278,40 @@
        #+ccl
        (ccl:with-lock-grabbed (*buffer-pool-lock*)
          (incf (bps-buffer-8 *buffer-pool-stats*)))
+       #+lispworks
+       (sys:atomic-incf (bps-buffer-8 *buffer-pool-stats*))
        #+sbcl
        (sb-ext:atomic-incf (bps-buffer-8 *buffer-pool-stats*)))
       (16
        #+ccl
        (ccl:with-lock-grabbed (*buffer-pool-lock*)
          (incf (bps-buffer-16 *buffer-pool-stats*)))
+       #+lispworks
+       (sys:atomic-incf (bps-buffer-16 *buffer-pool-stats*))
        #+sbcl
        (sb-ext:atomic-incf (bps-buffer-16 *buffer-pool-stats*)))
       (18
        #+ccl
        (ccl:with-lock-grabbed (*buffer-pool-lock*)
          (incf (bps-buffer-18 *buffer-pool-stats*)))
+       #+lispworks
+       (sys:atomic-incf (bps-buffer-18 *buffer-pool-stats*))
        #+sbcl
        (sb-ext:atomic-incf (bps-buffer-18 *buffer-pool-stats*)))
       (24
        #+ccl
        (ccl:with-lock-grabbed (*buffer-pool-lock*)
          (incf (bps-buffer-24 *buffer-pool-stats*)))
+       #+lispworks
+       (sys:atomic-incf (bps-buffer-24 *buffer-pool-stats*))
        #+sbcl
        (sb-ext:atomic-incf (bps-buffer-24 *buffer-pool-stats*)))
       (34
        #+ccl
        (ccl:with-lock-grabbed (*buffer-pool-lock*)
          (incf (bps-buffer-34 *buffer-pool-stats*)))
+       #+lispworks
+       (sys:atomic-incf (bps-buffer-34 *buffer-pool-stats*))
        #+sbcl
        (sb-ext:atomic-incf (bps-buffer-34 *buffer-pool-stats*))))))
 
@@ -285,6 +319,8 @@
   (or (and (buffer-pool-running-p)
            #+sbcl
            (sb-ext:atomic-pop (first (gethash size *buffer-pool*)))
+           #+lispworks
+           (sys:atomic-pop (car (gethash size *buffer-pool*)))
            #+ccl
            (ccl:with-lock-grabbed (*buffer-pool-lock*)
              (pop (first (gethash size *buffer-pool*)))))
@@ -300,6 +336,8 @@
       #+ccl
       (ccl:with-lock-grabbed (*buffer-pool-lock*)
         (push buffer (first (gethash size *buffer-pool*))))
+      #+lispworks
+      (sys:atomic-push buffer (car (gethash size *buffer-pool*)))
       #+sbcl
       (sb-ext:atomic-push buffer (first (gethash size *buffer-pool*)))
       nil)))
@@ -309,6 +347,8 @@
            #+ccl
            (ccl:with-lock-grabbed (*buffer-pool-lock*)
              (pop (first (gethash :vertex *buffer-pool*))))
+           #+lispworks
+           (sys:atomic-pop (car (gethash :vertex *buffer-pool*)))
            #+sbcl
            (sb-ext:atomic-pop (first (gethash :vertex *buffer-pool*))))
       (progn
@@ -316,6 +356,8 @@
           #+ccl
           (ccl:with-lock-grabbed (*buffer-pool-lock*)
             (incf (bps-vertex *buffer-pool-stats*)))
+          #+lispworks
+          (sys:atomic-incf (bps-vertex *buffer-pool-stats*))
           #+sbcl
           (sb-ext:atomic-incf (bps-vertex *buffer-pool-stats*)))
         (make-instance 'vertex))))
@@ -325,6 +367,8 @@
            #+ccl
            (ccl:with-lock-grabbed (*buffer-pool-lock*)
              (pop (first (gethash :edge *buffer-pool*))))
+           #+lispworks
+           (sys:atomic-pop (car (gethash :edge *buffer-pool*)))
            #+sbcl
            (sb-ext:atomic-pop (first (gethash :edge *buffer-pool*))))
       (progn
@@ -332,6 +376,8 @@
           #+ccl
           (ccl:with-lock-grabbed (*buffer-pool-lock*)
             (incf (bps-edge *buffer-pool-stats*)))
+          #+lispworks
+          (sys:atomic-incf (bps-edge *buffer-pool-stats*))
           #+sbcl
           (sb-ext:atomic-incf (bps-edge *buffer-pool-stats*)))
         (make-instance 'edge))))
@@ -341,6 +387,8 @@
            #+ccl
            (ccl:with-lock-grabbed (*buffer-pool-lock*)
              (pop (first (gethash :skip-node *buffer-pool*))))
+           #+lispworks
+           (sys:atomic-pop (car (gethash :skip-node *buffer-pool*)))
            #+sbcl
            (sb-ext:atomic-pop (first (gethash :skip-node *buffer-pool*))))
       (progn
@@ -348,6 +396,8 @@
           #+ccl
           (ccl:with-lock-grabbed (*buffer-pool-lock*)
             (incf (bps-skip-node *buffer-pool-stats*)))
+          #+lispworks
+          (sys:atomic-incf (bps-skip-node *buffer-pool-stats*))
           #+sbcl
           (sb-ext:atomic-incf (bps-skip-node *buffer-pool-stats*)))
         (%make-skip-node))))
@@ -357,6 +407,8 @@
            #+ccl
            (ccl:with-lock-grabbed (*buffer-pool-lock*)
              (pop (first (gethash :pcons *buffer-pool*))))
+           #+lispworks
+           (sys:atomic-pop (car (gethash :pcons *buffer-pool*)))
            #+sbcl
            (sb-ext:atomic-pop (first (gethash :pcons *buffer-pool*))))
       (progn
@@ -364,6 +416,8 @@
           #+ccl
           (ccl:with-lock-grabbed (*buffer-pool-lock*)
             (incf (bps-pcons *buffer-pool-stats*)))
+          #+lispworks
+          (sys:atomic-incf (bps-pcons *buffer-pool-stats*))
           #+sbcl
           (sb-ext:atomic-incf (bps-pcons *buffer-pool-stats*)))
         (%make-pcons))))
