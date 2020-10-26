@@ -236,7 +236,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (value-deserializer 'identity)
   (node-cache
    #+sbcl (make-hash-table :test 'eq :weakness :value :synchronized t)
-   #+lispworks (make-hash-table :test 'eq :weak-kind :value :single-thread nil)
+   #+lispworks (make-hash-table :test 'eq)
    #+ccl (make-hash-table :test 'eq :weak :value :shared t))
   (length-lock #+sbcl (sb-thread:make-mutex)
                #+lispworks (mp:make-lock)

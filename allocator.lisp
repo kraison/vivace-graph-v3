@@ -32,7 +32,7 @@
   (cache-lock (make-rw-lock))
   (cache
    #+sbcl (make-hash-table :synchronized t :weakness :value)
-   #+lispworks (make-hash-table :single-thread nil :weak-kind :value)
+   #+lispworks (make-hash-table)
    #+ccl (make-hash-table :shared t :weak :value)))
 
 (defmethod set-byte ((memory memory) offset byte)
