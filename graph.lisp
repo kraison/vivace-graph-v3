@@ -80,7 +80,8 @@
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
                    replication-key package (buffer-pool-p t) (gc-heap-p t))
-  (let ((path (first (directory (ensure-directories-exist location))))
+  (ensure-directories-exist location)
+  (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
         (schema-file (format nil "~A/schema.dat" location)))
     (unless (probe-file path)

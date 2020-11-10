@@ -13,7 +13,7 @@
   (cache
    #+sbcl (make-hash-table :weakness :value :synchronized t)
    #+ccl (make-hash-table :weak :value :shared t)
-   #+lispworks (make-hash-table))
+   #+lispworks (make-hash-table :weak-kind :value :single-thread nil))
   head
   (lock (make-rw-lock))
   dirty-p)
