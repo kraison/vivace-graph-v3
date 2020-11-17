@@ -283,11 +283,6 @@
 (defun sxhash-node (node) (sxhash (%hash (id node))))
 #+sbcl (sb-ext:define-hash-table-test node-equal sxhash-node)
 (defun make-node-table (&key weakness synchronized)
-  #+lispworks
-  (make-hash-table :test 'node-equal
-                   :hash-function 'sxhash-node
-                   :weak-kind weakness
-                   :single-thread (not synchronized))
   #+ccl
   (make-hash-table :test 'node-equal
                    :hash-function 'sxhash-node

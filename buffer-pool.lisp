@@ -53,6 +53,7 @@
                     free-memory)
           #+sbcl (sb-ext:gc :full t)
           #+ccl (gc)
+          #+lispworks(hcl:gc-generation 2)
           )
         (let ((stats (dump-buffer-pool-stats)))
           (dolist (stat (cdr (assoc :available-buffers stats)))
