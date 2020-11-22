@@ -226,7 +226,7 @@
   (and (threadp *buffer-pool-thread*)
        (thread-alive-p *buffer-pool-thread*)))
 
-(defun init-buffer-pool ()
+(defun init-buffer-pool (buffer-pool-size)
   (when (buffer-pool-running-p)
     (error "~A is already running. Cannot init-buffer-pool"
            *buffer-pool-thread*))
@@ -247,14 +247,14 @@
   (dolist (num '(8 16 18 24 34))
     (setf (gethash num *buffer-pool*)
           (list nil)))
-  (dotimes (i 100000)
+  (dotimes (i buffer-pool-size)
     (make-vertex-buffer)
     (make-edge-buffer)
     (make-byte-vector-8-buffer)
     (make-byte-vector-18-buffer)
     (make-byte-vector-24-buffer)
     (make-byte-vector-34-buffer))
-  (dotimes (i 1000000)
+  (dotimes (i (* 10 buffer-pool-size))
     (make-pcons-buffer)
     (make-skip-node-buffer)
     (make-byte-vector-16-buffer))
@@ -262,9 +262,9 @@
         (make-thread 'monitor-buffer-pool-loop :name "buffer-pool-thread"))
   *buffer-pool*)
 
-(defun ensure-buffer-pool ()
+(defun ensure-buffer-pool (buffer-pool-size)
   (or (buffer-pool-running-p)
-      (init-buffer-pool)))
+      (init-buffer-pool buffer-pool-size)))
 
 (defun stop-buffer-pool ()
   (setq *stop-buffer-pool* t)

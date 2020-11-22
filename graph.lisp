@@ -3,6 +3,7 @@
 (defun make-graph (name location &key master-p slave-p master-host
                                    replication-port replication-key package
                                    replay-txn-dir (buffer-pool-p t)
+                                   (buffer-pool-size 100000)
                                    (vertex-buckets 8)
                                    (edge-buckets 8))
   (when (and replay-txn-dir (not slave-p))
@@ -17,7 +18,7 @@
     (unless (probe-file path)
       (error "Unable to open graph location ~A" path))
     (when buffer-pool-p
-      (ensure-buffer-pool))
+      (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
                   (* 1024 1024 1000)))

@@ -40,7 +40,7 @@
  ()
  :test-graph)
 
-(setq *graph* (make-graph *graph-name* *graph-path*))
+(setq *graph* (make-graph *graph-name* *graph-path* :buffer-pool-size 10000))
 
 ;;; Indexes
 ;; This will index both customers and people
