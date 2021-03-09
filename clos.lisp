@@ -84,5 +84,5 @@
                  :type (unsigned-byte 64))
    (%data :accessor %data :initarg :%data :initform nil)
    (%bytes :accessor %bytes :initform :init :initarg :%bytes))
-  (:metaclass 'graph-class))
+  (:metaclass graph-class))
 

@@ -24,6 +24,10 @@
     (sb-ext:cas (cdr (last (functor-clauses functor)))
                 (cdr (last (functor-clauses functor)))
                 (list clause))
+    #+lispworks
+    (sys:compare-and-swap (cdr (last (functor-clauses functor)))
+                          (cdr (last (functor-clauses functor)))
+                          (list clause))
     #+ccl
     (ccl::conditional-store (cdr (last (functor-clauses functor)))
                             (cdr (last (functor-clauses functor)))
@@ -38,6 +42,8 @@
   (with-recursive-lock-held ((functor-lock functor))
     #+sbcl
     (sb-ext:cas (functor-clauses functor) (functor-clauses functor) nil)
+    #+lispworks
+    (sys:compare-and-swap (functor-clauses functor) (functor-clauses functor) nil)
     #+ccl
     (ccl::conditional-store (functor-clauses functor) (functor-clauses functor) nil)
     (prolog-compile functor))

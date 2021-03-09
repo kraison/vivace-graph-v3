@@ -5,6 +5,7 @@
 (defvar *clack-app* nil)
 (defvar *rest-procedures*
   #+sbcl (make-hash-table :synchronized t :test 'equalp)
+  #+lispworks (make-hash-table :single-thread nil :test 'equalp)
   #+ccl (make-hash-table :shared t :test 'equalp))
 (defvar *rest-passwd-file* "rpasswd")
 (defvar *htpasswd-bin* "/usr/bin/htpasswd")
@@ -158,8 +159,8 @@
     (cons :vertex-types
           (loop
              for key being the hash-keys
-             using (hash-value type-definition)
              in (gethash :vertex (schema-type-table (schema graph)))
+             using (hash-value type-definition)
              if (numberp key)
              collecting
                (list (cons :name (node-type-name type-definition))
@@ -176,8 +177,8 @@
     (cons :edge-types
           (loop
              for key being the hash-keys
-             using (hash-value type-definition)
              in (gethash :edge (schema-type-table (schema graph)))
+             using (hash-value type-definition)
              if (numberp key)
              collecting
                (list (cons :name (node-type-name type-definition))

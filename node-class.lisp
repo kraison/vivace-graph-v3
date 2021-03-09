@@ -1,5 +1,6 @@
 (in-package :graph-db)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
 (defclass node-class (standard-class) nil)
 
 (defmethod validate-superclass ((class node-class) (super standard-class))
@@ -75,19 +76,19 @@
 
 (defmethod direct-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  ;;(log:debug "direct-slot-definition-class for ~A" class)
+  (log:trace "direct-slot-definition-class for ~A" class)
   (find-class 'node-direct-slot-definition))
 
 (defmethod effective-slot-definition-class ((class node-class) &rest initargs)
   (declare (ignore initargs))
-  ;;(log:debug "effective-slot-definition-class for ~A" class)
+  (log:trace "effective-slot-definition-class for ~A" class)
   (find-class 'node-effective-slot-definition))
 
 (defmethod compute-effective-slot-definition :around
     ((class node-class) slot-name direct-slots)
   "Ensure inheritance from direct slot definition of persistent, indexed,
    and ephemeral properties."
-  ;;(log:debug "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
+  (log:trace "compute-effective-slot-definition for ~A / ~A: ~A" class slot-name direct-slots)
   (let ((slot (call-next-method)))
     ;;(log:debug "  SLOT: ~A" slot)
     (cond ((or (meta-p slot) (some 'meta-p direct-slots))
@@ -127,6 +128,7 @@
   (delete-if (lambda (class)
                (find (class-name class)
                      #+sbcl '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)
+                     #+lispworks '(edge vertex node standard-object T)
                      #+ccl '(edge vertex node STANDARD-OBJECT T)))
              (compute-class-precedence-list class)))
 
@@ -140,6 +142,7 @@
     (remove-duplicates
      (nconc classes
             (mapcan 'find-graph-parent-classes classes)))))
+)
 
 (defclass node ()
   ((id :accessor id :initform +null-key+ :initarg :id :meta t

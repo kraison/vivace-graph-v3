@@ -3,6 +3,8 @@
 (defvar *graphs*
   #+sbcl
   (make-hash-table :test 'equal :synchronized t)
+  #+lispworks
+  (make-hash-table :test 'equal :single-thread nil)
   #+ccl
   (make-hash-table :test 'equal :shared t))
 
@@ -33,10 +35,12 @@
    (write-stats :accessor write-stats :initarg :write-stats
                 :initform
                 #+ccl (make-hash-table :test 'eq :shared t)
+                #+lispworks (make-hash-table :test 'eq :single-thread nil)
                 #+sbcl (make-hash-table :test 'eq :synchronized t))
    (read-stats :accessor read-stats :initarg :read-stats
                :initform
                #+ccl (make-hash-table :test 'eq :shared t)
+               #+lispworks (make-hash-table :test 'eq :single-thread nil)
                #+sbcl (make-hash-table :test 'eq :synchronized t))))
 
 (defmethod print-object ((graph graph) stream)

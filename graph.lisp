@@ -3,6 +3,7 @@
 (defun make-graph (name location &key master-p slave-p master-host
                                    replication-port replication-key package
                                    replay-txn-dir (buffer-pool-p t)
+                                   (buffer-pool-size 100000)
                                    (vertex-buckets 8)
                                    (edge-buckets 8))
   (when (and replay-txn-dir (not slave-p))
@@ -11,12 +12,13 @@
     (error ":REPLICATION-PORT is required for master and slave graphs"))
   (when (and slave-p (not master-host))
     (error ":MASTER-HOST required for slave graphs"))
-  (let* ((path (first (directory (ensure-directories-exist location))))
+  (ensure-directories-exist location)
+  (let* ((path (pathname location))
          (dirty-file (format nil "~A/.dirty" location)))
     (unless (probe-file path)
       (error "Unable to open graph location ~A" path))
     (when buffer-pool-p
-      (ensure-buffer-pool))
+      (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
                   (* 1024 1024 1000)))
@@ -30,6 +32,7 @@
              :views
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
+             #+lispworks (make-hash-table :single-thread nil)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -78,7 +81,8 @@
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
                    replication-key package (buffer-pool-p t) (gc-heap-p t))
-  (let ((path (first (directory (ensure-directories-exist location))))
+  (ensure-directories-exist location)
+  (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
         (schema-file (format nil "~A/schema.dat" location)))
     (unless (probe-file path)
@@ -100,6 +104,7 @@
              :views
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
+             #+lispworks (make-hash-table :single-thread nil)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key

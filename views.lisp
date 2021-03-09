@@ -6,6 +6,7 @@
   class-name
   ;;(dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
   (table #+sbcl (make-hash-table :test 'eql :synchronized t)
+         #+lispworks (make-hash-table :test 'eql :single-thread nil)
          #+ccl (make-hash-table :test 'eql :shared t))
   (lock (make-rw-lock)))
 
@@ -134,7 +135,7 @@
 
 (defmethod restore-views ((graph graph))
   (let ((views-file (format nil "~A/views.dat" (location graph)))
-        (view-table (make-hash-table :synchronized t)))
+        (view-table (make-hash-table #-lispworks :synchronized #-lispworks t #+lispworks :single-thread #+lispworks nil)))
     (when (probe-file views-file)
       (let ((blob (cl-store:restore views-file)))
         (dolist (view-data blob)

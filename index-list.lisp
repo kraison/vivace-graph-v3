@@ -12,7 +12,8 @@
   heap
   (cache
    #+sbcl (make-hash-table :weakness :value :synchronized t)
-   #+ccl (make-hash-table :weak :value :shared t))
+   #+ccl (make-hash-table :weak :value :shared t)
+   #+lispworks (make-hash-table :weak-kind :value :single-thread nil))
   head
   (lock (make-rw-lock))
   dirty-p)
@@ -106,6 +107,10 @@
       (ccl::conditional-store (index-list-head il)
                               (index-list-head il)
                               address)
+      #+lispworks
+      (sys:compare-and-swap (index-list-head il)
+                            (index-list-head il)
+                            address)
       ;;(log:debug "NEW HEAD: ~A" (index-list-head il))
       il)))
 

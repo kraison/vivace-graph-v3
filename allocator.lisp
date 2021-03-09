@@ -22,6 +22,7 @@
   location size mmap
   (free-list
    #+sbcl (make-hash-table :synchronized t)
+   #+lispworks (make-hash-table :single-thread nil)
    #+ccl (make-hash-table :shared t))
   free-list-thread
   (pointer 0 :type (UNSIGNED-BYTE 64))
@@ -31,6 +32,7 @@
   (cache-lock (make-rw-lock))
   (cache
    #+sbcl (make-hash-table :synchronized t :weakness :value)
+   #+lispworks (make-hash-table :single-thread nil :weak-kind :value)
    #+ccl (make-hash-table :shared t :weak :value)))
 
 (defmethod set-byte ((memory memory) offset byte)
@@ -108,6 +110,9 @@
          #+ccl
          ;; FIXME: honor wait-p for CCL
          (ccl:with-lock-grabbed (,lock)
+           ,@body)
+         #+lispworks
+         (with-recursive-lock-held (,lock) 
            ,@body)
          #+sbcl
          (sb-thread:with-recursive-lock (,lock :wait-p ,wait-p)

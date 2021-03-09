@@ -56,6 +56,11 @@
                    :hash-function 'sxhash-ve-key
                    :shared t
                    :weak :value)
+  #+lispworks
+  (make-hash-table :test 've-key-equal
+                   :hash-function 'sxhash-ve-key
+                   :single-thread nil 
+                   :weak-kind :value)
   #+sbcl
   (make-hash-table :test 've-key-equal :synchronized t :weakness :value))
 

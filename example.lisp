@@ -40,22 +40,22 @@
  ()
  :test-graph)
 
-(setq *graph* (make-graph *graph-name* *graph-path*))
+(setq *graph* (make-graph *graph-name* *graph-path* :buffer-pool-size 10000))
 
 ;;; Indexes
 ;; This will index both customers and people
 (def-view last-name :lessp (person :test-graph)
   (:map
    (lambda (person)
-     (when (last-name person)
-       (yield (last-name person) nil)))))
+     (when (slot-value person 'last-name)
+       (yield (slot-value person 'last-name) nil)))))
 
 ;; This will only index customers
 (def-view email :lessp (customer :test-graph)
   (:map
    (lambda (customer)
-     (when (email customer)
-       (yield (email customer) nil)))))
+     (when (slot-value customer 'email)
+       (yield (slot-value customer 'email) nil)))))
 
 ;; Example of a map-reduce view
 (def-view popularity :greaterp (likes :test-graph)
@@ -120,8 +120,8 @@
               (lisp ?person person) ;; Import the person into Prolog
               (likes ?person ?product ?like-qty))
     (format nil "~A likes '~A' with a degree of ~F"
-            (first-name person)
-            (name product)
+            (slot-value person 'first-name)
+            (slot-value product 'name)
             like-qty)))
 
 (map-reduced-view (lambda (key id value)

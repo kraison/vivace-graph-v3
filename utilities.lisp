@@ -22,16 +22,39 @@
      :for x :across array
      :do (format stream "~A" (code-char x))))
 
+#+lispworks
+(fli:define-c-struct timeval
+    (tv-sec time-t)
+  (tv-usec suseconds-t))
+#+lispworks(fli:define-c-typedef time-t :long)
+#+lispworks(fli:define-c-typedef suseconds-t #+linux :long #+darwin :int)
+#+lispworks(fli:define-foreign-function (gettimeofday/ffi "gettimeofday")
+               ((tv (:pointer (:struct timeval)))
+                (tz :pointer))
+             :result-type :int)
 (defun gettimeofday ()
   #+sbcl
   (multiple-value-bind (sec msec) (sb-ext:get-time-of-day)
     (+ sec (/ msec 1000000)))
   #+(and ccl (not windows))
   (ccl:rlet ((tv :timeval))
-    (let ((err (ccl:external-call "gettimeofday" :address tv :address (ccl:%null-ptr) :int)))
-      (assert (zerop err) nil "gettimeofday failed")
-      (values (ccl:pref tv :timeval.tv_sec)
-         (ccl:pref tv :timeval.tv_usec)))))
+            (let ((err (ccl:external-call "gettimeofday" :address tv :address (ccl:%null-ptr) :int)))
+              (assert (zerop err) nil "gettimeofday failed")
+              (values (ccl:pref tv :timeval.tv_sec)
+                      (ccl:pref tv :timeval.tv_usec))))
+  #+lispworks
+  (fli:with-dynamic-foreign-objects ((tv (:struct timeval)))
+    (let ((ret (gettimeofday/ffi tv fli:*null-pointer*)))
+      (assert (zerop ret) nil "gettimeofday failed")
+      (let ((secs
+              (fli:foreign-slot-value tv 'tv-sec
+                                      :type 'time-t
+                                      :object-type '(:struct timeval)))
+            (usecs
+              (fli:foreign-slot-value tv 'tv-usec
+                                      :type 'suseconds-t
+                                      :object-type '(:struct timeval))))
+        (values secs (* 1000 usecs))))))
 
 (defvar *unix-epoch-difference*
   (encode-universal-time 0 0 0 1 1 1970 0))
@@ -165,6 +188,7 @@ characters.~@:>" string (length string)))
 (defun free-memory ()
   #+sbcl
   (- (sb-kernel::dynamic-space-size) (sb-kernel:dynamic-usage))
+  ;; TODO: LispWorks
   #+ccl
   (ccl::%freebytes))
 
@@ -406,15 +430,20 @@ characters.~@:>" string (length string)))
   "Wait for lock available, then execute the body while holding the lock."
   #+ccl
   `(do-with-lock ,lock ,whostate ,timeout (lambda () ,@body))
+  #+lispworks
+  `(mp:with-lock (,lock) ,@body)
   #+sbcl
   `(sb-thread:with-recursive-lock (,lock)
      (progn ,@body)))
 
 (defun make-semaphore ()
   #+sbcl (sb-thread:make-semaphore)
+  #+lispworks(mp:make-semaphore)
   #+ccl (ccl:make-semaphore))
 
 (defmacro with-locked-hash-table ((table) &body body)
+  #+lispworks
+  `(progn ,@body)
   #+ccl
   `(progn ,@body)
   #+sbcl

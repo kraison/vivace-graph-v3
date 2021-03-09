@@ -117,6 +117,11 @@
 #+sbcl
 (defvar *user-functors* (make-hash-table :synchronized t :test 'eql))
 
+#+lispworks
+(defvar *prolog-global-functors* (make-hash-table :single-thread nil))
+#+lispworks
+(defvar *user-functors* (make-hash-table :single-thread nil :test 'eql))
+
 #+ccl
 (defvar *prolog-global-functors* (make-hash-table :shared t))
 #+ccl

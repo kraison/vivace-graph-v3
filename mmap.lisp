@@ -1,5 +1,6 @@
 (in-package :graph-db)
 
+#+lispworks(deftype word () '(unsigned-byte 64))
 (cffi:defctype size :unsigned-int)
 (deftype uint32 () '(integer 0 4294967295))
 (deftype uint40 () '(integer 0 1099511627775))

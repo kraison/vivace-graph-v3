@@ -5,6 +5,7 @@
         #:bordeaux-threads
         #:local-time
         #+ccl #:closer-mop
+        #+lispworks #:clos
         #+sbcl #:sb-mop
         #+sbcl #:sb-pcl)
   #+sbcl (:shadowing-import-from "SB-EXT" "WORD")

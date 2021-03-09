@@ -10,6 +10,7 @@
 (defgeneric serialized-equal (x y))
 
 (let ((length-table #+sbcl (make-hash-table :synchronized t)
+                    #+lispworks (make-hash-table :single-thread nil)
                     #+ccl (make-hash-table :shared t)))
   (defun encode-length (int)
     (declare (type integer int))
