@@ -262,7 +262,7 @@
         (make-thread 'monitor-buffer-pool-loop :name "buffer-pool-thread"))
   *buffer-pool*)
 
-(defun ensure-buffer-pool (buffer-pool-size)
+(defun ensure-buffer-pool (&optional (buffer-pool-size 100000))
   (or (buffer-pool-running-p)
       (init-buffer-pool buffer-pool-size)))
 
