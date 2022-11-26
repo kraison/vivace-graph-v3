@@ -223,13 +223,13 @@ replication for a quick schema compatibility check."
                                    (data-slots (find-class ',name))))))
                       ,(if (eql (last1 parent-types) 'edge)
                            `(make-edge (node-type-id
-                                        (lookup-node-type-by-name ',name :edge))
+                                        (lookup-node-type-by-name ',name :edge :graph graph))
                                        from to weight
                                        slots ;(list ,@slots)
                                        :id id :revision revision :deleted-p deleted-p
                                        :graph graph)
                            `(make-vertex (node-type-id
-                                          (lookup-node-type-by-name ',name :vertex))
+                                          (lookup-node-type-by-name ',name :vertex :graph graph))
                                          slots ;(list ,@slots)
                                          :id id :revision revision :deleted-p deleted-p
                                          :graph graph)))))
@@ -371,7 +371,8 @@ replication for a quick schema compatibility check."
     ;; Check if this type exists and if it differs from old spec
     (log:debug "Looking up ~A: ~A ~A" meta (node-type-name meta) (node-type-parent-type meta))
     (let ((old-meta (lookup-node-type-by-name (node-type-name meta)
-                                              (node-type-parent-type meta))))
+                                              (node-type-parent-type meta)
+                                              :graph graph)))
       (if (node-type-p old-meta)
           (multiple-value-bind (changes-p new-slots removed-slots)
               (node-type-diff old-meta meta)

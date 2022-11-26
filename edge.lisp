@@ -404,7 +404,7 @@
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
-                      (edge-table *graph*))))
+                      (edge-table graph))))
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
@@ -423,5 +423,5 @@
                  (remove-from-type-index edge graph)
                  (remove-from-ve-index edge graph)
                  (remove-from-vev-index edge graph)))
-             *graph*
+             graph
              :include-deleted-p t))
