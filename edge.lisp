@@ -268,7 +268,7 @@
              nil))))
 
 (defmethod edge-exists-p (edge-type (vertex1 vertex) (vertex2 vertex)
-                          &key (graph *graph*))
+                          &key (graph *graph*) condition-fn)
   (let ((type-meta (or (and (integerp edge-type)
                             (lookup-node-type-by-id edge-type :edge))
                        (lookup-node-type-by-name edge-type :edge))))
@@ -282,7 +282,10 @@
            (lambda (edge-id)
              (let ((edge (lookup-edge edge-id :graph graph)))
                (when (and (written-p edge)
-                          (active-edge-p edge))
+                          (active-edge-p edge)
+                          (if condition-fn
+                              (funcall condition-fn edge)
+                              t))
                  (return-from edge-exists-p edge))))
            index-list))))))
 
