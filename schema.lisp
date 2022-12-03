@@ -202,10 +202,10 @@ replication for a quick schema compatibility check."
            ;;)
            (defun ,predicate (thing)
              (typep thing ',name))
-           (defun ,lookup-fn (id &key include-deleted-p)
+           (defun ,lookup-fn (id &key include-deleted-p (graph *graph*))
              (let ((thing ,(if (eql (last1 parent-types) 'edge)
-                               `(lookup-edge id)
-                               `(lookup-vertex id))))
+                               `(lookup-edge id :graph graph)
+                               `(lookup-vertex id :graph graph))))
                (when (and (typep thing ',name)
                           (or include-deleted-p
                               (not (deleted-p thing))))
