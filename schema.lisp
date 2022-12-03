@@ -226,12 +226,15 @@ replication for a quick schema compatibility check."
                                            (cons key (nth (1+ pos) make-args))))))
                                    (data-slots (find-class ',name))))))
                       ,(if (eql (last1 parent-types) 'edge)
-                           `(make-edge (node-type-id
-                                        (lookup-node-type-by-name ',name :edge :graph graph))
-                                       from to weight
-                                       slots ;(list ,@slots)
-                                       :id id :revision revision :deleted-p deleted-p
-                                       :graph graph)
+                           `(if (and (lookup-vertex (id from) :graph graph)
+                                     (lookup-vertex (id to) :graph graph))
+                                (make-edge (node-type-id
+                                            (lookup-node-type-by-name ',name :edge :graph graph))
+                                           from to weight
+                                           slots ;(list ,@slots)
+                                           :id id :revision revision :deleted-p deleted-p
+                                           :graph graph)
+                                (error (format nil "Node ~a not found in graph ~a" from graph)))
                            `(make-vertex (node-type-id
                                           (lookup-node-type-by-name ',name :vertex :graph graph))
                                          slots ;(list ,@slots)
