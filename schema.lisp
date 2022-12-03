@@ -72,11 +72,15 @@
     (let ((schema-file (format nil "~A/schema.dat" (location graph))))
       (let ((locks (schema-class-locks schema))
             (schema-lock (schema-lock schema)))
-        (setf (schema-class-locks schema) nil)
-        (setf (schema-lock schema) nil)
+        ;; (format t "Pre Locks: ~a, Schema-lock: ~a~%" (schema-class-locks schema)
+        ;;         (schema-lock schema))
+        ;; (setf (schema-class-locks schema) nil)
+        ;; (setf (schema-lock schema) nil)
         (cl-store:store (schema graph) schema-file)
-        (setf (schema-lock schema) schema-lock)
-        (setf (schema-class-locks schema) locks)
+        ;; (setf (schema-lock schema) schema-lock)
+        ;; (setf (schema-class-locks schema) locks)
+        ;; (format t "Post Locks: ~a, Schema-lock: ~a~%" (schema-class-locks schema)
+        ;;         (schema-lock schema))
         schema))))
 
 (defmethod get-next-type-id ((schema schema) parent)
@@ -198,10 +202,10 @@ replication for a quick schema compatibility check."
            ;;)
            (defun ,predicate (thing)
              (typep thing ',name))
-           (defun ,lookup-fn (id &key include-deleted-p)
+           (defun ,lookup-fn (id &key include-deleted-p (graph *graph*))
              (let ((thing ,(if (eql (last1 parent-types) 'edge)
-                               `(lookup-edge id)
-                               `(lookup-vertex id))))
+                               `(lookup-edge id :graph graph)
+                               `(lookup-vertex id :graph graph))))
                (when (and (typep thing ',name)
                           (or include-deleted-p
                               (not (deleted-p thing))))
@@ -222,14 +226,17 @@ replication for a quick schema compatibility check."
                                            (cons key (nth (1+ pos) make-args))))))
                                    (data-slots (find-class ',name))))))
                       ,(if (eql (last1 parent-types) 'edge)
-                           `(make-edge (node-type-id
-                                        (lookup-node-type-by-name ',name :edge))
-                                       from to weight
-                                       slots ;(list ,@slots)
-                                       :id id :revision revision :deleted-p deleted-p
-                                       :graph graph)
+                           `(if (and (lookup-vertex (id from) :graph graph)
+                                     (lookup-vertex (id to) :graph graph))
+                                (make-edge (node-type-id
+                                            (lookup-node-type-by-name ',name :edge :graph graph))
+                                           from to weight
+                                           slots ;(list ,@slots)
+                                           :id id :revision revision :deleted-p deleted-p
+                                           :graph graph)
+                                (error (format nil "Node ~a not found in graph ~a" from graph)))
                            `(make-vertex (node-type-id
-                                          (lookup-node-type-by-name ',name :vertex))
+                                          (lookup-node-type-by-name ',name :vertex :graph graph))
                                          slots ;(list ,@slots)
                                          :id id :revision revision :deleted-p deleted-p
                                          :graph graph)))))
@@ -371,7 +378,8 @@ replication for a quick schema compatibility check."
     ;; Check if this type exists and if it differs from old spec
     (log:debug "Looking up ~A: ~A ~A" meta (node-type-name meta) (node-type-parent-type meta))
     (let ((old-meta (lookup-node-type-by-name (node-type-name meta)
-                                              (node-type-parent-type meta))))
+                                              (node-type-parent-type meta)
+                                              :graph graph)))
       (if (node-type-p old-meta)
           (multiple-value-bind (changes-p new-slots removed-slots)
               (node-type-diff old-meta meta)

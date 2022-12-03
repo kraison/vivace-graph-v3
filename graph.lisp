@@ -5,7 +5,8 @@
                                    replay-txn-dir (buffer-pool-p t)
                                    (buffer-pool-size 100000)
                                    (vertex-buckets 8)
-                                   (edge-buckets 8))
+                                   (edge-buckets 8)
+                                   (memory-mb 1000))
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))
@@ -21,38 +22,38 @@
       (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
-                  (* 1024 1024 1000)))
+                  (* 1024 1024 memory-mb)))
            (graph
-            (make-instance
-             (cond (slave-p 'slave-graph)
-                   (master-p 'master-graph)
-                   (t 'graph))
-             :graph-name name
-             :location path
-             :views
-             #+sbcl (make-hash-table :synchronized t)
-             #+ccl (make-hash-table :shared t)
-             #+lispworks (make-hash-table :single-thread nil)
-             :cache
-             (make-id-table :synchronized t :weakness :value)
-             :replication-key replication-key
-             :replication-port replication-port
-             :vertex-table (make-vertex-table
-                            (format nil "~A/vertex/" path)
-                            :base-buckets vertex-buckets)
-             :edge-table (make-edge-table
-                          (format nil "~A/edge/" path)
-                          :base-buckets edge-buckets)
-             :heap heap
-             :indexes (create-memory
-                       (format nil "~A/indexes.dat" path)
-                       (* 1024 1024 1000))
-             :ve-index-in (make-ve-index
-                           (format nil "~A/ve-index-in/" path))
-             :ve-index-out (make-ve-index
-                            (format nil "~A/ve-index-out/" path))
-             :vev-index (make-vev-index
-                         (format nil "~A/vev-index/" path)))))
+             (make-instance
+              (cond (slave-p 'slave-graph)
+                    (master-p 'master-graph)
+                    (t 'graph))
+              :graph-name name
+              :location path
+              :views
+              #+sbcl (make-hash-table :synchronized t)
+              #+ccl (make-hash-table :shared t)
+              #+lispworks (make-hash-table :single-thread nil)
+              :cache
+              (make-id-table :synchronized t :weakness :value)
+              :replication-key replication-key
+              :replication-port replication-port
+              :vertex-table (make-vertex-table
+                             (format nil "~A/vertex/" path)
+                             :base-buckets vertex-buckets)
+              :edge-table (make-edge-table
+                           (format nil "~A/edge/" path)
+                           :base-buckets edge-buckets)
+              :heap heap
+              :indexes (create-memory
+                        (format nil "~A/indexes.dat" path)
+                        (* 1024 1024 memory-mb))
+              :ve-index-in (make-ve-index
+                            (format nil "~A/ve-index-in/" path))
+              :ve-index-out (make-ve-index
+                             (format nil "~A/ve-index-out/" path))
+              :vev-index (make-vev-index
+                          (format nil "~A/vev-index/" path)))))
       (setf (vertex-index graph)
             (make-type-index
              (format nil "~A/vertex-index.dat" path) heap))
@@ -127,10 +128,11 @@
               (open-type-index (format nil "~A/vertex-index.dat" path) heap))
         (setf (edge-index graph)
               (open-type-index (format nil "~A/edge-index.dat" path) heap))
-        (if (probe-file schema-file)
-            (setf (schema graph)
-                  (cl-store:restore schema-file))
-            (init-schema graph))
+        ;; (if (probe-file schema-file)
+        ;;     (setf (schema graph)
+        ;;           (cl-store:restore schema-file))
+        ;;     (init-schema graph))
+        (init-schema graph)
         (setf (schema-lock (schema graph)) (make-recursive-lock))
         (update-schema graph)
         (restore-views graph)
