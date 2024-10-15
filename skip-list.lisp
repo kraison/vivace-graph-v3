@@ -371,7 +371,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (let ((mutex (aref (%sl-locks skip-list)
                      (mod (%sn-addr node) (length (%sl-locks skip-list))))))
     #+sbcl
-    (let ((inner-lock-p (eq (sb-thread::mutex-%owner mutex)
+    (let ((inner-lock-p (eq (sb-thread::mutex-owner mutex)
                             sb-thread:*current-thread*))
           (got-it nil))
       (sb-sys:without-interrupts
