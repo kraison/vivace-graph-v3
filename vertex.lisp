@@ -183,12 +183,12 @@
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))
-                        (vertex-table *graph*)))))
+                        (vertex-table graph)))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))
   (map-edges (lambda (vertex)
                (when (deleted-p vertex)
                  (remove-from-type-index vertex graph)))
-             *graph*
+             graph
              :include-deleted-p t))

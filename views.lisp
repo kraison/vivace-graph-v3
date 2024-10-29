@@ -565,7 +565,7 @@
                ;;(log:debug "~S" node)
                  (when (or (null skip) (> cursor-count skip))
                    (incf cursor-count)
-                   (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
+                   (let ((pnode (funcall lookup-fn (second (%sn-key node)) :graph graph)))
                      (unless (or include-deleted-p (null pnode) (deleted-p pnode))
                        (incf found-count)
                        (if collect-p
