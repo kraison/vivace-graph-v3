@@ -465,7 +465,7 @@ no data are not written."
 ;;    (do-applicable-views (view graph new-node)
 ;;      (remove-from-view graph view old-node)
 ;;      (add-to-view graph view new-node))))
-    (log:debug "Apply ~A to views for ~A" write (type-of node))
+    (log:debug "Apply ~A to views for ~A" write (type-of old-node))
     (update-in-views graph new-node old-node)))
 
 (defmethod apply-tx-write-to-views ((write tx-delete) graph)
