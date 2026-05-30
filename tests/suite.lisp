@@ -56,6 +56,34 @@ passed through to MAKE-LHASH (e.g. :buckets 4)."
          (unwind-protect (progn ,@body)
            (ignore-errors (close-lhash ,var)))))))
 
+(defmacro with-temp-type-index ((idx-var heap-var &key (size '(* 1024 1024 16)))
+                                &body body)
+  "Bind HEAP-VAR to a temp heap and IDX-VAR to a fresh type-index backed by
+a table file in the same scratch directory; tear both down afterwards."
+  (let ((dir (gensym "DIR")))
+    `(with-temp-directory (,dir)
+       (let* ((,heap-var (create-memory
+                          (namestring (merge-pathnames "heap.dat" ,dir))
+                          ,size))
+              (,idx-var (make-type-index
+                         (namestring (merge-pathnames "type-index.dat" ,dir))
+                         ,heap-var)))
+         (unwind-protect (progn ,@body)
+           (ignore-errors (close-type-index ,idx-var))
+           (ignore-errors (close-memory ,heap-var)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; UUID-key helpers (16-byte octet vectors, as used for node ids)
+;;; ---------------------------------------------------------------------------
+
+(defun key-in-list-p (uuid il)
+  "True if UUID (a 16-byte octet vector) is a live member of index-list IL."
+  (index-list-member-p uuid il))
+
+(defun index-list-keys (il)
+  "The live keys of index-list IL, in order."
+  (map-index-list (lambda (id) (copy-seq id)) il :collect-p t))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Skip-list construction helper
 ;;;

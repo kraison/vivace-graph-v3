@@ -52,6 +52,21 @@
                 #:skip-list-to-list
                 #:%sn-value
                 #:%sl-length
+                ;; index list
+                #:make-index-list
+                #:index-list-push
+                #:index-list-pushnew
+                #:index-list-member-p
+                #:map-index-list
+                #:remove-from-index-list
+                #:index-list-head
+                #:delete-index-list
+                ;; type index
+                #:make-type-index
+                #:close-type-index
+                #:type-index-push
+                #:type-index-remove
+                #:get-type-index-list
                 ;; misc helpers
                 #:gen-id)
   (:export #:run-tests
