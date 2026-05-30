@@ -98,11 +98,14 @@
   (log:debug "Opening mmap ~A" file)
   (when (and (not create-p) (not (probe-file file)))
     (error "mmap-file: ~A does not exist and create-p is not true." file))
-  (let* ((fd (osicat-posix:open
-              file
-              (if create-p
-                  (logior osicat-posix:O-CREAT osicat-posix:O-RDWR)
-                  osicat-posix:O-RDWR))))
+  (let* ((fd (if create-p
+                 ;; Pass an explicit mode: without it the file is created with
+                 ;; no permission bits (mode 000), so a later open-memory /
+                 ;; open-lhash fails with EACCES.
+                 (osicat-posix:open file
+                                    (logior osicat-posix:O-CREAT osicat-posix:O-RDWR)
+                                    #o644)
+                 (osicat-posix:open file osicat-posix:O-RDWR))))
     (when create-p
       (osicat-posix:lseek fd (1- size) osicat-posix:seek-set)
       (cffi:with-foreign-string (null (format nil "~A" (code-char 0)))
