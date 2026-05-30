@@ -80,7 +80,8 @@
       graph)))
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package (buffer-pool-p t) (gc-heap-p t))
+                   replication-key package (buffer-pool-p t) (gc-heap-p t)
+                   (buffer-pool-size 100000))
   (ensure-directories-exist location)
   (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
@@ -92,7 +93,7 @@
     (log:info "Opening graph.")
     (when buffer-pool-p
       (log:info "Initializing buffer pool.")
-      (ensure-buffer-pool))
+      (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (open-memory (format nil "~A/heap.dat" path)))
            (graph
             (make-instance
