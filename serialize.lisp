@@ -269,8 +269,17 @@
   (uuid:byte-array-to-uuid bytes))
 
 (defmethod serialize ((uuid uuid:uuid))
-  "Encode a UUID."
-  (uuid:uuid-to-byte-array uuid +uuid+))
+  "Encode a UUID as [+uuid+ 16 <16 raw bytes>].
+The installed uuid library's uuid-to-byte-array takes a single argument and
+returns the raw 16 octets, so we prepend the type tag and length ourselves
+to match the layout extract-length / deserialize-help expect for +uuid+."
+  (let ((raw (uuid:uuid-to-byte-array uuid))
+        (vec (make-byte-vector 18)))
+    (setf (aref vec 0) +uuid+)
+    (setf (aref vec 1) 16)
+    (dotimes (i 16)
+      (setf (aref vec (+ 2 i)) (aref raw i)))
+    vec))
 
 (defmethod deserialize-help ((become (eql +positive-integer+)) (bytes array))
   "Decode a positive integer."

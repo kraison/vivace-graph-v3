@@ -73,16 +73,12 @@ value (DESERIALIZE's primary value only)."
     (is (equal bv (deserialized bv)))))
 
 (test uuids
-  "QUARANTINED BUG: serializing a UUID *object* calls
-uuid:uuid-to-byte-array with two args, but the installed uuid library's
-function takes one (\"invalid number of arguments\").  Byte-array keys via
-gen-id are unaffected.  Left as a skip pending a decision on the uuid
-library mismatch."
-  (skip "BUG: serialize((uuid uuid:uuid)) calls uuid-to-byte-array with 2 args")
-  ;; When the uuid library mismatch is resolved, delete the SKIP above and
-  ;; this assertion should pass:
-  #+(or)
+  "A UUID object round-trips: serialize -> deserialize yields an equivalent
+UUID (compared by string form, since uuid objects aren't EQUAL)."
   (let ((u (uuid:make-v4-uuid)))
+    (is (string= (princ-to-string u)
+                 (princ-to-string (deserialized u))))
+    ;; and the serialization is stable / byte-identical on a second pass
     (is-true (serialized-equal (serialize u)
                                (serialize (deserialized u))))))
 
