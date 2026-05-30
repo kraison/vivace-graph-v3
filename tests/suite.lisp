@@ -36,6 +36,14 @@ Invoked by (asdf:test-system :graph-db)."
      (unwind-protect (progn ,@body)
        (uiop:delete-directory-tree ,var :validate t :if-does-not-exist :ignore))))
 
+(defun collect-garbage ()
+  "Force a full GC.  Each graph / type-index preallocates 65536 index-lists
+per type table, so without reclaiming between tests a whole suite run in one
+image exhausts the default heap."
+  #+sbcl (sb-ext:gc :full t)
+  #+ccl (ccl:gc)
+  #+lispworks (hcl:gc-all))
+
 (defmacro with-temp-memory ((var &key (size '(* 1024 1024 64))) &body body)
   "Bind VAR to a freshly created MEMORY backed by a temp file, run BODY,
 then close it and remove the scratch directory."
@@ -70,7 +78,8 @@ a table file in the same scratch directory; tear both down afterwards."
                          ,heap-var)))
          (unwind-protect (progn ,@body)
            (ignore-errors (close-type-index ,idx-var))
-           (ignore-errors (close-memory ,heap-var)))))))
+           (ignore-errors (close-memory ,heap-var))
+           (collect-garbage))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; UUID-key helpers (16-byte octet vectors, as used for node ids)
@@ -104,7 +113,8 @@ a table file in the same scratch directory; tear both down afterwards."
          (unwind-protect
               (let ((*graph* ,g))
                 ,@body)
-           (ignore-errors (close-graph ,g :snapshot-p nil)))))))
+           (ignore-errors (close-graph ,g :snapshot-p nil))
+           (collect-garbage))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Skip-list construction helper
