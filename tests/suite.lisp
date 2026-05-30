@@ -85,6 +85,28 @@ a table file in the same scratch directory; tear both down afterwards."
   (map-index-list (lambda (id) (copy-seq id)) il :collect-p t))
 
 ;;; ---------------------------------------------------------------------------
+;;; Full on-disk graph fixture
+;;;
+;;; A graph couples a heap, indexes, vertex/edge tables and a schema, all in
+;;; a directory.  WITH-TEST-GRAPH builds a fresh one (of the name the
+;;; integration schema is defined against) in a temp directory, binds *graph*,
+;;; and tears it down (no snapshot needed for throwaway data).
+;;; ---------------------------------------------------------------------------
+
+(defparameter *integration-graph-name* :graph-db-integration-test)
+
+(defmacro with-test-graph ((g) &body body)
+  (let ((dir (gensym "DIR")))
+    `(with-temp-directory (,dir)
+       (let ((,g (make-graph *integration-graph-name*
+                             (namestring ,dir)
+                             :buffer-pool-size 1000)))
+         (unwind-protect
+              (let ((*graph* ,g))
+                ,@body)
+           (ignore-errors (close-graph ,g :snapshot-p nil)))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Skip-list construction helper
 ;;;
 ;;; Skip lists need a heap plus a full complement of key/value

@@ -67,6 +67,30 @@
                 #:type-index-push
                 #:type-index-remove
                 #:get-type-index-list
+                ;; graph model / public API
+                #:*graph*
+                #:make-graph
+                #:open-graph
+                #:close-graph
+                #:with-transaction
+                #:lookup-vertex
+                #:lookup-edge
+                #:outgoing-edges
+                #:incoming-edges
+                #:map-vertices
+                #:map-edges
+                #:weight
+                #:to
+                #:from
+                #:id
+                #:deleted-p
+                #:mark-deleted
+                #:copy
+                #:save
+                #:def-vertex
+                #:def-edge
+                #:node-slot-value
+                #:*schema-node-metadata*
                 ;; misc helpers
                 #:gen-id)
   (:export #:run-tests
