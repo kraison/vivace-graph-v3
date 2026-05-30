@@ -620,7 +620,11 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
        (let ((node (read-skip-node skip-list (aref (%sn-pointers pred) 0))))
          (if (= (%sn-addr node) (%sn-addr (%sl-tail skip-list)))
              (return)
-             (incf count))))
+             (progn
+               (incf count)
+               ;; Advance the cursor; without this the loop re-reads the
+               ;; first node forever (infinite loop).
+               (setq pred node)))))
     count))
 
 (defun analyze-sl-heights (skip-list)
