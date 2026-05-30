@@ -597,14 +597,18 @@
   ;; requires no bookkeeping bytes.  Use read-bucket-as-bytes for reorg?
   (let ((pairs (read-bucket lhash file offset)))
     (clear-bucket lhash file offset)
-    (dolist (pair pairs)
-      (if (funcall (%lhash-test lhash) (car pair) key)
-          (decf-lhash-count lhash)
-          (add-to-bucket lhash
-                         (%lhash-table lhash)
-                         offset
-                         (car pair)
-                         (cdr pair))))))
+    ;; The survivors are re-added, not newly inserted, so bind
+    ;; *rehashing-bucket* to keep add-to-bucket from inflating the count.
+    ;; Only the matched key's decf should affect it.
+    (let ((*rehashing-bucket* t))
+      (dolist (pair pairs)
+        (if (funcall (%lhash-test lhash) (car pair) key)
+            (decf-lhash-count lhash)
+            (add-to-bucket lhash
+                           (%lhash-table lhash)
+                           offset
+                           (car pair)
+                           (cdr pair)))))))
 
 (defun rehash-bucket (lhash bucket)
   ;;(log:info "REHASHING BUCKET ~A" bucket)
