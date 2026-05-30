@@ -76,4 +76,21 @@
                (:file "prolog-functors" :depends-on ("prologc"))
                (:file "interface" :depends-on ("schema" "edge" "vertex" "views"))
                (:file "traverse" :depends-on ("interface"))
-               (:file "rest" :depends-on ("traverse"))))
+               (:file "rest" :depends-on ("traverse")))
+  :in-order-to ((test-op (test-op :graph-db/test))))
+
+(defsystem graph-db/test
+  :name "VivaceGraph test suite"
+  :description "FiveAM unit tests for graph-db."
+  :depends-on (:graph-db :fiveam)
+  :pathname "tests/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "serialize-tests")
+               (:file "allocator-tests")
+               (:file "linear-hash-tests")
+               (:file "skip-list-tests"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call :graph-db/test :run-tests)
+                      (error "graph-db test suite failed."))))
