@@ -91,6 +91,22 @@
                 #:def-edge
                 #:node-slot-value
                 #:*schema-node-metadata*
+                ;; views
+                #:def-view
+                #:invoke-graph-view
+                #:map-view
+                #:map-reduced-view
+                #:yield
+                #:string-id
+                ;; prolog queries.  The query compiler interns functor symbols
+                ;; in the current package, so the built-in functors a query
+                ;; references must be accessible here by name.  Edge functors
+                ;; (e.g. g-knows/2) are generated in this package already.
+                #:select
+                #:select-flat
+                #:select-one
+                #:is-a/2
+                #:select/2
                 ;; misc helpers
                 #:gen-id)
   (:export #:run-tests
