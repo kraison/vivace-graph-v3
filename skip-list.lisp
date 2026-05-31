@@ -237,13 +237,16 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (node-cache
    #+sbcl (make-hash-table :test 'eq :weakness :value :synchronized t)
    #+lispworks (make-hash-table :test 'eq :weak-kind :value :single-thread nil)
-   #+ccl (make-hash-table :test 'eq :weak :value :shared t))
+   #+ccl (make-hash-table :test 'eq :weak :value :shared t)
+   #+ecl (make-hash-table :test 'eq :weakness :value))
   (length-lock #+sbcl (sb-thread:make-mutex)
                #+lispworks (mp:make-lock)
-               #+ccl (ccl:make-lock))
+               #+ccl (ccl:make-lock)
+               #+ecl (mp:make-lock :recursive t))
   (locks (map-into (make-array 1000)
                    #+ccl 'ccl:make-lock
                    #+lispworks 'mp:make-lock
+                   #+ecl 'mp:make-lock
                    #+sbcl 'sb-thread:make-mutex)))
 
 (defun make-head (skip-list &key key value)
@@ -384,7 +387,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
     #+lispworks (progn (mp:process-lock mutex nil timeout)
                        mutex)
     #+ccl
-    (and (ccl:grab-lock mutex) mutex)))
+    (and (ccl:grab-lock mutex) mutex)
+    #+ecl
+    (and (mp:get-lock mutex waitp) mutex)))
 
 (defun unlock-skip-node (skip-list lock)
   (declare (ignore skip-list))
@@ -393,7 +398,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   #+lispworks
   (mp:process-unlock lock)
   #+sbcl
-  (sb-thread:release-mutex lock))
+  (sb-thread:release-mutex lock)
+  #+ecl
+  (mp:giveup-lock lock))
 
 (defun find-in-skip-list (skip-list key &optional preds succs)
   (let ((the-node nil) (pred (%sl-head skip-list)) (level-found -1))
@@ -465,7 +472,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
              (loop until (%sn-fully-linked-p skip-list node) do
                   #+ccl (ccl:process-allow-schedule)
                   #+lispworks (mp:yield)
-                  #+sbcl (sb-thread:thread-yield))
+                  #+sbcl (sb-thread:thread-yield)
+                  #+ecl (thread-yield))
              (unless (%sl-duplicates-allowed-p skip-list)
                ;;(error 'skip-list-duplicate-error
                ;;:skip-list skip-list :key key :value value)
@@ -533,6 +541,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                          #+lispworks (sys:compare-and-swap (%sn-svalue node) (%sn-svalue node) sval)
                          #+ccl (ccl::conditional-store (%sn-value node) (%sn-value node) value)
                          #+ccl (ccl::conditional-store (%sn-svalue node) (%sn-svalue node) sval)
+                         #+ecl (setf (%sn-value node) value)
+                         #+ecl (setf (%sn-svalue node) sval)
                          (let* ((offset (+ (%sn-addr node)
                                            8 1 1
                                            (length skey)

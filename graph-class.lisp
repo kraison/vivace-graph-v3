@@ -36,11 +36,13 @@
                 :initform
                 #+ccl (make-hash-table :test 'eq :shared t)
                 #+lispworks (make-hash-table :test 'eq :single-thread nil)
+                #+ecl (make-hash-table :test 'eq)
                 #+sbcl (make-hash-table :test 'eq :synchronized t))
    (read-stats :accessor read-stats :initarg :read-stats
                :initform
                #+ccl (make-hash-table :test 'eq :shared t)
                #+lispworks (make-hash-table :test 'eq :single-thread nil)
+               #+ecl (make-hash-table :test 'eq)
                #+sbcl (make-hash-table :test 'eq :synchronized t))))
 
 (defmethod print-object ((graph graph) stream)

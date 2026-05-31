@@ -7,6 +7,7 @@
              (:conc-name pg-))
   (counter 0 :type (unsigned-byte 64))
   #+ccl (lock (ccl:make-lock))
+  #+ecl (lock (mp:make-lock))
   (symbols nil :type list))
 
 (defvar *prolog-gensym* (make-prolog-gensym))
@@ -24,6 +25,11 @@
   (with-lock ((pg-lock *prolog-gensym*))
     (or (pop (pg-symbols *prolog-gensym*))
         (let ((num (incf (pg-counter *prolog-gensym*))))
+          (make-symbol (format nil "~A~D" thing num)))))
+  #+ecl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (or (pop (pg-symbols *prolog-gensym*))
+        (let ((num (incf (pg-counter *prolog-gensym*))))
           (make-symbol (format nil "~A~D" thing num))))))
 
 (defun release-prolog-symbol (symbol)
@@ -32,6 +38,9 @@
   #+lispworks
   (sys:atomic-push symbol (pg-symbols *prolog-gensym*))
   #+ccl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (push symbol (pg-symbols *prolog-gensym*)))
+  #+ecl
   (with-lock ((pg-lock *prolog-gensym*))
     (push symbol (pg-symbols *prolog-gensym*))))
 

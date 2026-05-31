@@ -6,6 +6,7 @@
         #:local-time
         #+ccl #:closer-mop
         #+lispworks #:clos
+        #+ecl #:clos
         #+sbcl #:sb-mop
         #+sbcl #:sb-pcl)
   #+sbcl (:shadowing-import-from "SB-EXT" "WORD")
@@ -74,14 +75,14 @@
            #:with-write-locked-class
            #:with-read-locked-class
            #:schema-class-locks
-           #+sbcl #:make-rw-lock
-           #+sbcl #:with-read-lock
-           #+sbcl #:with-write-lock
-           #+sbcl #:acquire-read-lock
-           #+sbcl #:release-read-lock
-           #+sbcl #:acquire-write-lock
-           #+sbcl #:release-write-lock
-           #+sbcl #:rw-lock-p
+           #+(or sbcl ecl) #:make-rw-lock
+           #+(or sbcl ecl) #:with-read-lock
+           #+(or sbcl ecl) #:with-write-lock
+           #+(or sbcl ecl) #:acquire-read-lock
+           #+(or sbcl ecl) #:release-read-lock
+           #+(or sbcl ecl) #:acquire-write-lock
+           #+(or sbcl ecl) #:release-write-lock
+           #+(or sbcl ecl) #:rw-lock-p
 
            #:vertex
            #:edge

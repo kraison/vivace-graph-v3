@@ -123,6 +123,8 @@
       (sys:compare-and-swap (index-list-head il)
                             (index-list-head il)
                             address)
+      #+ecl
+      (setf (index-list-head il) address)
       ;;(log:debug "NEW HEAD: ~A" (index-list-head il))
       il)))
 

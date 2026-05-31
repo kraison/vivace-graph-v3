@@ -50,6 +50,10 @@
   (value-serializer 'serialize-uint64)
   (value-deserializer 'deserialize-uint64))
 
+;; ECL does not expose SIMPLE-VECTOR as a class usable as a method
+;; specializer; the ((x array) (y array)) method below (using AREF) handles
+;; simple vectors there too.
+#-ecl
 (defmethod uuid-array-equal ((x simple-vector) (y simple-vector) &optional _a _b)
   (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
@@ -299,7 +303,8 @@
       (setf (svref (%lhash-lock-vector lhash) i)
             #+sbcl (sb-thread:make-mutex)
             #+lispworks (mp:make-lock)
-            #+ccl (make-lock)))
+            #+ccl (make-lock)
+            #+ecl (mp:make-lock)))
     lhash))
 
 (defun open-lhash (location)
@@ -346,7 +351,8 @@
             (setf (svref (%lhash-lock-vector lhash) i)
                   #+sbcl (sb-thread:make-mutex)
                   #+lispworks (mp:make-lock)
-                  #+ccl (make-lock))))
+                  #+ccl (make-lock)
+                  #+ecl (mp:make-lock))))
       (error (c)
         (log:debug "Cannot open lhash: ~S" c)
         (munmap-file (%lhash-config lhash))
@@ -380,6 +386,7 @@
         #+sbcl (sb-thread:release-mutex lock)
         #+lispworks (mp:process-unlock lock)
         #+ccl (ccl:release-lock lock)
+        #+ecl (mp:giveup-lock lock)
       (log:debug "RELEASED LOCK: ~A" lock))))
 
 (defun grab-lhash-lock (lhash index &key (wait-p t) timeout)
@@ -390,6 +397,8 @@
         #+lispworks (mp:process-lock lock nil timeout)
         ;; FIXME honor wait-p and timeout for CCL
         #+ccl (ccl:grab-lock lock)
+        ;; FIXME honor timeout for ECL
+        #+ecl (mp:get-lock lock wait-p)
       (log:debug "GOT LOCK: ~A" lock))))
 
 (defmacro with-locked-hash-key ((lhash key) &body body)

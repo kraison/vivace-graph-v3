@@ -51,6 +51,7 @@ to disk and remove it."
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
              #+lispworks (make-hash-table :single-thread nil)
+             #+ecl (make-hash-table)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -133,6 +134,7 @@ CLOSE-GRAPH when finished."
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
              #+lispworks (make-hash-table :single-thread nil)
+             #+ecl (make-hash-table)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key

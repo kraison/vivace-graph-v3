@@ -12,13 +12,16 @@
 	     (:predicate rw-lock-p))
   #+sbcl(lock (sb-thread:make-mutex) :type sb-thread:mutex)
   #+lispworks(lock (mp:make-lock) :type mp:lock)
+  #+ecl(lock (mp:make-lock :recursive t))
   (readers 0 :type integer)
   #+sbcl (semaphore (sb-thread:make-semaphore) :type sb-thread:semaphore)
   #+lispworks (semaphore (mp:make-semaphore) :type mp:semaphore)
+  #+ecl (semaphore (mp:make-semaphore))
   (writer-queue (make-empty-queue) :type queue)
   (writer nil)
   #+lispworks(waitqueue (mp:make-condition-variable) :type mp:condition-variable)
-  #+sbcl(waitqueue (sb-thread:make-waitqueue) :type sb-thread:waitqueue))
+  #+sbcl(waitqueue (sb-thread:make-waitqueue) :type sb-thread:waitqueue)
+  #+ecl(waitqueue (mp:make-condition-variable)))
 
 (defun next-in-queue-p (rw-lock thread)
   (with-recursive-lock-held ((lock-lock rw-lock))
@@ -28,7 +31,7 @@
 (defun lock-unused-p (rw-lock)
   (with-recursive-lock-held ((lock-lock rw-lock))
     (and (= 0 (lock-readers rw-lock))
-	 (= #+sbcl 0 #+lispworks 1 (#+sbcl sb-thread:semaphore-count #+lispworks mp:semaphore-count (lock-semaphore rw-lock)))
+	 (= #+sbcl 0 #+lispworks 1 #+ecl 0 (#+sbcl sb-thread:semaphore-count #+lispworks mp:semaphore-count #+ecl mp:semaphore-count (lock-semaphore rw-lock)))
 	 (null (lock-writer rw-lock))
 	 (empty-queue-p (lock-writer-queue rw-lock)))))
 
@@ -39,7 +42,7 @@
       ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) rw-lock)
       (when (lock-writer rw-lock)
         ;;(log:debug "~A SIGNALLED WRITER ON LOCK ~A" (current-thread) rw-lock)
-	(#+sbcl sb-thread:signal-semaphore #+lispworks mp:semaphore-release (lock-semaphore rw-lock))))))
+	(#+sbcl sb-thread:signal-semaphore #+lispworks mp:semaphore-release #+ecl mp:signal-semaphore (lock-semaphore rw-lock))))))
 
 (defun acquire-read-lock (rw-lock &key (max-tries 1000))
   (declare (ignore max-tries))
@@ -76,7 +79,8 @@
             ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) rw-lock)
             )
           #+lispworks(mp:condition-variable-broadcast (lock-waitqueue rw-lock))
-	  #+sbcl(sb-thread:condition-broadcast (lock-waitqueue rw-lock))))))
+	  #+sbcl(sb-thread:condition-broadcast (lock-waitqueue rw-lock))
+	  #+ecl(mp:condition-variable-broadcast (lock-waitqueue rw-lock))))))
 
 (defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p (wait-p t))
   (declare (ignore max-tries))
@@ -131,7 +135,8 @@
                           c rw-lock)))
            (when internal-wait-p
              #+lispworks(mp:semaphore-acquire (lock-semaphore rw-lock))
-             #+sbcl(sb-thread:wait-on-semaphore (lock-semaphore rw-lock)))))))
+             #+sbcl(sb-thread:wait-on-semaphore (lock-semaphore rw-lock))
+             #+ecl(mp:wait-on-semaphore (lock-semaphore rw-lock)))))))
 
 (defmacro with-write-lock ((rw-lock &key reading-p) &body body)
   `(unwind-protect

@@ -23,7 +23,8 @@
   (free-list
    #+sbcl (make-hash-table :synchronized t)
    #+lispworks (make-hash-table :single-thread nil)
-   #+ccl (make-hash-table :shared t))
+   #+ccl (make-hash-table :shared t)
+   #+ecl (make-hash-table))
   free-list-thread
   (pointer 0 :type (UNSIGNED-BYTE 64))
   (lock (make-rw-lock))
@@ -33,7 +34,8 @@
   (cache
    #+sbcl (make-hash-table :synchronized t :weakness :value)
    #+lispworks (make-hash-table :single-thread nil :weak-kind :value)
-   #+ccl (make-hash-table :shared t :weak :value)))
+   #+ccl (make-hash-table :shared t :weak :value)
+   #+ecl (make-hash-table :weakness :value)))
 
 (defmethod set-byte ((memory memory) offset byte)
   (declare (type word offset))

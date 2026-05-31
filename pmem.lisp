@@ -47,7 +47,8 @@
                        :cache
                        #+sbcl (make-hash-table :weakness :value :synchronized t)
                        #+ccl (make-hash-table :weak :value :shared t)
-                       #+lispworks (make-hash-table :weak-kind :value :single-thread nil))))
+                       #+lispworks (make-hash-table :weak-kind :value :single-thread nil)
+                       #+ecl (make-hash-table :weakness :value))))
       (setf (stack-pointer pmem) +stack-pointer-start-offset+)
       (setf (heap-pointer pmem) (+ offset size))
       pmem)))
