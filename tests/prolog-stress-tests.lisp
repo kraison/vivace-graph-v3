@@ -42,6 +42,14 @@ table, if present.  Used to keep rule definitions from leaking across tests."
   (let ((f (lookup-functor (make-functor-symbol name arity))))
     (when f (delete-functor f))))
 
+(defmacro in-test-package (&body body)
+  "Evaluate BODY with *package* bound to GRAPH-DB/TEST.  The meta-call
+functors (not / bagof / setof / if, via call/1) resolve the inner goal's
+functor by interning its name in the *runtime* *package*, so it must be the
+package where the functors are accessible."
+  `(let ((*package* (find-package '#:graph-db/test)))
+     ,@body))
+
 (defmacro defining-reach (&body body)
   "Define the recursive rule reach/2 over g-knows (transitive closure) for the
 extent of BODY, then remove it.  Cleans up first too, so a leak from an
@@ -143,3 +151,81 @@ clauses must not accumulate across define/delete cycles."
     (defining-reach
       (is (= 10 (length (with-query-timeout (20)
                           (select (:flat nil) (?x ?y) (reach ?x ?y)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Control / aggregation functors: or, not, bagof, setof.
+;;;
+;;; or and = are CL symbols whose Prolog compiler macros resolve from any
+;;; package.  not / bagof / setof go through call/1, whose runtime functor
+;;; resolution is *package*-sensitive, so those queries run inside
+;;; IN-TEST-PACKAGE.
+;;; ---------------------------------------------------------------------------
+
+(defun make-people (n)
+  "Create N g-person vertices named n0..n(N-1)."
+  (with-transaction ()
+    (dotimes (i n) (make-g-person :name (format nil "n~d" i)))))
+
+(test query-or
+  "(or g1 g2) succeeds when either branch does."
+  (with-test-graph (g)
+    (make-people 4)
+    (let ((names (with-query-timeout (15)
+                   (select-flat (?n)
+                     (is-a ?x g-person)
+                     (node-slot-value ?x name ?n)
+                     (or (= ?n "n0") (= ?n "n2"))))))
+      (is (equal '("n0" "n2") (sort (copy-list names) #'string<))))))
+
+(test query-not
+  "(not g) succeeds when g fails -- here, every person except n0."
+  (with-test-graph (g)
+    (make-people 4)
+    (let ((names (in-test-package
+                   (with-query-timeout (15)
+                     (select-flat (?n)
+                       (is-a ?x g-person)
+                       (node-slot-value ?x name ?n)
+                       (not (node-slot-value ?x name "n0")))))))
+      (is (= 3 (length names)))
+      (is-false (member "n0" names :test #'string=)))))
+
+(test query-bagof-collects-all-solutions
+  "bagof binds its result to the list of all solutions for the template."
+  (with-test-graph (g)
+    (make-people 4)
+    (let ((result (in-test-package
+                    (with-query-timeout (15)
+                      (select (:flat nil) (?bag)
+                              (bagof ?x (is-a ?x g-person) ?bag))))))
+      ;; one solution, whose single value is the 4-element bag
+      (is (= 1 (length result)))
+      (is (= 4 (length (first (first result))))))))
+
+(test bagof-vs-setof-over-user-rule
+  "bagof keeps duplicates, setof removes them.  Also a regression for the
+call/1 fix: meta-call (bagof/setof) over a user-defined (<-) predicate.
+Edges n0->n2, n1->n2, n0->n3 make \"n2\" a duplicate target name."
+  (with-test-graph (g)
+    (let (h)
+      (setq h (make-hash-table :test 'equal))
+      (with-transaction ()
+        (dolist (nm '("n0" "n1" "n2" "n3"))
+          (setf (gethash nm h) (make-g-person :name nm)))
+        (make-g-knows :from (gethash "n0" h) :to (gethash "n2" h))
+        (make-g-knows :from (gethash "n1" h) :to (gethash "n2" h))
+        (make-g-knows :from (gethash "n0" h) :to (gethash "n3" h))))
+    (drop-rule 'target-name 1)
+    (<- (target-name ?n) (g-knows ?x ?y) (node-slot-value ?y name ?n))
+    (unwind-protect
+         (in-test-package
+           (let ((bag (first (first (with-query-timeout (15)
+                                      (select (:flat nil) (?b)
+                                              (bagof ?n (target-name ?n) ?b))))))
+                 (set (first (first (with-query-timeout (15)
+                                      (select (:flat nil) (?s)
+                                              (setof ?n (target-name ?n) ?s)))))))
+             (is (= 3 (length bag)))                       ; n2 n2 n3
+             (is (= 2 (length set)))                       ; n2 n3
+             (is (equal '("n2" "n3") (sort (copy-list set) #'string<)))))
+      (drop-rule 'target-name 1))))

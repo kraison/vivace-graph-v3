@@ -140,7 +140,11 @@ goal's argument count."
   "Call a prolog form."
   (var-deref goal)
   (let* ((functor (make-functor-symbol (first goal) (length (args goal)))))
-    (let ((fn (or (gethash functor *user-functors*)
+    ;; *user-functors* holds FUNCTOR structs, not functions, so we must pull
+    ;; out the compiled fn (via get-functor-fn).  Reading the struct directly
+    ;; made (functionp ...) false, so call/1 -- and thus not/bagof/setof/if --
+    ;; could never invoke a user-defined (<-) predicate.
+    (let ((fn (or (get-functor-fn functor)
 		  (gethash functor *prolog-global-functors*))))
       (if (functionp fn)
 	  (apply fn (append (args goal) (list cont)))

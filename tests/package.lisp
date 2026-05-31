@@ -111,6 +111,9 @@
                 #:is-a/2
                 #:select/2
                 #:node-slot-value/3
+                #:not/1
+                #:bagof/3
+                #:setof/3
                 ;; rule definition + functor-table access (for stress tests).
                 ;; (! is shadowing-imported above.)
                 #:<-
