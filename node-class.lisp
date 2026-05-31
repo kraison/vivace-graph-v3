@@ -125,7 +125,11 @@
   (find-ancestor-classes (find-class class-name)))
 
 (defmethod find-ancestor-classes ((class node-class))
-  (delete-if (lambda (class)
+  ;; remove-if (non-destructive): on CCL the list returned by
+  ;; compute-class-precedence-list shares structure with the class's stored
+  ;; CPL slot, so a destructive delete-if mutates the class's own CPL --
+  ;; breaking method dispatch on any superclass for multi-level subclasses.
+  (remove-if (lambda (class)
                (find (class-name class)
                      #+sbcl '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)
                      #+lispworks '(edge vertex node standard-object T)
