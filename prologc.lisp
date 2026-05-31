@@ -108,9 +108,14 @@
   (first list))
 
 (defun prolog-compile-help (functor clauses)
-  (let ((arity (relation-arity (clause-head (first clauses)))))
-    (compile-functor functor arity (clauses-with-arity clauses #'= arity))
-    (prolog-compile-help functor (clauses-with-arity clauses #'/= arity))))
+  ;; Base case: stop once every clause has been compiled.  Without this guard,
+  ;; (first nil) -> nil, relation-arity -> 0, and the function recurses forever
+  ;; on the empty clause set, repeatedly compiling a degenerate arity-0 functor
+  ;; -- which hangs the Lisp compiler.  This made every <- rule definition hang.
+  (unless (null clauses)
+    (let ((arity (relation-arity (clause-head (first clauses)))))
+      (compile-functor functor arity (clauses-with-arity clauses #'= arity))
+      (prolog-compile-help functor (clauses-with-arity clauses #'/= arity)))))
 
 (defmethod prolog-compile ((functor functor))
   (if (null (functor-clauses functor))
