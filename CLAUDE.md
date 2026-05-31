@@ -23,6 +23,8 @@ Dependencies (bordeaux-threads, alexandria, cffi, osicat, uuid, cl-store, hunche
 
 `example.lisp` is the canonical end-to-end walkthrough (schema definition → views → transactional inserts → queries) and is the best starting point for understanding the public API.
 
+`docs/vivace-graph-v3-doc.org` is a full developer's manual (storage engine, object model, transactions, Prolog queries, views, REST, replication, backup/recovery, API reference). Originally written by Gwang-Jin Kim (@gwangjinkim) and adopted into this repo; keep it in sync when behavior changes.
+
 ## Tests
 
 There is **no automated test framework**. Tests are ad-hoc functions you load and call from the REPL:
