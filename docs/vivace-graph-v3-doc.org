@@ -899,8 +899,11 @@ Let's assume we have a helper Lisp function, `(haversine-distance lat1 lon1 lat2
        *graph* :vertex-type 'user)))
 
   ;; Now, the query to find all users near the Eiffel Tower is trivial and efficient.
+  ;; NB: in a query goal you write the predicate name WITHOUT the /arity suffix
+  ;; (the compiler appends it from the goal's argument count), just as with the
+  ;; built-in predicates above.
   (select-flat (?name)
-    (users-within-radius/4 48.8584 2.2945 10.0 ?user)
+    (users-within-radius 48.8584 2.2945 10.0 ?user)
     (node-slot-value ?user username ?name))
 #+END_SRC
 
