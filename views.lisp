@@ -139,7 +139,10 @@ once per entry you want the node to contribute (zero, one, or many times)."
 
 (defmethod restore-views ((graph graph))
   (let ((views-file (format nil "~A/views.dat" (location graph)))
-        (view-table (make-hash-table #-lispworks :synchronized #-lispworks t #+lispworks :single-thread #+lispworks nil)))
+        (view-table (make-hash-table
+                     #+sbcl :synchronized #+sbcl t
+                     #+ccl :shared #+ccl t
+                     #+lispworks :single-thread #+lispworks nil)))
     (when (probe-file views-file)
       (let ((blob (cl-store:restore views-file)))
         (dolist (view-data blob)
