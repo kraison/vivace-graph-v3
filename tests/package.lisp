@@ -10,6 +10,9 @@
 
 (defpackage #:graph-db/test
   (:use #:cl #:fiveam)
+  ;; graph-db's cut symbol must win over fiveam's ! (its rerun-tests helper),
+  ;; so the Prolog compiler recognizes ! in query goals as cut.
+  (:shadowing-import-from #:graph-db #:!)
   (:import-from #:graph-db
                 ;; serialization
                 #:serialize
@@ -107,6 +110,13 @@
                 #:select-one
                 #:is-a/2
                 #:select/2
+                #:node-slot-value/3
+                ;; rule definition + functor-table access (for stress tests).
+                ;; (! is shadowing-imported above.)
+                #:<-
+                #:lookup-functor
+                #:delete-functor
+                #:make-functor-symbol
                 ;; misc helpers
                 #:gen-id)
   (:export #:run-tests
