@@ -219,6 +219,15 @@
 
 (defmacro with-transaction ((&optional (transaction-manager '(transaction-manager *graph*)))
                             &body body)
+  "Run BODY as a single ACID transaction against TRANSACTION-MANAGER (by
+default that of the current *GRAPH*) and return BODY's value.
+
+All mutations -- MAKE-<type> constructors, SAVE, DELETE-NODE/MARK-DELETED --
+must run inside a transaction.  On normal exit the transaction is validated
+against its read/write sets and committed; if validation finds a conflict it
+is retried (up to *MAXIMUM-TRANSACTION-ATTEMPTS*, then under an exclusive
+lock).  A non-local exit rolls it back.  To modify an existing node, COPY it
+inside the transaction, mutate the copy, then SAVE it."
   `(call-with-transaction (lambda () ,@body) ,transaction-manager))
 
 (defclass tx ()
@@ -1077,6 +1086,12 @@ left in the stream."
       new-node)))
 
 (defgeneric update-node (new-node graph)
+  (:documentation
+   "Persist NEW-NODE -- which must be a COPY (made with COPY inside the current
+transaction) of an existing node -- recording the change in the transaction's
+write set.  Prefer the SAVE method, which calls this.  Signals
+NO-TRANSACTION-IN-PROGRESS outside a transaction, or MODIFYING-NON-COPY if
+NEW-NODE was not produced by COPY.")
   (:method (new-node graph)
     ;; This does not automatically ensure a transaction, because you
     ;; have to COPY any node you want to modify within a transaction
@@ -1094,6 +1109,10 @@ left in the stream."
       new-node)))
 
 (defgeneric delete-node (node graph)
+  (:documentation
+   "Soft-delete NODE from GRAPH within a transaction (auto-wrapping one if
+needed): records a deletion of a copy with its deleted flag set, so the node
+stops appearing in queries.  MARK-DELETED is the usual entry point.")
   (:method (node graph)
     (let ((old-node node)
           (new-node (copy node)))
@@ -1335,11 +1354,16 @@ left in the stream."
 
 
 (defun commit (&optional (transaction *transaction*))
+  "Commit TRANSACTION (the current one by default), making its changes durable.
+WITH-TRANSACTION commits automatically on normal exit, so this is rarely
+called directly.  Signals NO-TRANSACTION-IN-PROGRESS if none is active."
   (unless *transaction*
     (error 'no-transaction-in-progress))
   (%commit transaction))
 
 (defun rollback (&optional (transaction *transaction*))
+  "Abort TRANSACTION (the current one by default), discarding its changes.
+Signals NO-TRANSACTION-IN-PROGRESS if none is active."
   (unless *transaction*
     (error 'no-transaction-in-progress))
   (%rollback transaction))

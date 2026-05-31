@@ -1,1 +1,9 @@
 .DS_Store
+
+# Emacs temp / lock / backup files
+.\#*
+\#*\#
+*~
+
+# Common Lisp compiled output
+*.fasl

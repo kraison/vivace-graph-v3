@@ -31,6 +31,10 @@
   (sort-order :lessp))
 
 (defun yield (key value)
+  "Emit one index entry, KEY -> VALUE, from inside a view's :MAP lambda.  KEY
+determines the view's ordering and is what you query by; VALUE is carried
+through (and, for a map-reduce view, fed to the :REDUCE function).  Call it
+once per entry you want the node to contribute (zero, one, or many times)."
   ;;(dbg "PUSHING (~S ~S) ON TO *VIEW-RV*" key value)
   (push (list key value) *view-rv*))
 
@@ -536,6 +540,12 @@
 (defmethod map-view (fn (class-name symbol) (view-name symbol)
                      &key (graph *graph*) key start-key end-key count skip
                        collect-p include-deleted-p write-p)
+  "Call FN on entries of the view VIEW-NAME (defined on CLASS-NAME) in GRAPH.
+FN receives (key id value).  Restrict to a single :KEY, or to a :START-KEY /
+:END-KEY range, and page with :SKIP / :COUNT.  With :COLLECT-P, collect and
+return FN's values.  This walks the raw (unreduced) view entries; see
+MAP-REDUCED-VIEW for aggregated results and INVOKE-GRAPH-VIEW for the common
+high-level lookup."
   (if (lookup-view-group class-name graph)
       (let ((thunk
              (lambda ()
@@ -595,6 +605,10 @@
 (defmethod map-reduced-view (fn (class-name symbol) (view-name symbol)
                              &key (graph *graph*) start-key end-key count
                                skip collect-p)
+  "Call FN on the aggregated entries of the map-reduce view VIEW-NAME (defined
+on CLASS-NAME) in GRAPH.  FN receives (key id reduced-value), one call per
+distinct key, where REDUCED-VALUE is the output of the view's :REDUCE function.
+Supports :START-KEY/:END-KEY range, :SKIP/:COUNT paging, and :COLLECT-P."
   (if (lookup-view-group class-name graph)
       (with-read-locked-view-group (class-name graph)
         (let ((view (lookup-view graph class-name view-name)))
@@ -638,6 +652,16 @@
 (defmethod invoke-graph-view ((class-name symbol) (view-name symbol)
                               &key (graph *graph*) key start-key end-key count
                                 skip group-p (reduce-p t))
+  "Query the view VIEW-NAME (defined on CLASS-NAME) in GRAPH and return its
+matches as a list of alists, each with keys :KEY, :ID and :VALUE.  This is the
+usual high-level lookup.
+
+For a map-only view (or with :REDUCE-P nil), returns the matching entries,
+optionally narrowed by :KEY or a :START-KEY/:END-KEY range and paged with
+:SKIP/:COUNT.  For a map-reduce view it returns reduced results: the grand
+aggregate by default, the per-key aggregate for a given :KEY with :GROUP-P, or
+all groups with :GROUP-P alone.  Signals INVALID-VIEW-ERROR if the view does
+not exist."
   (if (lookup-view-group class-name graph)
       (with-read-locked-view-group (class-name graph)
         (let ((view (lookup-view graph class-name view-name)))
@@ -702,6 +726,21 @@
     (format nil "~S" expression)))
 
 (defmacro def-view (name sort-order parents &body body)
+  "Define a view (a secondary index) named NAME over a node type.
+
+PARENTS is (CLASS-NAME GRAPH-NAME).  SORT-ORDER is the key comparator, e.g.
+:LESSP or :GREATERP.  BODY holds a (:MAP lambda) and optionally a (:REDUCE
+lambda):
+  - the :MAP lambda receives a node and calls YIELD to emit key/value entries;
+  - the optional :REDUCE lambda receives (keys values) and aggregates them,
+    making this a map-reduce view.
+
+The graph named GRAPH-NAME must already exist when DEF-VIEW runs (define views
+after MAKE-GRAPH/OPEN-GRAPH).  Once defined, the view is maintained
+incrementally as matching nodes are saved.  Query it with INVOKE-GRAPH-VIEW,
+MAP-VIEW, or MAP-REDUCED-VIEW.  Example:
+  (def-view user-by-username :lessp (user :social-app)
+    (:map (lambda (u) (when (username u) (yield (username u) nil)))))"
   (with-gensyms (view-name class-name graph-name graph lookup-fn view-sort-order)
     (let ((map-code (cadr (assoc :map body)))
           (reduce-code (cadr (assoc :reduce body))))

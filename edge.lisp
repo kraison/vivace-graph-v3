@@ -117,6 +117,9 @@
   (lookup-edge (read-id-array-from-string id) :graph graph))
 
 (defmethod lookup-edge ((id array) &key (graph *graph*))
+  "Return the edge with the given ID (a 16-byte id array or its string form) in
+GRAPH, or NIL if none.  Returns it regardless of its deleted flag; the
+generated LOOKUP-<type> functions filter deleted edges."
   (lookup-object id (edge-table graph) *transaction* graph))
 
 (defmethod add-to-ve-index ((edge edge) (graph graph) &key unless-present)
@@ -181,6 +184,12 @@
 (defun make-edge (type from to weight data &key id revision deleted-p
                   retry-p
                   (graph *graph*))
+  "Create and persist an edge of the type named/identified by TYPE (a node type
+name, integer id, or :GENERIC) from vertex FROM to vertex TO in GRAPH, with the
+given WEIGHT and slot DATA; return it.  FROM and TO may be vertices, id arrays,
+or id strings.  Must run inside a transaction.  You normally call the generated
+MAKE-<type> constructor (e.g. (MAKE-FOLLOWS :FROM a :TO b)) instead.  :RETRY-P
+regenerates the id on a duplicate-key collision."
   (when (stringp id)
     (setq id (read-id-array-from-string id)))
   (typecase from
@@ -288,6 +297,12 @@
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex exclude-edge-types)
+  "Call FN on edges of GRAPH.  Narrow the set with :EDGE-TYPE (a type name) /
+:EXCLUDE-EDGE-TYPES; with :VERTEX plus :DIRECTION (:OUT or :IN) for that
+vertex's adjacent edges; or with :FROM-VERTEX and/or :TO-VERTEX for a specific
+endpoint pair.  Deleted edges are skipped unless :INCLUDE-DELETED-P.  With
+:COLLECT-P, collect and return FN's values; otherwise return NIL.  This drives
+OUTGOING-EDGES / INCOMING-EDGES."
   ;; FIXME: need to handle subclasses when edge-type is specified
   (let ((result nil))
     (cond ((and edge-type to-vertex from-vertex)
@@ -408,10 +423,16 @@
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
+  "Return a list of edges directed out of VERTEX (i.e. whose FROM is VERTEX) in
+GRAPH.  :EDGE-TYPE restricts to one edge type; :INCLUDE-DELETED-P includes
+soft-deleted edges (excluded by default)."
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :out
              :collect-p t :include-deleted-p include-deleted-p))
 
 (defmethod incoming-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
+  "Return a list of edges directed into VERTEX (i.e. whose TO is VERTEX) in
+GRAPH.  :EDGE-TYPE restricts to one edge type; :INCLUDE-DELETED-P includes
+soft-deleted edges (excluded by default)."
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :in
              :collect-p t :include-deleted-p include-deleted-p))
 

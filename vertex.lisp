@@ -79,6 +79,9 @@
   (lookup-vertex (read-id-array-from-string id) :graph graph))
 
 (defmethod lookup-vertex ((id array) &key (graph *graph*))
+  "Return the vertex with the given ID (a 16-byte id array or its string form)
+in GRAPH, or NIL if none.  Returns the vertex regardless of its deleted flag;
+the generated LOOKUP-<type> functions filter deleted nodes for you."
   (lookup-object id (vertex-table graph) *transaction* graph))
 
 (defmethod add-to-type-index ((vertex vertex) (graph graph)
@@ -94,6 +97,12 @@
   (type-index-remove (id vertex) (type-id vertex) (vertex-index graph)))
 
 (defun make-vertex (type-id data &key id deleted-p revision retry-p (graph *graph*))
+  "Create and persist a vertex of the type named/identified by TYPE-ID (a node
+type name, its integer id, or :GENERIC) in GRAPH, returning it.  DATA is the
+slot data stored on the node.  Must run inside a transaction.  You normally
+call the generated MAKE-<type> constructor (e.g. MAKE-USER) rather than this
+directly.  :ID supplies an id (one is generated otherwise); :RETRY-P regenerates
+the id on a duplicate-key collision."
   (let ((type-meta (or (and (eq type-id :generic) :generic)
                        (and (eq 0 type-id) :generic)
                        (and (integerp type-id)
@@ -140,6 +149,10 @@
   (delete-node vertex graph))
 
 (defun map-vertices (fn graph &key collect-p vertex-type include-deleted-p (include-subclasses-p t))
+  "Call FN on vertices of GRAPH.  With :VERTEX-TYPE, restrict to that type
+(and, unless :INCLUDE-SUBCLASSES-P is nil, its subtypes); otherwise visit all
+vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
+:COLLECT-P, collect and return FN's values as a list; otherwise return NIL."
   (let ((result nil))
     (flet ((map-it (vertex-type)
              (let* ((type-meta (or (and (integerp vertex-type)

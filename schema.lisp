@@ -163,6 +163,19 @@ replication for a quick schema compatibility check."
   (save-schema (schema graph) graph))
 
 (defmacro def-node-type (name parent-types slot-specs graph-name)
+  "Define a persistent node type NAME for the graph named GRAPH-NAME.  This is
+the machinery behind DEF-VERTEX and DEF-EDGE; you normally use those instead.
+
+PARENT-TYPES is a single-inheritance superclass list ending in VERTEX or EDGE.
+SLOT-SPECS are CLOS-style slot definitions (a bare symbol, or (name :type ...)
+etc.); an :accessor and :initarg are supplied automatically when omitted.
+
+Expands to a (defclass ... (:metaclass node-class)) plus generated helpers:
+MAKE-<NAME> (constructor), LOOKUP-<NAME> (id -> node, skipping deleted unless
+:include-deleted-p), and <NAME>-P (predicate).  For edges it also defines the
+Prolog functors <NAME>/2 and <NAME>/3.  The type metadata is registered under
+GRAPH-NAME and instantiated into the graph if it already exists, so a type may
+be defined before or after the graph is created."
   (with-gensyms (meta graph)
     (let* ((constructor (intern (format nil "MAKE-~A" name)))
            (predicate (intern (format nil "~A-P" name)))
@@ -352,9 +365,23 @@ replication for a quick schema compatibility check."
            )))))
 
 (defmacro def-vertex (name parent-types slot-specs graph-name)
+  "Define a vertex (node) type NAME for the graph named GRAPH-NAME.
+
+PARENT-TYPES is a list of other vertex types to inherit from (often empty);
+VERTEX is appended automatically.  SLOT-SPECS are CLOS-style typed slots.
+Generates MAKE-NAME / LOOKUP-NAME / NAME-P and slot accessors.  Example:
+  (def-vertex user () ((username :type string)) :social-app)
+See DEF-NODE-TYPE for full details and DEF-EDGE for relationships."
   `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name))
 
 (defmacro def-edge (name parent-types slot-specs graph-name)
+  "Define an edge (relationship) type NAME for the graph named GRAPH-NAME.
+
+Like DEF-VERTEX but the type inherits from EDGE, so its constructor also takes
+:FROM, :TO and :WEIGHT.  Generates MAKE-NAME / LOOKUP-NAME / NAME-P, slot
+accessors, and the Prolog query functors NAME/2 and NAME/3.  Example:
+  (def-edge follows () () :social-app)
+  ... (make-follows :from alice :to bob)"
   `(def-node-type ,name (,@parent-types edge) ,slot-specs ,graph-name))
 
 (defmethod node-type-diff ((meta1 node-type) (meta2 node-type))

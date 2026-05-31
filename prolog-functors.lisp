@@ -4,6 +4,14 @@
   (make-hash-table :synchronized t :test 'equalp))
 
 (defmacro def-global-prolog-functor (name lambda-list &body body)
+  "Define a global Prolog functor (query predicate) NAME, which must be of the
+form PREDICATE/ARITY (e.g. divisible-by/2).  LAMBDA-LIST is the predicate's
+arguments followed by a final CONT continuation argument.  In BODY, VAR-DEREF
+each argument to get its value, and FUNCALL CONT once for each solution to
+signal success (not calling CONT means the goal fails).  To bind an unbound
+argument, UNIFY it and undo with UNDO-BINDINGS on backtracking.  In a query you
+write the predicate WITHOUT the /arity suffix; the compiler appends it from the
+goal's argument count."
   `(prog1
        (defun ,name ,lambda-list ,@body)
      (export ',name)

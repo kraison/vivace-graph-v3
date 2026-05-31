@@ -6,6 +6,24 @@
                                    (buffer-pool-size 100000)
                                    (vertex-buckets 8)
                                    (edge-buckets 8))
+  "Create a brand-new graph named NAME with its on-disk files under the
+directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
+return it.  The directory is created if necessary and must not already contain
+a graph; use OPEN-GRAPH to reopen an existing one.
+
+Keyword arguments:
+  :MASTER-P / :SLAVE-P    create a replication master or slave.  Both require
+                          :REPLICATION-PORT; a slave also requires :MASTER-HOST.
+  :REPLICATION-PORT, :REPLICATION-KEY, :MASTER-HOST, :REPLAY-TXN-DIR
+                          replication configuration (see Chapter 10 of the
+                          manual).
+  :BUFFER-POOL-P          whether to start the shared node buffer pool (default T).
+  :BUFFER-POOL-SIZE       buffer pool size (default 100000).
+  :VERTEX-BUCKETS / :EDGE-BUCKETS
+                          initial linear-hash bucket counts (default 8).
+
+A .dirty marker file is written on creation; always CLOSE-GRAPH to flush data
+to disk and remove it."
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))
@@ -82,6 +100,15 @@
 (defun open-graph (name location &key master-p slave-p master-host replication-port
                    replication-key package (buffer-pool-p t) (gc-heap-p t)
                    (buffer-pool-size 100000))
+  "Open the existing graph named NAME whose files live under directory
+LOCATION, register it, and return it.  Use this to reopen a graph created
+earlier with MAKE-GRAPH; the keyword arguments mirror MAKE-GRAPH's.
+
+Signals an error if LOCATION holds a .dirty marker, which means the graph was
+not closed cleanly and must be recovered first (see RECOVER-TRANSACTIONS and
+the backup/recovery chapter).  By default the heap is garbage-collected
+(:GC-HEAP-P) and outstanding transactions are recovered on open.  Always
+CLOSE-GRAPH when finished."
   (ensure-directories-exist location)
   (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
@@ -153,6 +180,12 @@
       graph)))
 
 (defmethod close-graph ((graph graph) &key (snapshot-p t))
+  "Cleanly close GRAPH: stop replication, flush and unmap all on-disk
+structures (heap, indexes, vertex/edge tables), remove the .dirty marker, and
+deregister it.  With :SNAPSHOT-P true (the default) a snapshot backup is taken
+first.  Returns GRAPH.  Must be called with *GRAPH* bound to GRAPH (the
+snapshot path relies on it).  Failing to close a graph leaves its .dirty marker
+in place, forcing recovery on the next OPEN-GRAPH."
   (when (graph-open-p graph)
     (stop-replication graph)
     (remhash (graph-name graph) *graphs*)
