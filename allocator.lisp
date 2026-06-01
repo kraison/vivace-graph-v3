@@ -114,7 +114,10 @@
          (ccl:with-lock-grabbed (,lock)
            ,@body)
          #+lispworks
-         (with-recursive-lock-held (,lock) 
+         (with-recursive-lock-held (,lock)
+           ,@body)
+         #+ecl
+         (with-recursive-lock-held (,lock)
            ,@body)
          #+sbcl
          (sb-thread:with-recursive-lock (,lock :wait-p ,wait-p)

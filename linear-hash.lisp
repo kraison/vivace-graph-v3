@@ -304,7 +304,7 @@
             #+sbcl (sb-thread:make-mutex)
             #+lispworks (mp:make-lock)
             #+ccl (make-lock)
-            #+ecl (mp:make-lock)))
+            #+ecl (mp:make-lock :recursive t)))
     lhash))
 
 (defun open-lhash (location)
@@ -352,7 +352,7 @@
                   #+sbcl (sb-thread:make-mutex)
                   #+lispworks (mp:make-lock)
                   #+ccl (make-lock)
-                  #+ecl (mp:make-lock))))
+                  #+ecl (mp:make-lock :recursive t))))
       (error (c)
         (log:debug "Cannot open lhash: ~S" c)
         (munmap-file (%lhash-config lhash))
@@ -414,6 +414,9 @@
            #+lispworks
            (mp:with-lock (,lock)
              ,@body)
+           #+ecl
+           (mp:with-lock (,lock)
+             ,@body)
            #+sbcl
            (sb-thread:with-recursive-lock (,lock)
              ,@body))))))
@@ -425,6 +428,9 @@
        (ccl:with-lock-grabbed (,lock)
          ,@body)
        #+lispworks
+       (mp:with-lock (,lock)
+         ,@body)
+       #+ecl
        (mp:with-lock (,lock)
          ,@body)
        #+sbcl
