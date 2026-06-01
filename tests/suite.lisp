@@ -42,7 +42,8 @@ per type table, so without reclaiming between tests a whole suite run in one
 image exhausts the default heap."
   #+sbcl (sb-ext:gc :full t)
   #+ccl (ccl:gc)
-  #+lispworks (hcl:gc-all))
+  #+lispworks (hcl:gc-all)
+  #+ecl (ext:gc t))
 
 (defmacro with-temp-memory ((var &key (size '(* 1024 1024 64))) &body body)
   "Bind VAR to a freshly created MEMORY backed by a temp file, run BODY,

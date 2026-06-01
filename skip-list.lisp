@@ -246,7 +246,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (locks (map-into (make-array 1000)
                    #+ccl 'ccl:make-lock
                    #+lispworks 'mp:make-lock
-                   #+ecl 'mp:make-lock
+                   ;; Recursive: LOCK-SKIP-NODE on ECL always grabs (no
+                   ;; inner-lock-p owner check like the #+sbcl branch), so a
+                   ;; node lock may be re-entered by the same thread.
+                   #+ecl (lambda () (mp:make-lock :recursive t))
                    #+sbcl 'sb-thread:make-mutex)))
 
 (defun make-head (skip-list &key key value)
