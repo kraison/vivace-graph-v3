@@ -33,7 +33,7 @@
         (map-view (lambda (id key value)
                     (declare (ignore id key value))
                     (incf view-count))
-                  'c-item-by-value g)
+                  'c-item 'c-item-by-value :graph g)
         (is (= (* n m) view-count)
             "Expected ~D view entries; found ~D" (* n m) view-count)))))
 
@@ -61,5 +61,5 @@
                              (make-c-item :value (+ (* i writes) j 100000))))
                          ;; Reader — must not error
                          (dotimes (_ reads)
-                           (invoke-graph-view 'c-item-by-value g)))))
+                           (invoke-graph-view 'c-item 'c-item-by-value :graph g)))))
       (pass))))

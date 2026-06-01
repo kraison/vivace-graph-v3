@@ -163,7 +163,10 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
                  (let ((index-list (get-type-index-list (vertex-index graph) vertex-type-id)))
                    (map-index-list (lambda (id)
                                      (let ((vertex (lookup-vertex id :graph graph)))
-                                       (when (and (written-p vertex)
+                                       ;; vertex can be nil if it appears in the type-index
+                                       ;; before lhash-insert completes (commit race); skip it.
+                                       (when (and vertex
+                                                  (written-p vertex)
                                                   (or include-deleted-p
                                                       (not (deleted-p vertex))))
                                          (if collect-p

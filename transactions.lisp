@@ -1080,6 +1080,9 @@ left in the stream."
                                    :written-p (slot-value node 'written-p)
                                    :data-pointer (slot-value node 'data-pointer))))
       (setf (data new-node) (copy-tree (slot-value node 'data)))
+      ;; Copy bytes so maybe-init-node-data on the copy does not try to
+      ;; re-read from data-pointer (which may be freed by a concurrent commit).
+      (setf (bytes new-node) (bytes node))
       (if *transaction*
           (setf (gethash new-node (copies *transaction*)) node)
           (warn 'no-transaction-in-progress-warning))
@@ -1284,11 +1287,15 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
     min))
 
 (defun prune-committed-transactions (transaction-manager)
+  ;; Only prune when active transactions exist.  When every in-flight thread is
+  ;; in :committing state, min-id is nil here; pruning everything then would
+  ;; delete committed entries that the waiting committers still need for
+  ;; validation (causing lost updates).
   (let ((min-id (minimum-start-transaction-id transaction-manager)))
-    (do-committed-transactions (tx transaction-manager)
-      (when (or (not min-id)
-                (< (transaction-id tx) min-id))
-        (remove-transaction tx transaction-manager)))))
+    (when min-id
+      (do-committed-transactions (tx transaction-manager)
+        (when (< (transaction-id tx) min-id)
+          (remove-transaction tx transaction-manager))))))
 
 (defgeneric remove-transaction (transaction transaction-manager)
   (:method (transaction transaction-manager)
@@ -1335,16 +1342,26 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
   (when (eql (state tx) :active)
     (let ((tm (transaction-manager tx)))
       (setf (state tx) :committing)
-      (setf (finish-tx-id tx) (tx-id-counter tm))
       (with-transaction-manager-lock (tm)
+        ;; finish-tx-id must be set inside the manager lock so the overlap
+        ;; window computed by validate is consistent with tx-id-counter.
+        ;; Setting it outside would let concurrent commits advance the counter
+        ;; between the read and the lock acquisition, making lost updates invisible.
+        (setf (finish-tx-id tx) (tx-id-counter tm))
         (unless (validate tx)
           (error 'validation-conflict :transaction tx))
         (setf (transaction-id tx) (tx-id-counter tm))
         (incf (tx-id-counter tm))
         (prune-committed-transactions tm)
-        (persist-transaction tx)))
-    (apply-transaction tx (graph tx))
-    (setf (state tx) :committed)))
+        (persist-transaction tx)
+        ;; apply-transaction must run inside the manager lock so that:
+        ;; (a) applies happen in tx-id order (no concurrent-apply race where a
+        ;;     lower-tx-id apply overwrites a higher-tx-id apply);
+        ;; (b) the graph cache is updated before the lock is released, so any
+        ;;     transaction created after this commit (start-tx-id > this tx-id)
+        ;;     reads the committed value rather than a stale pre-apply snapshot.
+        (apply-transaction tx (graph tx)))
+      (setf (state tx) :committed))))
 
 (defmethod cleanup-transaction ((tx tx))
   (let ((transaction-manager (transaction-manager tx)))
