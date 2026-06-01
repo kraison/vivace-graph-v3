@@ -20,22 +20,7 @@
 
 (defun add-functor-clause (functor clause)
   (with-recursive-lock-held ((functor-lock functor))
-    #+sbcl
-    (sb-ext:cas (cdr (last (functor-clauses functor)))
-                (cdr (last (functor-clauses functor)))
-                (list clause))
-    #+lispworks
-    (sys:compare-and-swap (cdr (last (functor-clauses functor)))
-                          (cdr (last (functor-clauses functor)))
-                          (list clause))
-    #+ccl
-    (ccl::conditional-store (cdr (last (functor-clauses functor)))
-                            (cdr (last (functor-clauses functor)))
-                            (list clause))
-    ;; The lock above already serializes writers, so the CAS forms are just a
-    ;; convoluted append; ECL (like CCL) rejects (cdr (last ...)) as a CAS
-    ;; place.  Use a plain NCONC, which also handles the empty-clauses case.
-    #+ecl
+    ;; The lock serializes all writers; no CAS needed.
     (setf (functor-clauses functor)
           (nconc (functor-clauses functor) (list clause)))
     (prolog-compile functor))
@@ -46,13 +31,6 @@
 
 (defun reset-functor (functor)
   (with-recursive-lock-held ((functor-lock functor))
-    #+sbcl
-    (sb-ext:cas (functor-clauses functor) (functor-clauses functor) nil)
-    #+lispworks
-    (sys:compare-and-swap (functor-clauses functor) (functor-clauses functor) nil)
-    #+ccl
-    (ccl::conditional-store (functor-clauses functor) (functor-clauses functor) nil)
-    #+ecl
     (setf (functor-clauses functor) nil)
     (prolog-compile functor))
   nil)
