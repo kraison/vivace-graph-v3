@@ -127,6 +127,11 @@
 #+ccl
 (defvar *user-functors* (make-hash-table :shared t :test 'eql))
 
+#+ecl
+(defvar *prolog-global-functors* (make-hash-table))
+#+ecl
+(defvar *user-functors* (make-hash-table :test 'eql))
+
 (defparameter *prolog-trace* nil)
 (alexandria:define-constant +unbound+ :unbound)
 (alexandria:define-constant +no-bindings+ '((t . t)) :test 'equalp)

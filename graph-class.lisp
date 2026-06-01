@@ -6,7 +6,9 @@
   #+lispworks
   (make-hash-table :test 'equal :single-thread nil)
   #+ccl
-  (make-hash-table :test 'equal :shared t))
+  (make-hash-table :test 'equal :shared t)
+  #+ecl
+  (make-hash-table :test 'equal))
 
 (defclass graph ()
   ((graph-name :accessor graph-name :initarg :graph-name)

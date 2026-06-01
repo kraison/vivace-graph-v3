@@ -15,6 +15,15 @@
   (next-edge-id 1 :type (unsigned-byte 16))
   (next-vertex-id 1 :type (unsigned-byte 16)))
 
+;; ECL's DEFSTRUCT defines a SETF *expander* for each accessor but no callable
+;; (SETF SCHEMA-LOCK) function.  OPEN-GRAPH (graph.lisp) is compiled before
+;; this struct and emits a call to the function form (setf (schema-lock ...)),
+;; so on ECL we must provide that function.  The inner SETF here expands via
+;; the defstruct setf-expander (a direct slot store), so there is no recursion.
+#+ecl
+(defun (setf schema-lock) (new-value schema)
+  (setf (schema-lock schema) new-value))
+
 (defstruct node-type
   name
   parent-type
