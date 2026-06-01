@@ -3,7 +3,8 @@
 (defvar *prolog-global-functors*
   #+sbcl (make-hash-table :synchronized t :test 'equalp)
   #+ccl (make-hash-table :shared t :test 'equalp)
-  #+lispworks (make-hash-table :single-thread nil :test 'equalp))
+  #+lispworks (make-hash-table :single-thread nil :test 'equalp)
+  #+ecl (make-hash-table :test 'equalp))
 
 (defmacro def-global-prolog-functor (name lambda-list &body body)
   "Define a global Prolog functor (query predicate) NAME, which must be of the
@@ -515,11 +516,17 @@ query."
                      (setf (gethash var-name *seen-table*)
                            (make-node-table)))))
       (setq node (var-deref node))
-      (when (or (not (node-p node))
-                (null (gethash node table)))
-        (when (node-p node)
-          (setf (gethash node table) node))
-        (funcall cont)))))
+      ;; On ECL MAKE-NODE-TABLE is an EQUALP table keyed by node-id (ECL has no
+      ;; custom hash-table tests); elsewhere it is a NODE-EQUAL table keyed by
+      ;; the node object.  NODE-EQUAL is (equalp (id x) (id y)), so keying by
+      ;; (id node) under EQUALP is equivalent.
+      (let ((key #+ecl (and (node-p node) (id node))
+                 #-ecl node))
+        (when (or (not (node-p node))
+                  (null (gethash key table)))
+          (when (node-p node)
+            (setf (gethash key table) node))
+          (funcall cont))))))
 
 (def-global-prolog-functor is-a/2 (node type cont)
   (setq node (var-deref node)

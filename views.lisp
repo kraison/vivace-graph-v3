@@ -7,7 +7,8 @@
   ;;(dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
   (table #+sbcl (make-hash-table :test 'eql :synchronized t)
          #+lispworks (make-hash-table :test 'eql :single-thread nil)
-         #+ccl (make-hash-table :test 'eql :shared t))
+         #+ccl (make-hash-table :test 'eql :shared t)
+         #+ecl (make-hash-table :test 'eql))
   (lock (make-rw-lock)))
 
 (defstruct (view

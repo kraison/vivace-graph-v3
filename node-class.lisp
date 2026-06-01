@@ -133,7 +133,8 @@
                (find (class-name class)
                      #+sbcl '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)
                      #+lispworks '(edge vertex node standard-object T)
-                     #+ccl '(edge vertex node STANDARD-OBJECT T)))
+                     #+ccl '(edge vertex node STANDARD-OBJECT T)
+                     #+ecl '(edge vertex node standard-object T)))
              (compute-class-precedence-list class)))
 
 (defmethod find-graph-parent-classes ((class node-class))

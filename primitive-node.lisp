@@ -296,7 +296,12 @@
   #+sbcl
   (make-hash-table :test 'node-equal
                    :weakness weakness
-                   :synchronized synchronized))
+                   :synchronized synchronized)
+  ;; ECL has no custom hash-table tests; NODE-EQUAL is (equalp (id x) (id y)),
+  ;; so this table is keyed by node-id (a byte vector) under EQUALP instead of
+  ;; by the node object.  Callers must key by (id node) on ECL (see UNIQUE/1).
+  #+ecl
+  (make-hash-table :test 'equalp :weakness weakness))
 
 (defun id-equal (x y) (equalp x y))
 (defun sxhash-id-array (id) (sxhash (%hash id)))
@@ -316,4 +321,8 @@
   #+sbcl
   (make-hash-table :test 'id-equal
                    :weakness weakness
-                   :synchronized synchronized))
+                   :synchronized synchronized)
+  ;; ID-EQUAL is just EQUALP, and ECL's native EQUALP tables compare byte
+  ;; vectors by content, so EQUALP is an exact substitute here.
+  #+ecl
+  (make-hash-table :test 'equalp :weakness weakness))
