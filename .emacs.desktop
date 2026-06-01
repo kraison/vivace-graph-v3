@@ -1,0 +1,19 @@
+;; -*- mode: emacs-lisp; lexical-binding:t; coding: utf-8-emacs; -*-
+;; --------------------------------------------------------------------------
+;; Desktop File for Emacs
+;; --------------------------------------------------------------------------
+;; Created Mon Jun  1 12:04:49 2026
+;; Desktop file format version 208
+;; Emacs version 30.1
+
+;; Global section:
+(setq desktop-saved-frameset [frameset 1 (27165 19249 739613 0) (desktop . "208") "kraison@horus.local" nil nil ((((minibuffer . t) (tty-type . "xterm-256color") (tty . "/dev/tty") (display-type . color) (background-mode . dark) (scroll-bar-foreground) (scroll-bar-background) (background-color . "black") (foreground-color . "green") (font . "tty") (height . 41) (width . 161) (modeline . t) (unsplittable) (menu-bar-lines . 1) (tab-bar-lines . 0) (frameset--id . "28EB-0879-CABC-8B56") (frameset--mini t)) ((min-height . 4) (min-width . 20) (min-height-ignore . 2) (min-width-ignore . 4) (min-height-safe . 1) (min-width-safe . 4) (min-pixel-height . 4) (min-pixel-width . 20) (min-pixel-height-ignore . 2) (min-pixel-width-ignore . 4) (min-pixel-height-safe . 1) (min-pixel-width-safe . 4)) hc (pixel-width . 161) (pixel-height . 40) (total-width . 161) (total-height . 40) (normal-height . 1.0) (normal-width . 1.0) (combination-limit) (leaf (pixel-width . 81) (pixel-height . 40) (total-width . 81) (total-height . 40) (normal-height . 1.0) (normal-width . 0.5) (buffer "*scratch*" (selected) (hscroll . 0) (fringes 0 0 nil nil) (margins nil) (scroll-bars nil 0 t nil 0 t nil) (vscroll . 0) (dedicated) (point . 148) (start . 1))) (leaf (last . t) (pixel-width . 80) (pixel-height . 40) (total-width . 80) (total-height . 40) (normal-height . 1.0) (normal-width . 0.5) (buffer "*slime-repl ecl*" (selected . t) (hscroll . 0) (fringes 0 0 nil nil) (margins nil) (scroll-bars nil 0 t nil 0 t nil) (vscroll . 0) (dedicated) (point . 50) (start . 1)) (prev-buffers ("*inferior-lisp*" 7166 8536)))))])
+(setq desktop-missing-file-warning nil)
+(setq tags-file-name nil)
+(setq tags-table-list nil)
+(setq search-ring nil)
+(setq regexp-search-ring nil)
+(setq register-alist nil)
+(setq file-name-history '("~/work/vivace-graph-v3/"))
+
+;; Buffer section -- buffers listed in same order as in buffer list:
