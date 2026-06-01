@@ -123,6 +123,18 @@ VivaceGraph is a Common Lisp library that can be loaded via Quicklisp. Assuming 
   (ql:quickload :graph-db)
 #+END_SRC
 
+**** Supported Lisp implementations
+
+VivaceGraph runs on SBCL (>= 1.045), ECL (>= 21.2.1), Clozure CL (CCL), and
+LispWorks. The full test suite passes on SBCL (macOS arm64 and Linux x86_64)
+and on ECL (macOS arm64 with ECL 26.5.5 and Linux with ECL 21.2.1). You can run
+it yourself with ~(asdf:test-system :graph-db)~ (the suite uses FiveAM).
+
+CCL works on Linux x86_64 but /not/ on Apple-Silicon macOS: the Clozure ARM64
+port has been stalled for several years and macOS support for Intel (x86_64)
+binaries is nearly gone, so there is no usable CCL on M-series Macs. On Apple
+Silicon, use SBCL or ECL.
+
 It's recommended to define a package for your application and `:use` the `:graph-db` package to import its symbols.
 
 #+BEGIN_SRC lisp

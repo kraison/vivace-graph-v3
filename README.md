@@ -5,7 +5,9 @@ VivaceGraph is an open source graph database written in pure Common Lisp.
 
 VG takes design inspiration from CouchDB, neo4j and AllegroGraph.  It implements an ACID-compliant object graph model with user-defined indexes and map-reduce views.  It also implements a master / slave replication scheme for redundancy and horizontal read scaling.  Querying the graph is accomplished via a number of Lisp methods or via a Prolog-like query language.
 
-It currently only works with SBCL versions >= 1.045, LispWorks and Clozure CL, though it would not take much work to port it to other Common Lisp implementations. A port to ECL has been started and can be found in the ecl-port branch.
+VivaceGraph runs on SBCL (>= 1.045), ECL (>= 21.2.1), Clozure CL (CCL), and LispWorks. The full test suite passes on SBCL (macOS arm64 and Linux x86_64) and on ECL (macOS arm64 with ECL 26.5.5 and Linux with ECL 21.2.1).
+
+A note on CCL: it works on Linux x86_64, but **not on Apple-Silicon macOS** — the Clozure ARM64 port has been stalled for several years and macOS support for Intel (x86_64) binaries is nearly gone, so there is no usable CCL on M-series Macs. On Apple Silicon, use SBCL or ECL.
 
 To get started, please see example.lisp.
 
