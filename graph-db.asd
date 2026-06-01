@@ -80,6 +80,25 @@
                (:file "rest" :depends-on ("traverse")))
   :in-order-to ((test-op (test-op :graph-db/test))))
 
+(defsystem graph-db/concurrency-test
+  :name "VivaceGraph concurrency test suite"
+  :description "FiveAM thread-safety and concurrency tests for graph-db."
+  :depends-on (:graph-db :fiveam :bordeaux-threads)
+  :pathname "tests/concurrency/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "helpers")
+               (:file "rw-lock-tests")
+               (:file "transaction-tests")
+               (:file "graph-ops-tests")
+               (:file "view-tests")
+               (:file "prolog-tests"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call
+                             :graph-db/concurrency-test :run-concurrency-tests)
+                      (error "graph-db concurrency tests failed."))))
+
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
