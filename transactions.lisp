@@ -1280,12 +1280,20 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
     result))
 
 (defun minimum-start-transaction-id (transaction-manager)
+  ;; Include :committing transactions, not just :active ones.  A :committing
+  ;; transaction is blocked waiting for the TM lock but will validate against
+  ;; committed transactions with tx-id >= its start-tx-id once it acquires the
+  ;; lock.  If we used only :active starts, a newer :active transaction could
+  ;; push the minimum high enough that prune-committed-transactions removes a
+  ;; record the :committing thread needs, causing a silent lost update.
   (let (min)
-    (do-active-transactions (tx transaction-manager)
-      (let ((start (start-tx-id tx)))
-        (if min
-            (setf min (min start min))
-            (setf min start))))
+    (do-transactions (tx transaction-manager)
+      (when (or (eql (state tx) :active)
+                (eql (state tx) :committing))
+        (let ((start (start-tx-id tx)))
+          (if min
+              (setf min (min start min))
+              (setf min start)))))
     min))
 
 (defun prune-committed-transactions (transaction-manager)

@@ -94,7 +94,8 @@
                (:file "data-structure-tests")
                (:file "graph-ops-tests")
                (:file "view-tests")
-               (:file "prolog-tests"))
+               (:file "prolog-tests")
+               (:file "acid-regression-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call
                              :graph-db/concurrency-test :run-concurrency-tests)
