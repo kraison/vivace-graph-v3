@@ -113,3 +113,78 @@ final count must equal N×M."
         (declare (ignore deleters))
         (is (= (* inserters m) live)
             "Expected ~D live vertices; found ~D" (* inserters m) live)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 4: concurrent vertex deletion during map-vertices
+;;;
+;;; N deleter threads each mark-deleted a distinct range of pre-created
+;;; vertices while N scanner threads call map-vertices in a loop.  The test
+;;; verifies that the scanner never crashes — the key risk is a scanner
+;;; dereferencing an in-progress deletion.
+;;; ---------------------------------------------------------------------------
+
+(test concurrent-vertex-deletion-during-map
+  "Threads deleting vertices concurrently with map-vertices must not crash."
+  (let* ((n (floor *thread-count* 2))
+         (m 30))
+    (with-conc-graph (g)
+      (let ((ids (make-array (* n m))))
+        (with-transaction ()
+          (dotimes (i (* n m))
+            (setf (aref ids i) (id (make-c-item :value i)))))
+        (run-threads (* 2 n)
+                     (lambda (i)
+                       (if (< i n)
+                           ;; Deleter: owns a non-overlapping range of vertices.
+                           (let ((base (* i m)))
+                             (dotimes (j m)
+                               (with-transaction ()
+                                 (mark-deleted
+                                  (lookup-vertex (aref ids (+ base j)))))))
+                           ;; Scanner: must not crash or error.
+                           (dotimes (_ 20)
+                             (map-vertices #'identity g
+                                           :collect-p nil
+                                           :vertex-type 'c-item)))))
+        (pass)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 5: concurrent mixed workload
+;;;
+;;; Four roles run simultaneously: inserters, deleters, Prolog query threads,
+;;; and view readers.  The test is a smoke test for the whole stack under
+;;; realistic concurrent access — if any thread errors or deadlocks the test
+;;; fails.
+;;; ---------------------------------------------------------------------------
+
+(test concurrent-mixed-workload
+  "Inserters, deleters, query threads, and view readers all active
+simultaneously must complete without errors."
+  (let* ((n *thread-count*)
+         (k 10))
+    (with-conc-graph (g)
+      (define-concurrency-views)
+      ;; Pre-populate so deleters and readers have work from the start.
+      (with-transaction ()
+        (dotimes (i (* n k))
+          (make-c-item :value i)))
+      (run-threads n
+                   (lambda (i)
+                     (dotimes (_ k)
+                       (case (mod i 4)
+                         (0  ; inserter
+                          (with-transaction ()
+                            (make-c-item :value (random 1000000))))
+                         (1  ; deleter
+                          (let ((vs (map-vertices #'identity g
+                                                  :collect-p t
+                                                  :vertex-type 'c-item)))
+                            (when vs
+                              (with-transaction ()
+                                (mark-deleted (first vs))))))
+                         (2  ; Prolog query
+                          (select-flat (?x) (is-a ?x c-item)))
+                         (3  ; view reader
+                          (invoke-graph-view 'c-item 'c-item-by-value
+                                             :graph g))))))
+      (pass))))

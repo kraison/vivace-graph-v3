@@ -90,6 +90,44 @@ Called by (asdf:test-system :graph-db/concurrency-test)."
            (collect-garbage))))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Storage-layer fixtures (used by data-structure-tests)
+;;; ---------------------------------------------------------------------------
+
+(defmacro with-conc-lhash ((var &rest make-args) &body body)
+  "Bind VAR to a fresh lhash in a temp directory; tear it down afterwards."
+  (let ((dir (gensym "DIR")))
+    `(with-temp-directory (,dir)
+       (let ((,var (make-lhash :location ,dir ,@make-args)))
+         (unwind-protect (progn ,@body)
+           (ignore-errors (close-lhash ,var)))))))
+
+(defmacro with-conc-memory ((var &key (size '(* 1024 1024 64))) &body body)
+  "Bind VAR to a fresh heap in a temp directory; tear it down afterwards."
+  (let ((dir (gensym "DIR")))
+    `(with-temp-directory (,dir)
+       (let ((,var (create-memory
+                    (namestring (merge-pathnames "heap.dat" ,dir))
+                    ,size)))
+         (unwind-protect (progn ,@body)
+           (ignore-errors (close-memory ,var)))))))
+
+(defun make-conc-integer-skip-list (heap &key duplicates-allowed-p)
+  "Return an integer-keyed skip list over HEAP."
+  (make-skip-list :heap heap
+                  :head-key most-negative-fixnum
+                  :head-value 0
+                  :tail-key most-positive-fixnum
+                  :tail-value 0
+                  :key-equal '=
+                  :key-comparison '<
+                  :key-serializer 'serialize
+                  :key-deserializer 'deserialize
+                  :value-serializer 'serialize
+                  :value-deserializer 'deserialize
+                  :value-equal 'equal
+                  :duplicates-allowed-p duplicates-allowed-p))
+
+;;; ---------------------------------------------------------------------------
 ;;; View setup (called inside with-conc-graph, before any inserts)
 ;;; ---------------------------------------------------------------------------
 

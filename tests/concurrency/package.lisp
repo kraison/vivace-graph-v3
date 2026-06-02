@@ -58,5 +58,23 @@
                 #:functor-clauses
                 #:add-functor-clause
                 #:reset-functor)
+  ;; Storage-layer internals for data-structure concurrency tests.
+  (:import-from #:graph-db
+                ;; lhash direct access
+                #:make-lhash
+                #:close-lhash
+                #:lhash-insert
+                #:lhash-get
+                #:read-lhash-count
+                ;; skip-list direct access
+                #:create-memory
+                #:close-memory
+                #:make-skip-list
+                #:add-to-skip-list
+                #:skip-list-to-list
+                #:serialize
+                #:deserialize
+                ;; edge traversal
+                #:outgoing-edges)
   (:export #:run-concurrency-tests
            #:concurrency-suite))

@@ -123,3 +123,35 @@
           "With retry-fallback: expected ~D, got ~D"
           *thread-count*
           (slot-value (lookup-vertex counter-id) 'value)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 5: transaction conflict storm
+;;;
+;;; N threads each increment the same counter K times under with-transaction.
+;;; Every increment must eventually succeed (via retry or exclusive-lock
+;;; fallback) so the final value equals N×K despite high contention.
+;;; ---------------------------------------------------------------------------
+
+(test transaction-conflict-storm
+  "All N threads compete to increment the same counter K times; every
+update must eventually commit; final value must equal N×K."
+  (let* ((n *thread-count*)
+         (k 5))
+    (with-conc-graph (g)
+      (let (counter-id)
+        (with-transaction ()
+          (setq counter-id (id (make-c-item :value 0))))
+        (run-threads n
+                     (lambda (i)
+                       (declare (ignore i))
+                       (dotimes (_ k)
+                         (with-transaction ()
+                           (let* ((item (copy (lookup-vertex counter-id)))
+                                  (old  (slot-value item 'value)))
+                             (setf (slot-value item 'value) (1+ old))
+                             (save item))))))
+        (is (= (* n k)
+               (slot-value (lookup-vertex counter-id) 'value))
+            "Expected counter=~D (~D threads × ~D increments); got ~D"
+            (* n k) n k
+            (slot-value (lookup-vertex counter-id) 'value))))))

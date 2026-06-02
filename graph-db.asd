@@ -91,6 +91,7 @@
                (:file "helpers")
                (:file "rw-lock-tests")
                (:file "transaction-tests")
+               (:file "data-structure-tests")
                (:file "graph-ops-tests")
                (:file "view-tests")
                (:file "prolog-tests"))
