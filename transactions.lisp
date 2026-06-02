@@ -58,7 +58,8 @@
 
 (defclass object-set ()
   ((table
-    :initform (make-id-table)
+    ;; Validation reads object-sets from other threads; CCL requires :shared t.
+    :initform (make-id-table #+ccl :synchronized #+ccl t)
     :reader table)))
 
 (defmethod object-set-list ((set object-set))
@@ -1195,7 +1196,8 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
                          :direction :output
                          :element-type '(unsigned-byte 8)
                          :if-exists :append
-                         :if-does-not-exist :create)))
+                         :if-does-not-exist :create
+                         #+ccl :sharing #+ccl :lock)))
       (setf (replication-log (transaction-manager graph)) stream))))
 
 (defgeneric close-replication-log (graph)
