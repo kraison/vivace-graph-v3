@@ -446,7 +446,14 @@ characters.~@:>" string (length string)))
   #+sbcl (sb-thread:make-semaphore)
   #+lispworks(mp:make-semaphore)
   #+ccl (ccl:make-semaphore)
-  #+ecl (mp:make-semaphore))
+  ;; ECL: BT apiv1 uses %semaphore structs (not native mp:semaphore) for its
+  ;; signal/wait implementations.  graph-db (:use #:bordeaux-threads), so this
+  ;; defun redefines bordeaux-threads:make-semaphore for the whole image.
+  ;; Return a %semaphore-compatible object so bt:signal/wait-on-semaphore work.
+  #+ecl (bordeaux-threads::make-%semaphore
+         :lock (bordeaux-threads:make-lock "semaphore")
+         :condition-variable (bordeaux-threads:make-condition-variable)
+         :counter 0))
 
 (defmacro with-locked-hash-table ((table) &body body)
   #+lispworks

@@ -96,9 +96,7 @@
       (dotimes (i 8) (make-c-item :value i)))
     (let* ((n        *thread-count*)
            (writers  (max 1 (floor n 2)))
-           (readers  (- n writers))
            (fname    (fresh-functor-name 'c-mixed-rule 1))
-           (seed     (list (list fname '?x)))
            (f        (make-functor :name fname :clauses (list (list (list fname '?x))))))
       (unwind-protect
            (progn
@@ -115,6 +113,5 @@
                                   (select-flat (?x)
                                     (is-a ?x c-item))))))
              (pass))
-        (declare (ignore seed readers))
         (when (lookup-functor fname)
           (delete-functor (lookup-functor fname)))))))

@@ -30,12 +30,21 @@
     (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (set-byte mf offset byte))
-    ))
+    #+ecl
+    (ext:segmentation-violation (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-byte mf offset byte))))
 
 (defmethod set-byte ((mapped-file mapped-file) offset byte)
   (declare (type word offset))
   (declare (type (integer 0 255) byte))
   ;;(log:debug "SET-BYTE: ~A ADDR ~A TO ~A" (m-path mapped-file) offset byte)
+  #+ecl
+  (ffi:c-inline ((m-pointer mapped-file) offset byte)
+                (:pointer-void :cl-index :unsigned-byte) :unsigned-byte
+                "*((unsigned char *)(((char*)#0)+#1))=#2"
+                :one-liner t)
+  #-ecl
   (setf (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset) byte))
 
 (defmethod get-byte :around (mf offset)
@@ -48,10 +57,20 @@
     #+ccl
     (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-byte mf offset))
+    #+ecl
+    (ext:segmentation-violation (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-byte mf offset))))
 
 (defmethod get-byte ((mapped-file mapped-file) offset)
   (declare (type word offset))
+  #+ecl
+  (ffi:c-inline ((m-pointer mapped-file) offset)
+                (:pointer-void :cl-index) :unsigned-byte
+                "*((unsigned char *)(((char*)#0)+#1))"
+                :one-liner t)
+  #-ecl
   (cffi:mem-aref (m-pointer mapped-file) :unsigned-char offset))
 
 (defmethod get-bytes :around (mf offset length)
@@ -63,6 +82,10 @@
       (get-bytes mf offset length))
     #+ccl
     (CCL::INVALID-MEMORY-ACCESS (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (get-bytes mf offset length))
+    #+ecl
+    (ext:segmentation-violation (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
       (get-bytes mf offset length))))
 
@@ -83,7 +106,11 @@
     #+ccl
     (CCL::INVALID-MEMORY-ACCESS (c)
       (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
-      (set-bytes mf offset length))))
+      (set-bytes mf offset length))
+    #+ecl
+    (ext:segmentation-violation (c)
+      (log:error "SEGV: GOT ~A in ~A; retrying." c mf)
+      (set-bytes mf vec offset length))))
 
 (defmethod set-bytes ((mapped-file mapped-file) vec offset length)
   (declare (type word offset length))

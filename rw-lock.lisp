@@ -12,7 +12,7 @@
 	     (:predicate rw-lock-p))
   #+sbcl(lock (sb-thread:make-mutex) :type sb-thread:mutex)
   #+lispworks(lock (mp:make-lock) :type mp:lock)
-  #+ecl(lock (mp:make-lock :recursive t))
+  #+ecl(lock (mp:make-lock))
   (readers 0 :type integer)
   #+sbcl (semaphore (sb-thread:make-semaphore) :type sb-thread:semaphore)
   #+lispworks (semaphore (mp:make-semaphore) :type mp:semaphore)
@@ -23,17 +23,29 @@
   #+sbcl(waitqueue (sb-thread:make-waitqueue) :type sb-thread:waitqueue)
   #+ecl(waitqueue (mp:make-condition-variable)))
 
+(defun %next-in-queue-p (rw-lock thread)
+  ;; Callers must already hold (lock-lock rw-lock).
+  (and (not (empty-queue-p (lock-writer-queue rw-lock)))
+       (eq thread (queue-front (lock-writer-queue rw-lock)))))
+
+(defun %lock-unused-p (rw-lock)
+  ;; Callers must already hold (lock-lock rw-lock).
+  (and (= 0 (lock-readers rw-lock))
+       (= #+sbcl 0 #+lispworks 1 #+ecl 0
+          (#+sbcl sb-thread:semaphore-count
+           #+lispworks mp:semaphore-count
+           #+ecl mp:semaphore-count
+           (lock-semaphore rw-lock)))
+       (null (lock-writer rw-lock))
+       (empty-queue-p (lock-writer-queue rw-lock))))
+
 (defun next-in-queue-p (rw-lock thread)
   (with-recursive-lock-held ((lock-lock rw-lock))
-    (and (not (empty-queue-p (lock-writer-queue rw-lock)))
-	 (eq thread (queue-front (lock-writer-queue rw-lock))))))
+    (%next-in-queue-p rw-lock thread)))
 
 (defun lock-unused-p (rw-lock)
   (with-recursive-lock-held ((lock-lock rw-lock))
-    (and (= 0 (lock-readers rw-lock))
-	 (= #+sbcl 0 #+lispworks 1 #+ecl 0 (#+sbcl sb-thread:semaphore-count #+lispworks mp:semaphore-count #+ecl mp:semaphore-count (lock-semaphore rw-lock)))
-	 (null (lock-writer rw-lock))
-	 (empty-queue-p (lock-writer-queue rw-lock)))))
+    (%lock-unused-p rw-lock)))
 
 (defun release-read-lock (rw-lock)
   (with-recursive-lock-held ((lock-lock rw-lock))
@@ -65,10 +77,10 @@
 
 (defun release-write-lock (rw-lock &key reading-p)
   (with-recursive-lock-held ((lock-lock rw-lock))
-    (if (next-in-queue-p rw-lock (current-thread))
+    (if (%next-in-queue-p rw-lock (current-thread))
         (dequeue (lock-writer-queue rw-lock))
 	(error "Cannot release lock I don't own!"))
-    (if (next-in-queue-p rw-lock (current-thread))
+    (if (%next-in-queue-p rw-lock (current-thread))
 	;;(format t "Not releasing lock;  recursive ownership detected!~%")
 	nil
 	(progn
@@ -85,7 +97,7 @@
 (defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p (wait-p t))
   (declare (ignore max-tries))
   (with-recursive-lock-held ((lock-lock rw-lock))
-    (cond ((and (next-in-queue-p rw-lock (current-thread))
+    (cond ((and (%next-in-queue-p rw-lock (current-thread))
                 (eq (lock-writer rw-lock) (current-thread)))
            (enqueue-front (lock-writer-queue rw-lock)
                           (current-thread))
@@ -94,7 +106,7 @@
           (wait-p
            (enqueue (lock-writer-queue rw-lock) (current-thread)))
           (t
-           (if (lock-unused-p rw-lock)
+           (if (%lock-unused-p rw-lock)
                (progn
                  (enqueue (lock-writer-queue rw-lock)
                           (current-thread))
@@ -114,8 +126,8 @@
            (handler-case
                (with-recursive-lock-held ((lock-lock rw-lock))
                  (if (and (null (lock-writer rw-lock))
-                          (next-in-queue-p rw-lock
-                                           (current-thread)))
+                          (%next-in-queue-p rw-lock
+                                            (current-thread)))
                      (progn
                        (setf (lock-writer rw-lock)
                              (current-thread))
