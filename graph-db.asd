@@ -116,6 +116,24 @@
                     (unless (uiop:symbol-call :graph-db/stress-test :run-stress-tests)
                       (error "graph-db stress tests failed."))))
 
+(defsystem graph-db/concurrent-stress-test
+  :name "VivaceGraph concurrent stress test suite"
+  :description "Multi-threaded scale and stability tests for graph-db."
+  :depends-on (:graph-db :fiveam :bordeaux-threads)
+  :pathname "tests/concurrent-stress/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "graph-storm")
+               (:file "transaction-storm")
+               (:file "view-storm")
+               (:file "mixed-storm"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call
+                             :graph-db/concurrent-stress-test
+                             :run-concurrent-stress-tests)
+                      (error "graph-db concurrent stress tests failed."))))
+
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
