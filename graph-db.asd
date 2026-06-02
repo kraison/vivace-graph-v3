@@ -101,6 +101,20 @@
                              :graph-db/concurrency-test :run-concurrency-tests)
                       (error "graph-db concurrency tests failed."))))
 
+(defsystem graph-db/acid-test
+  :name "VivaceGraph ACID compliance tests"
+  :depends-on (:graph-db :fiveam :bordeaux-threads)
+  :pathname "tests/acid/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "atomicity-tests")
+               (:file "isolation-tests")
+               (:file "durability-tests"))
+  :perform (test-op (op c)
+              (unless (uiop:symbol-call :graph-db/acid-test :run-acid-tests)
+                (error "graph-db ACID tests failed."))))
+
 (defsystem graph-db/stress-test
   :name "VivaceGraph stress test suite"
   :description "Single-threaded scale and correctness stress tests for graph-db."

@@ -74,6 +74,11 @@
                 #:skip-list-to-list
                 #:serialize
                 #:deserialize
+                ;; allocator
+                #:allocate
+                #:heap
+                ;; node flags
+                #:written-p
                 ;; edge traversal
                 #:outgoing-edges)
   (:export #:run-concurrency-tests

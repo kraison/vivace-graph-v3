@@ -545,11 +545,21 @@ no data are not written."
       (dolist (old-node old-nodes)
         (maybe-free-from-heap old-node graph)))))
 
+(defvar *after-apply-tx-writes-hook* nil
+  "When non-nil, a zero-argument function called after apply-tx-writes but
+before apply-tx-writes-to-views.  The hook fires once and self-clears.
+Intended for durability tests that need to simulate a crash between the
+lhash write and the view update, leaving a pending .txn file for recovery.")
+
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
       (let ((writes (writes transaction)))
         (apply-tx-writes writes graph)
+        (when *after-apply-tx-writes-hook*
+          (let ((hook *after-apply-tx-writes-hook*))
+            (setf *after-apply-tx-writes-hook* nil)
+            (funcall hook)))
         (apply-tx-writes-to-views writes graph)
         (garbage-collect-heap writes graph)
         (persist-highest-transaction-id (transaction-id transaction) graph)))))
