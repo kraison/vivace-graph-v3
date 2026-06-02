@@ -100,6 +100,22 @@
                              :graph-db/concurrency-test :run-concurrency-tests)
                       (error "graph-db concurrency tests failed."))))
 
+(defsystem graph-db/stress-test
+  :name "VivaceGraph stress test suite"
+  :description "Single-threaded scale and correctness stress tests for graph-db."
+  :depends-on (:graph-db :fiveam)
+  :pathname "tests/stress/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "storage-stress")
+               (:file "graph-stress")
+               (:file "transaction-stress")
+               (:file "view-stress"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call :graph-db/stress-test :run-stress-tests)
+                      (error "graph-db stress tests failed."))))
+
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
