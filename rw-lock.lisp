@@ -54,19 +54,29 @@
       ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) rw-lock)
       (when (lock-writer rw-lock)
         ;;(log:debug "~A SIGNALLED WRITER ON LOCK ~A" (current-thread) rw-lock)
-	(#+sbcl sb-thread:signal-semaphore #+lispworks mp:semaphore-release #+ecl mp:signal-semaphore (lock-semaphore rw-lock))))))
+        ;; ECL: semaphore not used for writer-wakeup (mp:wait-on-semaphore blocks
+        ;; indefinitely on ECL 21.2.1); the writer polls lock-readers instead.
+        #-ecl
+        (#+sbcl sb-thread:signal-semaphore #+lispworks mp:semaphore-release
+         (lock-semaphore rw-lock))))))
 
 (defun acquire-read-lock (rw-lock &key (max-tries 1000))
   (declare (ignore max-tries))
   ;;(loop for tries from 0 to max-tries do
   (loop
      (with-recursive-lock-held ((lock-lock rw-lock))
-       (if (lock-writer rw-lock)
-           (condition-wait (lock-waitqueue rw-lock) (lock-lock rw-lock))
-           (progn
-             (incf (lock-readers rw-lock))
-             ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) rw-lock)
-             (return-from acquire-read-lock rw-lock))))))
+       ;; ECL: mp:condition-variable-broadcast can miss waiters under high
+       ;; concurrency on ECL 21.2.1, and condition-variable-timedwait is
+       ;; unreliable before ECL 23.09.09.  Use spin-sleep outside the lock
+       ;; instead of condition-wait.
+       (cond ((null (lock-writer rw-lock))
+              (incf (lock-readers rw-lock))
+              ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) rw-lock)
+              (return-from acquire-read-lock rw-lock))
+             #-ecl
+             (t (condition-wait (lock-waitqueue rw-lock) (lock-lock rw-lock)))))
+     ;; ECL: writer was active; sleep briefly outside the lock before retrying.
+     #+ecl (sleep 0.001)))
 
 (defmacro with-read-lock ((rw-lock) &body body)
   `(unwind-protect
@@ -92,7 +102,8 @@
             )
           #+lispworks(mp:condition-variable-broadcast (lock-waitqueue rw-lock))
 	  #+sbcl(sb-thread:condition-broadcast (lock-waitqueue rw-lock))
-	  #+ecl(mp:condition-variable-broadcast (lock-waitqueue rw-lock))))))
+          ;; ECL uses sleep-based polling; no condition waiters to notify.
+          ))))
 
 (defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p (wait-p t))
   (declare (ignore max-tries))
@@ -137,7 +148,7 @@
                          )
                        (unless (eql 0 (lock-readers rw-lock))
                          (setf internal-wait-p t)))
-                     #-sbcl
+                     #-(or sbcl ecl)
                      (condition-wait (lock-waitqueue rw-lock) (lock-lock rw-lock))
                      #+sbcl
                      (sb-thread:condition-wait
@@ -148,7 +159,20 @@
            (when internal-wait-p
              #+lispworks(mp:semaphore-acquire (lock-semaphore rw-lock))
              #+sbcl(sb-thread:wait-on-semaphore (lock-semaphore rw-lock))
-             #+ecl(mp:wait-on-semaphore (lock-semaphore rw-lock)))))))
+             ;; ECL: mp:wait-on-semaphore blocks indefinitely on ECL 21.2.1
+             ;; under high thread counts.  Poll lock-readers under the lock
+             ;; instead; the semaphore is not used for this wait on ECL.
+             #+ecl
+             (loop
+               (with-recursive-lock-held ((lock-lock rw-lock))
+                 (when (= 0 (lock-readers rw-lock))
+                   (return)))
+               (sleep 0.001)))
+           ;; ECL: if we didn't become the writer this iteration, sleep briefly
+           ;; outside the lock before retrying (avoids spinning at 100% CPU).
+           #+ecl
+           (unless internal-wait-p
+             (sleep 0.001))))))
 
 (defmacro with-write-lock ((rw-lock &key reading-p) &body body)
   `(unwind-protect
