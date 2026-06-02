@@ -49,9 +49,7 @@ Called by (asdf:test-system :graph-db/concurrency-test)."
 ;;; Keep modest on ECL (slower thread startup / teardown).
 ;;; ---------------------------------------------------------------------------
 
-(defparameter *thread-count*
-  #+ecl 4
-  #-ecl 8)
+(defparameter *thread-count* 8)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Schema
