@@ -54,29 +54,37 @@
       ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) rw-lock)
       (when (lock-writer rw-lock)
         ;;(log:debug "~A SIGNALLED WRITER ON LOCK ~A" (current-thread) rw-lock)
-        ;; ECL: semaphore not used for writer-wakeup (mp:wait-on-semaphore blocks
-        ;; indefinitely on ECL 21.2.1); the writer polls lock-readers instead.
-        #-ecl
-        (#+sbcl sb-thread:signal-semaphore #+lispworks mp:semaphore-release
-         (lock-semaphore rw-lock))))))
+        ;; Wake the waiting writer via its semaphore.  Older ECL (no
+        ;; :graph-db-ecl-modern-mp) can't (mp:wait-on-semaphore blocked
+        ;; indefinitely on 21.2.1); there the writer polls lock-readers instead.
+        #+sbcl (sb-thread:signal-semaphore (lock-semaphore rw-lock))
+        #+lispworks (mp:semaphore-release (lock-semaphore rw-lock))
+        #+graph-db-ecl-modern-mp (mp:signal-semaphore (lock-semaphore rw-lock))))))
 
 (defun acquire-read-lock (rw-lock &key (max-tries 1000))
   (declare (ignore max-tries))
   ;;(loop for tries from 0 to max-tries do
+  ;; Older ECL (no :graph-db-ecl-modern-mp) cannot block on the waitqueue
+  ;; reliably (condition-variable-broadcast missed waiters / timedwait unreliable
+  ;; before 23.09.09), so it spin-sleeps outside the lock instead.  Modern ECL,
+  ;; SBCL and LispWorks block on the condition variable.
   (loop
      (with-recursive-lock-held ((lock-lock rw-lock))
-       ;; ECL: mp:condition-variable-broadcast can miss waiters under high
-       ;; concurrency on ECL 21.2.1, and condition-variable-timedwait is
-       ;; unreliable before ECL 23.09.09.  Use spin-sleep outside the lock
-       ;; instead of condition-wait.
        (cond ((null (lock-writer rw-lock))
               (incf (lock-readers rw-lock))
               ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) rw-lock)
               (return-from acquire-read-lock rw-lock))
-             #-ecl
-             (t (condition-wait (lock-waitqueue rw-lock) (lock-lock rw-lock)))))
-     ;; ECL: writer was active; sleep briefly outside the lock before retrying.
-     #+ecl (sleep 0.001)))
+             #+sbcl
+             (t (sb-thread:condition-wait
+                 (lock-waitqueue rw-lock) (lock-lock rw-lock)))
+             #+lispworks
+             (t (mp:condition-variable-wait
+                 (lock-waitqueue rw-lock) (lock-lock rw-lock)))
+             #+graph-db-ecl-modern-mp
+             (t (mp:condition-variable-wait
+                 (lock-waitqueue rw-lock) (lock-lock rw-lock)))))
+     ;; Older ECL only: writer active; sleep briefly outside the lock and retry.
+     #+(and ecl (not graph-db-ecl-modern-mp)) (sleep 0.001)))
 
 (defmacro with-read-lock ((rw-lock) &body body)
   `(unwind-protect
@@ -100,9 +108,11 @@
 	    (incf (lock-readers rw-lock))
             ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) rw-lock)
             )
-          #+lispworks(mp:condition-variable-broadcast (lock-waitqueue rw-lock))
-	  #+sbcl(sb-thread:condition-broadcast (lock-waitqueue rw-lock))
-          ;; ECL uses sleep-based polling; no condition waiters to notify.
+          #+lispworks (mp:condition-variable-broadcast (lock-waitqueue rw-lock))
+	  #+sbcl (sb-thread:condition-broadcast (lock-waitqueue rw-lock))
+          #+graph-db-ecl-modern-mp
+          (mp:condition-variable-broadcast (lock-waitqueue rw-lock))
+          ;; Older ECL uses sleep-based polling; no condition waiters to notify.
           ))))
 
 (defun acquire-write-lock (rw-lock &key (max-tries 1000) reading-p (wait-p t))
@@ -152,25 +162,30 @@
                      (condition-wait (lock-waitqueue rw-lock) (lock-lock rw-lock))
                      #+sbcl
                      (sb-thread:condition-wait
+                      (lock-waitqueue rw-lock) (lock-lock rw-lock))
+                     #+graph-db-ecl-modern-mp
+                     (mp:condition-variable-wait
                       (lock-waitqueue rw-lock) (lock-lock rw-lock))))
              (error (c)
                (log:error "Got error ~A while acquiring write lock ~A"
                           c rw-lock)))
            (when internal-wait-p
-             #+lispworks(mp:semaphore-acquire (lock-semaphore rw-lock))
-             #+sbcl(sb-thread:wait-on-semaphore (lock-semaphore rw-lock))
-             ;; ECL: mp:wait-on-semaphore blocks indefinitely on ECL 21.2.1
-             ;; under high thread counts.  Poll lock-readers under the lock
-             ;; instead; the semaphore is not used for this wait on ECL.
-             #+ecl
+             ;; We are the writer; block until the remaining readers drain.
+             #+lispworks (mp:semaphore-acquire (lock-semaphore rw-lock))
+             #+sbcl (sb-thread:wait-on-semaphore (lock-semaphore rw-lock))
+             #+graph-db-ecl-modern-mp (mp:wait-on-semaphore (lock-semaphore rw-lock))
+             ;; Older ECL: mp:wait-on-semaphore blocked indefinitely on 21.2.1
+             ;; under high thread counts, so poll lock-readers instead.
+             #+(and ecl (not graph-db-ecl-modern-mp))
              (loop
                (with-recursive-lock-held ((lock-lock rw-lock))
                  (when (= 0 (lock-readers rw-lock))
                    (return)))
                (sleep 0.001)))
-           ;; ECL: if we didn't become the writer this iteration, sleep briefly
+           ;; Older ECL: we condition-wait above only on modern ECL; otherwise,
+           ;; if we didn't become the writer this iteration, sleep briefly
            ;; outside the lock before retrying (avoids spinning at 100% CPU).
-           #+ecl
+           #+(and ecl (not graph-db-ecl-modern-mp))
            (unless internal-wait-p
              (sleep 0.001))))))
 

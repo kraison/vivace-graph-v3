@@ -1,5 +1,31 @@
 (in-package :graph-db)
 
+;;; ECL threading-primitive capability gate.
+;;;
+;;; The custom rw-lock (rw-lock.lisp) uses a `(sleep 0.001)` busy-poll on ECL
+;;; instead of condition-variable blocking, a workaround for ECL 21.2.1 bugs
+;;; (mp:wait-on-semaphore blocking indefinitely, condition-variable-broadcast
+;;; missing waiters, condition-variable-timedwait unreliable before 23.09.09).
+;;; Those are fixed in modern ECL, where the poll's ~1 ms/handoff floor is pure
+;;; overhead.  Push :GRAPH-DB-ECL-MODERN-MP when running ECL >= 23.9.9 so the
+;;; rw-lock can take the blocking path; older ECL keeps the safe poll fallback.
+;;;
+;;; eval-when so the feature is set before rw-lock.lisp is read/compiled (it
+;;; loads after globals per graph-db.asd).  Default-to-safe: any parse failure or
+;;; older version leaves the feature absent (poll path).  Validate on the target
+;;; ECL: a wrong gate would reintroduce the 21.2.1 hangs.
+#+ecl
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (let ((parts (mapcar (lambda (s) (or (parse-integer s :junk-allowed t) 0))
+                       (uiop:split-string (lisp-implementation-version)
+                                          :separator "."))))
+    (destructuring-bind (&optional (major 0) (minor 0) (patch 0) &rest rest) parts
+      (declare (ignore rest))
+      (when (or (> major 23)
+                (and (= major 23) (or (> minor 9)
+                                      (and (= minor 9) (>= patch 9)))))
+        (pushnew :graph-db-ecl-modern-mp *features*)))))
+
 (defvar *cache-enabled* t)
 
 (alexandria:define-constant +db-version+ 1)
