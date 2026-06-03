@@ -290,7 +290,7 @@ regenerates the id on a duplicate-key collision."
           (map-index-list
            (lambda (edge-id)
              (let ((edge (lookup-edge edge-id :graph graph)))
-               (when (and (written-p edge)
+               (when (and edge (written-p edge)
                           (active-edge-p edge))
                  (return-from edge-exists-p edge))))
            index-list))))))
@@ -318,7 +318,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
                    (map-index-list
                     (lambda (edge-id)
                       (let ((edge (lookup-edge edge-id :graph graph)))
-                        (when (and (written-p edge)
+                        (when (and edge (written-p edge)
                                    (or include-deleted-p
                                        ;;(not (deleted-p edge))))
                                        (active-edge-p edge)))
@@ -363,7 +363,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
                    (map-index-list
                     (lambda (edge-id)
                       (let ((edge (lookup-edge edge-id :graph graph)))
-                        (when (and (written-p edge)
+                        (when (and edge (written-p edge)
                                    (or include-deleted-p
                                        ;;(not (deleted-p edge))))
                                        (active-edge-p edge)))
@@ -400,7 +400,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
                (let ((index-list (get-type-index-list (edge-index graph) edge-type-id)))
                  (map-index-list (lambda (id)
                                    (let ((edge (lookup-edge id :graph graph)))
-                                     (when (and (written-p edge)
+                                     (when (and edge (written-p edge)
                                                 (or include-deleted-p
                                                     ;;(not (deleted-p edge))))
                                                     (active-edge-p edge)))
@@ -411,7 +411,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
           (t
            (map-lhash #'(lambda (pair)
                           (let ((edge (cdr pair)))
-                            (when (and (written-p edge)
+                            (when (and edge (written-p edge)
                                        (or include-deleted-p
                                            (active-edge-p edge))
                                        (not (member (type-of edge) exclude-edge-types)))
