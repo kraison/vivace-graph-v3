@@ -416,6 +416,14 @@ no data are not written."
     (maybe-write-to-heap node graph)
     (add-node-to-indexes node graph
                          :unless-present *add-to-indexes-unless-present-p*)
+    ;; Mark written-p BEFORE the node becomes visible in the lhash.  written-p is
+    ;; a persisted node-head flag; if it is set only afterward (in finalize-node)
+    ;; the node is briefly in the table with written-p=0 on disk, and a
+    ;; concurrent reader can deserialize and cache that stale copy, overwriting
+    ;; the committed one — so map-vertices later skips it (its written-p guard
+    ;; fails) and the insert is lost from type-indexed scans.  Setting it here
+    ;; means the lhash entry carries written-p=1 from its first appearance.
+    (setf (written-p node) t)
     (handler-case
         (lhash-insert table (id node) node)
       (duplicate-key-error (condition)
