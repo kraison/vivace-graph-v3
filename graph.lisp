@@ -5,7 +5,9 @@
                                    replay-txn-dir (buffer-pool-p t)
                                    (buffer-pool-size 100000)
                                    (vertex-buckets 8)
-                                   (edge-buckets 8))
+                                   (edge-buckets 8)
+                                   (heap-size *default-heap-size*)
+                                   (index-size *default-index-size*))
   "Create a brand-new graph named NAME with its on-disk files under the
 directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
 return it.  The directory is created if necessary and must not already contain
@@ -21,6 +23,10 @@ Keyword arguments:
   :BUFFER-POOL-SIZE       buffer pool size (default 100000).
   :VERTEX-BUCKETS / :EDGE-BUCKETS
                           initial linear-hash bucket counts (default 8).
+  :HEAP-SIZE / :INDEX-SIZE
+                          initial sizes (bytes) of the heap and indexes regions
+                          (default *DEFAULT-HEAP-SIZE* / *DEFAULT-INDEX-SIZE*).
+                          Both grow on demand, so these are only starting sizes.
 
 A .dirty marker file is written on creation; always CLOSE-GRAPH to flush data
 to disk and remove it."
@@ -39,7 +45,7 @@ to disk and remove it."
       (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
-                  (* 1024 1024 1000)))
+                  heap-size))
            (graph
             (make-instance
              (cond (slave-p 'slave-graph)
@@ -65,7 +71,7 @@ to disk and remove it."
              :heap heap
              :indexes (create-memory
                        (format nil "~A/indexes.dat" path)
-                       (* 1024 1024 1000))
+                       index-size)
              :ve-index-in (make-ve-index
                            (format nil "~A/ve-index-in/" path))
              :ve-index-out (make-ve-index

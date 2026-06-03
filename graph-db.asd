@@ -142,7 +142,8 @@
                (:file "graph-storm")
                (:file "transaction-storm")
                (:file "view-storm")
-               (:file "mixed-storm"))
+               (:file "mixed-storm")
+               (:file "mmap-remap-stress"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call
                              :graph-db/concurrent-stress-test

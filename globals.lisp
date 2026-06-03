@@ -29,6 +29,29 @@
 (alexandria:define-constant +bucket-size+ 24)
 (alexandria:define-constant +data-extent-size+ (* 1024 1024 100))
 
+;; Initial sizes (in bytes) of the two memory-mapped allocator regions a graph
+;; creates: HEAP (node/edge data) and INDEXES.  Both grow on demand via
+;; extend-mapped-file, so these are just starting sizes; tune them per workload
+;; via MAKE-GRAPH's :heap-size / :index-size, or by rebinding these defaults.
+(defparameter *default-heap-size* (* 1024 1024 1000)
+  "Initial size, in bytes, of a new graph's heap (node/edge data) region.")
+(defparameter *default-index-size* (* 1024 1024 1000)
+  "Initial size, in bytes, of a new graph's indexes region.")
+
+;; Each memory-mapped file reserves a virtual-address window up front (PROT_NONE,
+;; MAP_NORESERVE — address space only, no committed memory) and maps the file
+;; into the head of it.  Growth re-maps more of the file into the reserved window
+;; with MAP_FIXED, so the base pointer never moves and concurrent readers never
+;; fault or need a lock.  A file may grow up to its reservation; exceeding it
+;; signals an error.  The reservation is proportional to the file's initial size
+;; (with a floor) rather than a flat huge value: a graph has ~15-20 mapped files,
+;; so a flat multi-GB reservation each would reserve enormous VA per graph (which
+;; can fail on macOS).  See mmap.lisp.
+(defparameter *mmap-reservation-multiplier* 8
+  "Growth headroom: a mapped file reserves this multiple of its initial size.")
+(defparameter *mmap-min-reservation* (* 1024 1024 1024)
+  "Floor, in bytes, for a mapped file's virtual-address reservation.")
+
 ;; Key namespaces
 (defvar *vertex-namespace* (uuid:uuid-to-byte-array
                             (uuid:make-uuid-from-string "2140DCE1-3208-4354-8696-5DF3076D1CEB")))

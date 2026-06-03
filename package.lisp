@@ -22,6 +22,8 @@
   #+ccl (:shadowing-import-from "CLOSER-MOP" "METHOD-FUNCTION")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "MAKE-METHOD-LAMBDA")
   (:export #:make-graph
+           #:*default-heap-size*
+           #:*default-index-size*
            #:open-graph
            #:close-graph
            #:lookup-graph
