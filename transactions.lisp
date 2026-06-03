@@ -621,14 +621,21 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
 (defun make-tx-header-vector ()
   (make-byte-vector +tx-header-size+))
 
-(defun serialize-tx-header (tx vector offset)
+;; The transaction-id lives at this byte offset within the serialized header
+;; (and thus at the start of the tx file): 8-byte size + 1 flag + 1 type code.
+;; In a .txn file this is left at the placeholder 0 (the authoritative id is the
+;; filename; see the TODO above FINALIZE-TX-PERSISTENCE).  Master graphs patch
+;; the real id into the in-memory bytes at this offset for the replication log.
+(defconstant +tx-header-id-offset+ 10)
+
+(defun serialize-tx-header (tx vector offset &optional (id (transaction-id tx)))
   (serialize-uint64 vector +tx-header-size+ offset)
   (incf offset 8)
   ;; Skip flags
   (incf offset)
   (setf (aref vector offset) +tx-header-type-code+)
   (incf offset)
-  (serialize-uint64 vector (transaction-id tx) offset)
+  (serialize-uint64 vector id offset)
   (incf offset 8)
   (let ((writes (writes tx)))
     (serialize-uint64 vector (length writes) offset)
@@ -649,9 +656,9 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
                      :write-count write-count
                      :write-size write-size))))
 
-(defun tx-header-vector (tx)
+(defun tx-header-vector (tx &optional (id (transaction-id tx)))
   (let ((vector (make-tx-header-vector)))
-    (values (serialize-tx-header tx vector 0))))
+    (values (serialize-tx-header tx vector 0 id))))
 
 (defun read-uint64-sized-vector (stream)
   (let ((size-vector (make-byte-vector 8)))
@@ -944,8 +951,8 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
       (save-bytes-component-vector v tx)
       (write-sequence (tx-write-vector write) stream))))
 
-(defun write-tx-header-to-stream (tx stream)
-  (let ((v (tx-header-vector tx)))
+(defun write-tx-header-to-stream (tx stream &optional (id (transaction-id tx)))
+  (let ((v (tx-header-vector tx id)))
     (save-bytes-component-vector v tx)
     (write-sequence v stream)))
 
@@ -1032,6 +1039,72 @@ left in the stream."
         (write-sequence (bytes transaction)
                         (replication-log (transaction-manager transaction)))
         (finish-output stream)))))
+
+(defun transaction-prepare-pathname (transaction)
+  "A unique per-attempt temp pathname, keyed by SEQUENCE-NUMBER (the
+transaction-id is not yet assigned at prepare time).  Type \"txn-tmp\" so
+RECOVERY-TRANSACTION-FILES (which scans \"txn\" files) ignores it even if a
+crash orphans one."
+  (make-pathname :name (format nil "prep-~16,'0X" (sequence-number transaction))
+                 :type "txn-tmp"
+                 :defaults (persistent-transaction-directory
+                            (graph transaction))))
+
+;;; -------------------------------------------------------------------------
+;;; TODO (revisit — correctness/maintainability): the transaction file's HEADER
+;;; transaction-id is intentionally left at a placeholder 0; the AUTHORITATIVE id
+;;; for a .txn file is its FILENAME (~16,'0X hex), and recovery reads it from
+;;; there (LOAD-RECOVERY-TRANSACTION).  This is what lets FINALIZE do a single
+;;; rename under the manager lock instead of an in-lock header write — the only
+;;; form measured to actually relieve the CCL/ECL commit-lock convoy at high
+;;; thread counts (any in-lock file write reconvoys; see
+;;; docs/concurrency-scaling-investigation.md).  The smell: the same header
+;;; layout means two different things — placeholder 0 in a .txn file vs. the real
+;;; id in a replication-log entry (masters patch it into the in-memory bytes
+;;; below).  Replication is unaffected (it reads the replication-log, never the
+;;; .txn files).  Revisit for a cleaner design (e.g. drop the id from the .txn
+;;; header format entirely, or a stable-id scheme) once the rw-lock work lands.
+;;; -------------------------------------------------------------------------
+
+(defun prepare-tx-persistence (transaction)
+  "Serialize TRANSACTION to a temp file and populate its BYTES slot.  Runs BEFORE
+the transaction-manager lock, so the bulk serialization + disk write (and the
+flush at close) are off the serialized commit path.  The header id is written as
+the placeholder 0 — the real id is encoded in the final FILENAME by the rename in
+FINALIZE-TX-PERSISTENCE, and recovery reads it from there.  Returns the temp
+pathname."
+  (let ((tmp (transaction-prepare-pathname transaction)))
+    (with-open-file (stream tmp :direction :output
+                            :if-exists :supersede
+                            :if-does-not-exist :create
+                            :element-type '(unsigned-byte 8))
+      (write-tx-header-to-stream transaction stream 0)
+      (write-tx-writes-to-stream transaction stream))
+    (initialize-bytes-from-components transaction)
+    tmp))
+
+(defun finalize-tx-persistence (transaction tmp)
+  "Under the transaction-manager lock, once TRANSACTION-ID is assigned: make the
+durable, recovery-visible record by renaming the prepared temp file to its final
+id-keyed name.  For a non-replicated graph this is a SINGLE rename — the only
+file I/O left in the commit critical section, which is what relieves the
+commit-lock convoy (the bulk write happened in PREPARE-TX-PERSISTENCE before the
+lock).  Recovery reads the id from this filename, so the file's header id stays
+at its placeholder 0.  Master graphs additionally patch the real id into the
+in-memory bytes and append them to the replication log in commit order for
+downstream slaves (the replication path is the only consumer of the header id,
+and it reads these patched bytes, never the .txn files)."
+  (rename-file tmp (transaction-pathname transaction))
+  (let ((tm (transaction-manager transaction)))
+    (when (master-graph-p (graph tm))
+      (serialize-uint64 (bytes transaction)
+                        (transaction-id transaction)
+                        +tx-header-id-offset+)
+      (let ((repl-stream (replication-log tm))
+            (lock (replication-log-lock tm)))
+        (with-recursive-lock-held (lock)
+          (write-sequence (bytes transaction) repl-stream)
+          (finish-output repl-stream))))))
 
 ;;; Locking for object sets
 
@@ -1368,28 +1441,51 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
 
 (defmethod %commit ((tx tx))
   (when (eql (state tx) :active)
-    (let ((tm (transaction-manager tx)))
+    (let ((tm (transaction-manager tx))
+          (tmp nil)
+          (renamed nil))
       (setf (state tx) :committing)
-      (with-transaction-manager-lock (tm)
-        ;; finish-tx-id must be set inside the manager lock so the overlap
-        ;; window computed by validate is consistent with tx-id-counter.
-        ;; Setting it outside would let concurrent commits advance the counter
-        ;; between the read and the lock acquisition, making lost updates invisible.
-        (setf (finish-tx-id tx) (tx-id-counter tm))
-        (unless (validate tx)
-          (error 'validation-conflict :transaction tx))
-        (setf (transaction-id tx) (tx-id-counter tm))
-        (incf (tx-id-counter tm))
-        (prune-committed-transactions tm)
-        (persist-transaction tx)
-        ;; apply-transaction must run inside the manager lock so that:
-        ;; (a) applies happen in tx-id order (no concurrent-apply race where a
-        ;;     lower-tx-id apply overwrites a higher-tx-id apply);
-        ;; (b) the graph cache is updated before the lock is released, so any
-        ;;     transaction created after this commit (start-tx-id > this tx-id)
-        ;;     reads the committed value rather than a stale pre-apply snapshot.
-        (apply-transaction tx (graph tx)))
-      (setf (state tx) :committed))))
+      (unwind-protect
+           (progn
+             ;; Serialize the transaction and write its log file BEFORE taking
+             ;; the manager lock, so the bulk serialization + disk write are off
+             ;; the serialized commit path (this is the main relief for the
+             ;; commit-lock convoy on CCL/ECL).  Under the lock,
+             ;; FINALIZE-TX-PERSISTENCE only renames it to its durable,
+             ;; recovery-visible, id-keyed name (a single rename for a
+             ;; non-replicated graph).
+             (setf tmp (prepare-tx-persistence tx))
+             (with-transaction-manager-lock (tm)
+               ;; finish-tx-id must be set inside the manager lock so the overlap
+               ;; window computed by validate is consistent with tx-id-counter.
+               ;; Setting it outside would let concurrent commits advance the
+               ;; counter between the read and the lock acquisition, making lost
+               ;; updates invisible.
+               (setf (finish-tx-id tx) (tx-id-counter tm))
+               (unless (validate tx)
+                 (error 'validation-conflict :transaction tx))
+               (setf (transaction-id tx) (tx-id-counter tm))
+               (incf (tx-id-counter tm))
+               (prune-committed-transactions tm)
+               ;; Cheap under the lock: rename temp to its final id-keyed name
+               ;; (+ append replication log in commit order for masters).  Must
+               ;; precede apply-transaction so the durable record exists before
+               ;; the change is visible in memory.
+               (finalize-tx-persistence tx tmp)
+               (setf renamed t)
+               ;; apply-transaction must run inside the manager lock so that:
+               ;; (a) applies happen in tx-id order (no concurrent-apply race
+               ;;     where a lower-tx-id apply overwrites a higher-tx-id apply);
+               ;; (b) the graph cache is updated before the lock is released, so
+               ;;     any transaction created after this commit (start-tx-id >
+               ;;     this tx-id) reads the committed value rather than a stale
+               ;;     pre-apply snapshot.
+               (apply-transaction tx (graph tx)))
+             (setf (state tx) :committed))
+        ;; On validation conflict (retry) or any error before the rename, drop
+        ;; the orphan temp file so prepared-but-not-committed attempts don't leak.
+        (when (and tmp (not renamed))
+          (ignore-errors (delete-file tmp)))))))
 
 (defmethod cleanup-transaction ((tx tx))
   (let ((transaction-manager (transaction-manager tx)))
@@ -1425,9 +1521,13 @@ Signals NO-TRANSACTION-IN-PROGRESS if none is active."
     :accessor writes)))
 
 (defun load-recovery-transaction (file)
+  ;; The transaction-id is authoritative in the FILENAME (~16,'0X hex), set by the
+  ;; rename in FINALIZE-TX-PERSISTENCE; the .txn header id is a deliberate
+  ;; placeholder (0).  recovery-transaction-files already replays in filename
+  ;; (= id) order.  See the TODO above FINALIZE-TX-PERSISTENCE.
   (let ((tx-header (load-tx-file file)))
     (make-instance 'recovery-transaction
-                   :transaction-id (transaction-id tx-header)
+                   :transaction-id (parse-integer (pathname-name file) :radix 16)
                    :writes (writes tx-header))))
 
 (defmethod call-with-transaction-lock ((transaction recovery-transaction) fun)
