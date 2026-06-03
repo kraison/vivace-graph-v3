@@ -1,5 +1,15 @@
 (in-package :graph-db)
 
+;;; The skip list's node-cache is read/written lock-free by every concurrent
+;;; reader and writer (READ-SKIP-NODE etc.).  On SBCL/CCL/LispWorks the cache is
+;;; a per-op thread-safe hash table (:synchronized / :shared / :single-thread
+;;; nil).  ECL hash tables have no such option, so concurrent access corrupts the
+;;; table internally (rehash races) and crashes (SIGSEGV) under real concurrency.
+;;; Guard the ECL node-cache with its own lock; a no-op everywhere else.
+(defmacro with-sl-cache-lock ((skip-list) &body body)
+  #+ecl `(mp:with-lock ((%sl-cache-lock ,skip-list)) ,@body)
+  #-ecl `(progn ,@body))
+
 (define-condition skip-list-duplicate-error (error)
   ((key :initarg :key)
    (value :initarg :value)
@@ -118,7 +128,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                     (make-array level :element-type 'word
                                                 :initial-contents pointers)
                                     (make-array level :element-type  'word)))
-      (setf (gethash addr (%sl-node-cache skip-list)) node))))
+      (with-sl-cache-lock (skip-list)
+        (setf (gethash addr (%sl-node-cache skip-list)) node)))))
 
 (defun set-node-pointer (skip-list node level addr)
   (let ((offset (+ (%sn-addr node) 10 (* level 8))))
@@ -176,7 +187,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
 (defun read-skip-node (skip-list addr)
   (if (= addr 0)
       nil
-      (or (and *cache-enabled* (gethash addr (%sl-node-cache skip-list)))
+      (or (and *cache-enabled*
+               (with-sl-cache-lock (skip-list)
+                 (gethash addr (%sl-node-cache skip-list))))
           (let ((node (get-skip-node-buffer)) (pointer 8))
             (setf (%sn-addr node) addr)
             ;;(log:debug "READING SKIP NODE BYTES AT ~S" addr)
@@ -203,8 +216,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                       (subseq bytes (+ pointer length)))))
                   (setf (%sn-key node) key
                         (%sn-value node) value)
-                  (setf (gethash addr (%sl-node-cache skip-list))
-                        node))))))))
+                  (with-sl-cache-lock (skip-list)
+                    (setf (gethash addr (%sl-node-cache skip-list))
+                          node)))))))))
 
 (defstruct
     (skip-list
@@ -239,6 +253,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
    #+lispworks (make-hash-table :test 'eq :weak-kind :value :single-thread nil)
    #+ccl (make-hash-table :test 'eq :weak :value :shared t)
    #+ecl (make-hash-table :test 'eq :weakness :value))
+  ;; ECL hash tables aren't thread-safe and have no :synchronized option, so the
+  ;; node-cache above needs an explicit lock (see WITH-SL-CACHE-LOCK).
+  #+ecl (cache-lock (mp:make-lock))
   (length-lock #+sbcl (sb-thread:make-mutex)
                #+lispworks (mp:make-lock)
                #+ccl (ccl:make-lock)
@@ -358,7 +375,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
           (%sl-heap skip-list) nil
           (%sl-mmap skip-list) nil
           (%sl-locks skip-list) #())
-    (clrhash (%sl-node-cache skip-list))
+    (with-sl-cache-lock (skip-list)
+      (clrhash (%sl-node-cache skip-list)))
     nil))
 
 (defun incf-skip-list-count (skip-list)
@@ -553,7 +571,8 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                            (dotimes (i (length sval))
                              (set-byte (%sl-heap skip-list) offset (aref sval i))
                              (incf offset))
-                           (setf (gethash (%sn-addr node) (%sl-node-cache skip-list)) node)))
+                           (with-sl-cache-lock (skip-list)
+                             (setf (gethash (%sn-addr node) (%sl-node-cache skip-list)) node))))
                        (progn
                          ;;(unlock-skip-node skip-list lock)
                          ;;(setq lock nil)
@@ -612,8 +631,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                                  level
                                  (aref (%sn-pointers node-to-delete) level)))
                            (decf-skip-list-count skip-list)
-                           (remhash (%sn-addr node-to-delete)
-                                    (%sl-node-cache skip-list))
+                           (with-sl-cache-lock (skip-list)
+                             (remhash (%sn-addr node-to-delete)
+                                      (%sl-node-cache skip-list)))
                            (free (%sl-heap skip-list) (%sn-addr node-to-delete))
                            (unlock-skip-node skip-list lock)
                            (setq lock nil)
