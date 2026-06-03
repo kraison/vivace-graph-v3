@@ -86,3 +86,51 @@
           "Expected ~D vertices from writers; got ~D"
           (* writers m)
           (length (map-vertices #'identity g :collect-p t :vertex-type 'cs-item))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 3: concurrent-insert visibility (regression)
+;;;
+;;; Regression for a lost-update where committed pure inserts became invisible
+;;; to type-indexed scans.  apply-tx-write set the node's WRITTEN-P flag only in
+;;; finalize-node, AFTER lhash-insert, so the node was briefly in the table with
+;;; written-p=0 on disk; a concurrent reader could deserialize and cache that
+;;; stale copy, overwriting the committed one, and map-vertices then skipped it
+;;; (its written-p guard failed).  With concurrent type-indexed readers and
+;;; enough writers, a handful of the W*M committed inserts went missing (e.g.
+;;; 3195/3200) even though the vertices were durably present in the lhash.
+;;;
+;;; Uses a fixed thread count (independent of *stress-thread-count*), repeated
+;;; over several iterations to make the guard reliable.  Pre-fix per-graph miss
+;;; rate on this box was ~10% at 32 threads but ~48% at 64, so SBCL runs at 64
+;;; (~98% catch over 6 iterations).  CCL/ECL use a lighter 24 threads: their
+;;; thread scheduler can blow the run-threads deadlock timeout at high counts
+;;; (a separate, tracked issue), which would make THIS test flaky there; the fix
+;;; is in shared code, so the SBCL run is the primary guard.
+;;; ---------------------------------------------------------------------------
+
+(test concurrent-insert-visibility
+  "Every committed insert is visible via the type index, even with concurrent
+type-indexed readers (regression: written-p must be set before lhash-insert)."
+  (let* ((t-count #+sbcl 64 #-sbcl 24)
+         (writers (floor t-count 2))
+         (m       100)
+         (iters   6))
+    (dotimes (iter iters)
+      (with-cstress-graph (g)
+        (run-threads t-count
+                     (lambda (i)
+                       (if (< i writers)
+                           (dotimes (_ m)
+                             (with-transaction ()
+                               (make-cs-item :value i :label "vis")))
+                           ;; Readers traverse the type index concurrently --
+                           ;; this is what poisoned the cache before the fix.
+                           (dotimes (_ (* m 2))
+                             (map-vertices #'identity g
+                                           :collect-p nil
+                                           :vertex-type 'cs-item)))))
+        (let ((visible (length (map-vertices #'identity g :collect-p t
+                                             :vertex-type 'cs-item))))
+          (is (= (* writers m) visible)
+              "iter ~D: expected ~D type-indexed vertices; got ~D (lost ~D)"
+              iter (* writers m) visible (- (* writers m) visible)))))))
