@@ -9,3 +9,6 @@
 
 # Common Lisp compiled output
 *.fasl
+
+# Claude
+.claude
