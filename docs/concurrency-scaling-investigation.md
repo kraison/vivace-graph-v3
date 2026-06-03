@@ -10,6 +10,66 @@ ECL ≥ 26.5.5 at high `*stress-thread-count*` (16/32/64). SBCL is unaffected.
 
 ---
 
+## Update 2026-06-04 — validated on real hardware; fix #1 landed
+
+The convoy is **confirmed on the target hardware** (odm, 32-core, CCL 1.13 /
+ECL 26.5.5); the original 4-core + SBCL-microbench analysis was correct.
+
+Real-HW baseline @64 threads, `concurrent-stress`, instantaneous CPU sampled on
+32 cores (3200 % = all cores):
+
+| impl | result | CPU median | signature |
+|---|---|---|---|
+| SBCL | 17/17 PASS | ~113 % | bursty; ~3.5 min |
+| CCL  | 3/15 FAIL  | ~181 % | sustained sub-saturation; ~7.7 min; 6 timeouts |
+| ECL  | 9/15 FAIL  | ~100 % | worst (≈1 core of 32); ~14.5 min |
+
+Sub-saturation CPU + always-completes ⇒ convoy, not deadlock. Confirmed.
+
+### Fix #1 (commit `f3b01ef`): tx-log persistence out of the commit lock
+
+Diagnostic — skip *all* persistence, CCL@64: **3/15 → 12/15**. So the commit-path
+file I/O is a **primary** convoy contributor (fix #1's direction was right).
+
+Real-HW lesson: the in-lock **syscall count**, not data volume, drives it:
+
+| in-lock file ops per commit | CCL@64 |
+|---|---|
+| 0 (skip persistence) | 12/15 |
+| 1 (rename only) | 11/18 |
+| ~4 (in-lock header patch via kept-open stream) | 5/16 |
+| ~7 (reopen + patch) | 3/15 |
+
+Only **rename-only** relieves it (the kept-open header-patch variant also *errored*
+under load). So fix #1 writes the `.txn` file *before* the lock and only renames
+under it; the header `transaction-id` becomes a placeholder (the **filename** is
+authoritative; recovery reads it from there). Replication is unaffected (it reads
+the replication-log, where masters patch the real id into the in-memory bytes).
+See the TODO above `finalize-tx-persistence` — flagged to revisit for
+correctness/maintainability.
+
+Result @64: CCL `concurrent-stress` **3/15 → 11/18**. Gate at shipped config
+(`*stress-thread-count*` 16): SBCL + ECL all green; CCL test/acid/
+concurrent-stress green, concurrency green except an intermittent
+`skip-list-concurrent-inserts` timeout.
+
+### Residual lever = the rw-lock (fixes #2 / #3)
+
+The remaining timeouts persist with *zero* persistence (no-persist still left 3
+timeouts) and hit **non-transactional** tests (`skip-list-concurrent-inserts`) —
+so the residual convoy is the **rw-lock** (Sections 3.1 / 4), not the commit
+path. ECL additionally still shows the `(sleep 0.001)` poll floor (~100 % CPU
+@64). Fixes #2 (modernize the ECL rw-lock path) and #3 (reader fast-path /
+native rwlock) are next.
+
+### Interim ceiling — unchanged at ~16
+
+Fix #1 relieves the commit-lock component, but the rw-lock convoy remains and
+even 16 threads intermittently trips one concurrency-suite timeout on CCL.
+Re-measure and lift after the rw-lock work.
+
+---
+
 ## 1. Verdict (answers the three hypotheses)
 
 | Hypothesis | Verdict |
