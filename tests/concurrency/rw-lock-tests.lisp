@@ -97,6 +97,106 @@
     (is-false violation "Two writers held the lock concurrently")))
 
 ;;; ---------------------------------------------------------------------------
+;;; White-box tests of the custom rw-lock semantics (SBCL / ECL / LispWorks).
+;;; CCL uses a native ccl:make-read-write-lock with different internals, so
+;;; these are gated to the custom-lock implementations.
+;;; ---------------------------------------------------------------------------
+
+#+(or sbcl lispworks ecl)
+(test rw-lock-recursive-write
+  "A thread re-acquires its own write lock; the lock stays held until the
+   OUTERMOST release, blocking other writers throughout (nested release must
+   NOT hand off)."
+  (let ((lock      (make-rw-lock))
+        (other-ran nil)
+        (th        nil))
+    (with-write-lock (lock)
+      (with-write-lock (lock)              ; recursive re-acquire
+        (setf th (bt:make-thread
+                  (lambda () (with-write-lock (lock) (setf other-ran t)))))
+        (sleep 0.15)
+        (is-false other-ran "writer entered while lock held recursively"))
+      ;; inner released, outer still held
+      (sleep 0.15)
+      (is-false other-ran
+                "writer entered after inner release (outer still held)"))
+    ;; outer released -> competitor proceeds
+    (when th (bt:join-thread th))
+    (is-true other-ran "writer never acquired the lock after full release")))
+
+#+(or sbcl lispworks ecl)
+(test rw-lock-reading-p-downgrade
+  "Upgrade read->write with :reading-p, then downgrade back; the reader count
+   is conserved and the lock is reusable afterward."
+  (let ((lock (make-rw-lock)))
+    (acquire-read-lock lock)
+    (is (= 1 (lock-readers lock)))
+    (acquire-write-lock lock :reading-p t)        ; convert read -> write
+    (is (= 0 (lock-readers lock)))
+    (is (eq (bt:current-thread) (lock-writer lock)))
+    (release-write-lock lock :reading-p t)        ; convert write -> read
+    (is (= 1 (lock-readers lock)))
+    (is (null (lock-writer lock)))
+    (release-read-lock lock)
+    (is (= 0 (lock-readers lock)))
+    ;; reusable: a fresh writer can take and release it
+    (is (rw-lock-p (acquire-write-lock lock)))
+    (release-write-lock lock)
+    (is (null (lock-writer lock)))))
+
+#+(or sbcl lispworks ecl)
+(test rw-lock-try-write-nonblocking
+  ":wait-p nil returns the lock when free, NIL when another writer holds it,
+   and the lock is reusable afterward."
+  (let ((lock (make-rw-lock)))
+    ;; free -> succeeds
+    (is (rw-lock-p (acquire-write-lock lock :wait-p nil)))
+    (release-write-lock lock)
+    ;; held by another thread -> our try returns NIL
+    (let ((held    (bt:make-semaphore))
+          (release (bt:make-semaphore))
+          (th      nil))
+      (setf th (bt:make-thread
+                (lambda ()
+                  (with-write-lock (lock)
+                    (bt:signal-semaphore held)
+                    (bt:wait-on-semaphore release)))))
+      (bt:wait-on-semaphore held)          ; helper now holds the write lock
+      (is (null (acquire-write-lock lock :wait-p nil))
+          "try-acquire should fail while another writer holds the lock")
+      (bt:signal-semaphore release)
+      (bt:join-thread th))
+    ;; reusable once free again
+    (is (rw-lock-p (acquire-write-lock lock :wait-p nil)))
+    (release-write-lock lock)
+    (pass)))
+
+#+(or sbcl lispworks ecl)
+(test rw-lock-writer-fifo-order
+  "Queued writers acquire the lock in FIFO (enqueue) order.  The main thread
+   holds the lock while spawning writers (staggered so each enqueues strictly
+   before the next), then releases; they must drain in order."
+  (let* ((lock    (make-rw-lock))
+         (n       8)
+         (order   (make-array n :fill-pointer 0))
+         (olock   (bt:make-lock "order"))
+         (threads '()))
+    (acquire-write-lock lock)              ; force all spawned writers to queue
+    (dotimes (i n)
+      (let ((idx i))
+        (push (bt:make-thread
+               (lambda ()
+                 (with-write-lock (lock)
+                   (bt:with-lock-held (olock)
+                     (vector-push idx order)))))
+              threads)
+        (sleep 0.05)))                     ; stagger enqueue order
+    (release-write-lock lock)
+    (dolist (th (nreverse threads)) (bt:join-thread th))
+    (is (equalp order (coerce (loop for i below n collect i) 'vector))
+        "writers acquired out of FIFO order: ~A" order)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Test 4: no deadlock under sustained mixed read/write load
 ;;; ---------------------------------------------------------------------------
 

@@ -49,6 +49,16 @@
                 #:make-rw-lock
                 #:with-read-lock
                 #:with-write-lock
+                #:acquire-write-lock
+                #:release-write-lock
+                #:rw-lock-p
+                ;; acquire/release-read-lock and the lock-* accessors exist only
+                ;; on the custom-lock impls; CCL uses a native lock (no read
+                ;; acquire/release fns, no such slots) via utilities.lisp.
+                #+(or sbcl lispworks ecl) #:acquire-read-lock
+                #+(or sbcl lispworks ecl) #:release-read-lock
+                #+(or sbcl lispworks ecl) #:lock-readers
+                #+(or sbcl lispworks ecl) #:lock-writer
                 ;; misc
                 #:gen-id)
   ;; Internal graph-db symbols the tests need but that are not exported.
