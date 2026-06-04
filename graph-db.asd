@@ -170,6 +170,7 @@
                (:file "prolog-mutation-tests")
                (:file "reopen-tests")
                (:file "backup-tests")
+               (:file "rest-tests")
                (:file "prolog-stress-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/test :run-tests)
