@@ -68,18 +68,18 @@
         (succs (make-array (%sl-max-level sl))))
     (multiple-value-bind (node level-found preds succs)
         (find-in-skip-list sl start preds succs)
-      (declare (ignore level-found preds))
-      (cond (node
-             (make-instance 'skip-list-range-cursor
-                            :node node :end end :skip-list sl))
-;            (preds
-;             (make-instance 'skip-list-range-cursor
-;                            :node (aref preds 0)
-;                            :end end :skip-list sl))
-            (succs
-             (make-instance 'skip-list-range-cursor
-                            :node (aref succs 0)
-                            :end end :skip-list sl))))))
+      ;; SUCCS[0] is the leftmost node whose key >= START.  Start the cursor
+      ;; there rather than at NODE: with duplicate keys, FIND-IN-SKIP-LIST
+      ;; returns whichever duplicate has the tallest (random) tower -- often a
+      ;; middle one -- so starting at NODE would skip the earlier duplicates
+      ;; (making skip-list-fetch-all and range queries nondeterministic).
+      ;; SUCCS[0] captures every duplicate and is also correct when START
+      ;; itself is absent (it is then the first node past START).
+      (declare (ignore node level-found preds))
+      (when succs
+        (make-instance 'skip-list-range-cursor
+                       :node (aref succs 0)
+                       :end end :skip-list sl)))))
 
 (defmethod map-skip-list (fn (sl skip-list) &key collect-p)
   (with-sl-lock (sl)
