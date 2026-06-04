@@ -5,6 +5,7 @@
    (skip-list :initarg :skip-list :accessor skip-list)))
 
 (defmethod cursor-next ((slc skip-list-cursor) &optional eoc)
+  (with-sl-lock ((skip-list slc))
   (with-slots (node) slc
     (if node
         (if (funcall (%sl-key-equal (skip-list slc))
@@ -14,7 +15,7 @@
             (let ((result node))
               (setq node (node-forward (skip-list slc) node))
               result))
-        eoc)))
+        eoc))))
 
 (defclass skip-list-value-cursor (skip-list-cursor)
   ())
@@ -81,6 +82,7 @@
                             :end end :skip-list sl))))))
 
 (defmethod map-skip-list (fn (sl skip-list) &key collect-p)
+  (with-sl-lock (sl)
   (let ((cursor (make-cursor sl)) (result nil))
     (do ((node (cursor-next cursor)
               (cursor-next cursor)))
@@ -89,9 +91,10 @@
           (push (funcall fn node) result)
           (funcall fn node)))
     (when collect-p
-      (nreverse result))))
+      (nreverse result)))))
 
 (defmethod map-skip-list-keys (fn (sl skip-list) &key collect-p)
+  (with-sl-lock (sl)
   (let ((cursor (make-cursor sl)) (result nil))
     (do ((node (cursor-next cursor)
               (cursor-next cursor)))
@@ -100,17 +103,19 @@
           (push (funcall fn (%sn-key node)) result)
           (funcall fn (%sn-key node))))
     (when collect-p
-      (nreverse result))))
+      (nreverse result)))))
 
 (defmethod map-skip-list-values (fn (sl skip-list))
+  (with-sl-lock (sl)
   (let ((cursor (make-values-cursor sl)))
     (do ((val (cursor-next cursor)
               (cursor-next cursor)))
         ((null val))
-      (funcall fn val))))
+      (funcall fn val)))))
 
 (defmethod skip-list-fetch-all ((sl skip-list) key)
   "Return all values for a key in a skip list where duplicates are allowed."
+  (with-sl-lock (sl)
   (let ((cursor (make-range-cursor sl key key))
         (result nil))
     (if cursor
@@ -119,4 +124,4 @@
               ((null node))
             (push (second node) result))
           (nreverse result))
-        nil)))
+        nil))))

@@ -10,6 +10,34 @@
   #+ecl `(mp:with-lock ((%sl-cache-lock ,skip-list)) ,@body)
   #-ecl `(progn ,@body))
 
+;;; ECL cannot run the skip list's lock-free reads safely: it has no CAS for
+;;; atomic pointer/value publication, and it cannot catch the SIGSEGV a torn read
+;;; of a node's multi-byte size/pointers causes (SBCL/CCL/LispWorks recover via
+;;; the GET-BYTES SEGV-retry :around and publish with real CAS).  So on ECL only,
+;;; serialize every PUBLIC skip-list operation with a per-skip-list RECURSIVE
+;;; lock; a no-op everywhere else (those keep the lock-free design).  Recursive so
+;;; a write op (e.g. ADD-TO-SKIP-LIST) that internally calls FIND-IN-SKIP-LIST
+;;; re-enters without deadlock.  In production the skip list is only reached via
+;;; view indexes, which already hold the view-group lock, so this inner lock is
+;;; uncontended there; it exists to make the skip list self-safe for direct
+;;; (non-view) concurrent use on ECL.  (A future per-skip-list rwlock with
+;;; unlocked %cores would allow concurrent reads on ECL; deferred — ECL perf is
+;;; Stage 5, and MVCC may subsume it.)
+(defmacro with-sl-lock ((skip-list) &body body)
+  #+ecl `(with-recursive-lock-held ((%sl-lock ,skip-list)) ,@body)
+  #-ecl `(progn ,@body))
+
+(define-condition skip-list-torn-read-error (error)
+  ((addr :initarg :addr)
+   (size :initarg :size)
+   (max-len :initarg :max-len))
+  (:report (lambda (error stream)
+             (with-slots (addr size max-len) error
+               (format stream
+                       "Skip-list torn read at ~A: decoded node size ~A exceeds heap ~
+extent ~A (a concurrent torn read of the node's size header)."
+                       addr size max-len)))))
+
 (define-condition skip-list-duplicate-error (error)
   ((key :initarg :key)
    (value :initarg :value)
@@ -181,6 +209,18 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
     (dotimes (i 8)
       (setq size (dpb (get-byte (%sl-heap skip-list) (+ i addr))
                       (byte 8 (* i 8)) size)))
+    ;; Defense-in-depth on ECL: a torn read of the 8-byte size header (during
+    ;; concurrent writes) yields a garbage size; GET-BYTES would then read
+    ;; out-of-bounds and SIGSEGV in ECL's raw c-inline deref (which ECL cannot
+    ;; catch/retry, unlike SBCL/CCL's GET-BYTES :around).  WITH-SL-LOCK should
+    ;; prevent torn reads, but validate the size against the heap extent and
+    ;; signal a recoverable error rather than crash if one slips through.  NOT on
+    ;; SBCL/CCL: there torn reads are transient and recovered by the SEGV-retry
+    ;; :around (re-read once the writer finishes); erroring here would break that.
+    #+ecl
+    (let ((max-len (memory-size (%sl-heap skip-list))))
+      (when (or (not (plusp size)) (> (+ addr size) max-len))
+        (error 'skip-list-torn-read-error :addr addr :size size :max-len max-len)))
     (let ((bytes (get-bytes (%sl-heap skip-list) addr size)))
       (values bytes size))))
 
@@ -256,6 +296,9 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   ;; ECL hash tables aren't thread-safe and have no :synchronized option, so the
   ;; node-cache above needs an explicit lock (see WITH-SL-CACHE-LOCK).
   #+ecl (cache-lock (mp:make-lock))
+  ;; ECL-only: serializes the whole skip list (see WITH-SL-LOCK).  Recursive so a
+  ;; write op that calls FIND-IN-SKIP-LIST re-enters without deadlock.
+  #+ecl (lock (mp:make-lock :recursive t))
   (length-lock #+sbcl (sb-thread:make-mutex)
                #+lispworks (mp:make-lock)
                #+ccl (ccl:make-lock)
@@ -360,6 +403,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   nil)
 
 (defun delete-skip-list (skip-list)
+  (with-sl-lock (skip-list)
   (let ((pred (%sl-head skip-list))
         (address-list (list (%sn-addr (%sl-head skip-list)))))
     (loop
@@ -377,7 +421,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
           (%sl-locks skip-list) #())
     (with-sl-cache-lock (skip-list)
       (clrhash (%sl-node-cache skip-list)))
-    nil))
+    nil)))
 
 (defun incf-skip-list-count (skip-list)
   (with-recursive-lock-held ((%sl-length-lock skip-list))
@@ -424,6 +468,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
   (mp:giveup-lock lock))
 
 (defun find-in-skip-list (skip-list key &optional preds succs)
+  (with-sl-lock (skip-list)
   (let ((the-node nil) (pred (%sl-head skip-list)) (level-found -1))
     (loop for level from (1- (%sl-max-level skip-list)) downto 0 do
          (let ((curr (read-skip-node skip-list (aref (%sn-pointers pred) level))))
@@ -447,9 +492,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                (when (and preds succs)
                  (setf (aref preds level) pred
                        (aref succs level) curr)))))
-    (values the-node level-found preds succs)))
+    (values the-node level-found preds succs))))
 
 (defun find-kv-in-skip-list (skip-list key value &optional preds succs)
+  (with-sl-lock (skip-list)
   (let ((the-node nil) (level-found -1))
     (loop for level from (1- (%sl-max-level skip-list)) downto 0 do
          (let ((pred (%sl-head skip-list)))
@@ -478,9 +524,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                  (when (and preds succs)
                    (setf (aref preds level) pred
                          (aref succs level) curr))))))
-    (values the-node level-found preds succs)))
+    (values the-node level-found preds succs))))
 
 (defun add-to-skip-list (skip-list key value)
+  (with-sl-lock (skip-list)
   (log:debug "ADDING ~A/~A TO ~A" key value skip-list)
   (let ((top-level (random-level (%sl-max-level skip-list)))
         (preds (make-array (%sl-max-level skip-list)))
@@ -537,9 +584,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
            (dolist (lock (nreverse locks))
              (if lock
                  (unlock-skip-node skip-list lock)
-                 (log:info "SKIP-LIST: Got null lock in ~A / ~A" key value))))))))
+                 (log:info "SKIP-LIST: Got null lock in ~A / ~A" key value)))))))))
 
 (defun update-in-skip-list (skip-list key value &optional old-value)
+  (with-sl-lock (skip-list)
   (let ((lock nil))
     (let ((node (find-in-skip-list skip-list key)))
       (if node
@@ -582,7 +630,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
             (when lock
               (unlock-skip-node skip-list lock)))
           (return-from update-in-skip-list
-            (add-to-skip-list skip-list key value))))))
+            (add-to-skip-list skip-list key value)))))))
 
 (defun ok-to-delete-p (skip-list node level)
   (and (%sn-fully-linked-p skip-list node)
@@ -590,6 +638,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
        (not (%sn-marked-p skip-list node))))
 
 (defun remove-from-skip-list (skip-list key &optional value)
+  (with-sl-lock (skip-list)
   (let ((node-to-delete nil) (marked-p nil) (top-level -1)
         (preds (make-array (%sl-max-level skip-list)))
         (succs (make-array (%sl-max-level skip-list)))
@@ -641,13 +690,14 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                     (dolist (lock (nreverse locks))
                       (unlock-skip-node skip-list lock)))))))
       (when lock
-        (unlock-skip-node skip-list lock)))))
+        (unlock-skip-node skip-list lock))))))
 
 (defun node-forward (skip-list node)
   (unless (= 0 (aref (%sn-pointers node) 0))
     (read-skip-node skip-list (aref (%sn-pointers node) 0))))
 
 (defun skip-list-count (skip-list)
+  (with-sl-lock (skip-list)
   (let ((pred (%sl-head skip-list)) (count 0))
     (loop
        (let ((node (read-skip-node skip-list (aref (%sn-pointers pred) 0))))
@@ -658,9 +708,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
                ;; Advance the cursor; without this the loop re-reads the
                ;; first node forever (infinite loop).
                (setq pred node)))))
-    count))
+    count)))
 
 (defun analyze-sl-heights (skip-list)
+  (with-sl-lock (skip-list)
   (let ((pred (%sl-head skip-list))
         (heights (make-array (list +max-level+) :initial-element 0)))
     (loop
@@ -669,9 +720,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
          do
          (incf (aref heights (1- (%sn-level node))))
          (setq pred node))
-    heights))
+    heights)))
 
 (defun skip-list-to-list (skip-list)
+  (with-sl-lock (skip-list)
   (let ((pred (%sl-head skip-list)))
     (loop
        for node = (read-skip-node skip-list (aref (%sn-pointers pred) 0))
@@ -679,9 +731,10 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
        collecting
          (prog1
              (cons (%sn-key node) (%sn-value node))
-           (setq pred node)))))
+           (setq pred node))))))
 
 (defun skip-list-to-node-list (skip-list)
+  (with-sl-lock (skip-list)
   (let ((pred (%sl-head skip-list)))
     (loop
        for node = (read-skip-node skip-list (aref (%sn-pointers pred) 0))
@@ -689,7 +742,7 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
        collecting
          (prog1
              node
-           (setq pred node)))))
+           (setq pred node))))))
 
 (defun sl-test ()
   (let* ((heap (create-memory "/var/tmp/sl.dat" (* 1024 1024)))

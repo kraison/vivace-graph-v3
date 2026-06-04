@@ -68,17 +68,13 @@ no key must be lost or corrupted."
 (test skip-list-concurrent-inserts
   "N threads each insert M distinct keys into one skip list; final count
 = N×M and every key/value pair must be intact."
-  ;; KNOWN FAILURE ON ECL (skipped, not run): the skip list's lock-free reads
-  ;; (find-in-skip-list -> read-skip-node) read a node's size header and pointers
-  ;; while concurrent inserts write them as separate bytes; a torn read -> an
+  ;; Previously skipped on ECL: the skip list's lock-free reads
+  ;; (find-in-skip-list -> read-skip-node) read a node's size header + pointers
+  ;; while concurrent inserts wrote them as separate bytes; a torn read ->
   ;; out-of-bounds get-bytes -> SIGSEGV on ECL's raw c-inline deref (SBCL/CCL
-  ;; tolerate it).  Previously masked by the rw-lock convoy that serialized ECL;
-  ;; un-masked once that convoy was fixed.  Skipped here so the SEGV does not
-  ;; crash the whole ECL suite run; re-enable when the skip-list ECL concurrency
-  ;; rework lands (tracked separately).
-  #+ecl
-  (skip "skip-list lock-free reads SIGSEGV under concurrency on ECL; pending rework")
-  #-ecl
+  ;; tolerate it via the get-bytes SEGV-retry + real CAS).  Now fixed for ECL by
+  ;; serializing every public skip-list op with a per-skip-list recursive lock
+  ;; (WITH-SL-LOCK; a no-op on the other impls, which keep the lock-free design).
   (let* ((n *thread-count*)
          (m 100))
     (with-conc-memory (heap)
