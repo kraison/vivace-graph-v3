@@ -88,17 +88,40 @@
 
 ;;; FIXME: reenable when deallocation bug is fixed
 ;;; (declaim (inline maybe-init-node-data))
+(defun make-node-data-finalizer (heap)
+  "Return a 1-arg finalizer (for an lhash VALUE-FINALIZER slot) that copies a
+node's heap DATA bytes into the node.  It runs inside %lhash-get's per-bucket
+lock; because a committing transaction must rewrite the node's lhash head (under
+that same bucket lock) BEFORE freeing the old data block, the block referenced by
+the just-read head cannot be freed while we copy it here — closing the node-data
+read-after-free race.  The bytes are deserialized later, lazily, in
+MAYBE-INIT-NODE-DATA (with *GRAPH* bound)."
+  (lambda (node)
+    (when (node-p node)
+      (let ((dp (data-pointer node)))
+        (when (and (> dp 0)
+                   (or (eq (bytes node) :init) (null (bytes node))))
+          (setf (bytes node)
+                (read-bytes (make-mpointer :mmap (memory-mmap heap) :loc dp))))))))
+
 (defun maybe-init-node-data (node &key (graph *graph*))
   (when (> (data-pointer node) 0)
+    ;; Ensure the raw bytes are present.  On the lookup path the lhash
+    ;; value-finalizer (make-node-data-finalizer) already copied them under the
+    ;; bucket lock, so a concurrent commit could not have freed the block.  This
+    ;; bare heap read is the fallback for nodes materialized off the lookup path
+    ;; (e.g. a full map-lhash scan); it remains a read-after-free risk addressed
+    ;; fully by the MVCC versioning rework.
     (when (or (eq (bytes node) :init) (null (bytes node)))
-      (let ((bytes (read-bytes (make-mpointer
-                                :mmap (memory-mmap (heap graph))
-                                :loc (data-pointer node)))))
-        (when bytes
-          (setf (data node)
-                (deserialize bytes)
-                (bytes node)
-                bytes)))))
+      (setf (bytes node)
+            (read-bytes (make-mpointer
+                         :mmap (memory-mmap (heap graph))
+                         :loc (data-pointer node)))))
+    ;; Deserialize lazily from the in-memory bytes (safe; *graph* is bound here).
+    (when (and (null (data node))
+               (bytes node)
+               (not (eq (bytes node) :init)))
+      (setf (data node) (deserialize (bytes node)))))
   node)
 
 (defmethod lookup-node ((table lhash) (key array) (graph graph))

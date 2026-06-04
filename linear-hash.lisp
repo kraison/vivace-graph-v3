@@ -48,7 +48,12 @@
   (key-serializer 'serialize-key)
   (key-deserializer 'deserialize-key)
   (value-serializer 'serialize-uint64)
-  (value-deserializer 'deserialize-uint64))
+  (value-deserializer 'deserialize-uint64)
+  ;; Optional 1-arg function run on the deserialized value INSIDE %lhash-get's
+  ;; per-bucket lock (lookup path only).  The vertex/edge tables install one
+  ;; (make-node-data-finalizer) that copies a node's heap DATA bytes under that
+  ;; lock, so a concurrent commit cannot free the block out from under the read.
+  (value-finalizer nil))
 
 ;; ECL does not expose SIMPLE-VECTOR as a class usable as a method
 ;; specializer; the ((x array) (y array)) method below (using AREF) handles
@@ -743,8 +748,14 @@
 (defun %lhash-get (lhash key)
   (let ((bucket (hash lhash (%lhash-level lhash) key)))
     (with-locked-hash-bucket (lhash bucket)
-      (read-from-bucket lhash (%lhash-table lhash)
-                        (bucket-offset lhash bucket) key))))
+      (let ((value (read-from-bucket lhash (%lhash-table lhash)
+                                     (bucket-offset lhash bucket) key))
+            (fin (%lhash-value-finalizer lhash)))
+        ;; Run the finalizer (e.g. copy a node's heap data bytes) while we still
+        ;; hold the bucket lock, so it is consistent with the head we just read.
+        (when (and value fin)
+          (funcall fin value))
+        value))))
 
 (defun lhash-get (lhash key)
   (handler-case
