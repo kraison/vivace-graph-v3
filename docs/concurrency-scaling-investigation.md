@@ -230,6 +230,33 @@ green and users have a clear expectation.
    path, broadcasting wakes all N waiters per release (thundering herd). Waking
    only the next queued writer / the waiting readers cuts O(N²) → O(N).
 
+### 5.1.1 Update 2026-06-04 — fixes #2 + #4/#3-Part-1 landed
+
+- **#2 (modernize ECL rw-lock path): LANDED** (commit `ffb0dfb`). ECL ≥ 23.9.9
+  (`:graph-db-ecl-modern-mp`) now blocks on `condition-variable`/`semaphore`
+  instead of `(sleep 0.001)`; 21.2.1 keeps the poll. Validated on ECL 26.5.5.
+
+- **#4 (targeted wakeup) = #3 Part 1: LANDED** (commit `321b0bc`). The
+  `condition-broadcast`-everyone scheme is replaced: each queued writer carries
+  its own private wake semaphore (release signals exactly the front writer,
+  FIFO), and readers share a cv broadcast only on the writer→free transition
+  with an empty queue. O(N²) herd → O(N). Semantics preserved exactly. Old ECL
+  keeps the poll fallback.
+  - **Microbench A/B (SBCL):** write-contention @64 threads 14,016 → 323,006
+    handoffs/s (~23×; the 14–18× collapse is **gone** — the curve is flat 4→64).
+    Read-mostly @64 288,439 → 2,759,073 ops/s (~9.6×, flat).
+  - **This re-scopes #3 option (a):** read-read serialization on `lock-lock` is
+    **not** the residual bottleneck once the herd is removed (read-mostly no
+    longer collapses). The atomic reader fast-path is therefore **deferred behind
+    a benchmark gate** (and wouldn't help ECL, which has no atomics). Option (b)
+    — native rwlocks — is moot for the custom-lock impls (SBCL/ECL lack a drop-in
+    recursive+downgradeable rwlock; CCL already native).
+  - **Validation (odm 32-core):** SBCL (2.1.11) + ECL (26.5.5) concurrency +
+    acid + concurrent-stress all green; rw-lock-suite 20/20. CCL is a no-op for
+    this change (rw-lock.lisp excluded from its build) and keeps a **separate,
+    pre-existing intermittent** concurrent-stress flake (varying test each run) —
+    that needs distinct work on CCL's native-lock / view-consistency path.
+
 ### 5.2 Interim supported concurrency ceiling
 
 Until 1–3 land and are validated on a 32-core box with CCL 1.13 / ECL 26.5.5:
