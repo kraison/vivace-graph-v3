@@ -146,3 +146,56 @@
                      "View must contain the recovered vertex (got ~D entries)" (length view-hits))))
           (ignore-errors (close-graph g2 :snapshot-p nil))
           (collect-garbage))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 4: an UPDATE's .txn log carries the NEW data, so recovery restores it.
+;;;
+;;; update-node serializes the write from the copy's BYTES; mutating a slot
+;;; updates DATA but not BYTES, so without refreshing bytes the logged write
+;;; carried the OLD value.  The live graph hid this (apply-tx-write
+;;; re-serializes its own copy), but replaying the .txn during recovery would
+;;; restore the stale value.  Crash mid-update (after apply-tx-writes, before
+;;; the .txn is cleaned), then recover and confirm the NEW value survives.
+;;; ---------------------------------------------------------------------------
+
+(test update-survives-crash-recovery
+  "Recovery replays an update's .txn with the NEW slot values, not the stale
+copy bytes (regression for update-node serializing a copy's pre-modification
+bytes)."
+  (with-temp-directory (dir)
+    (let ((path (namestring dir))
+          vid)
+      ;; --- Phase 1: commit an insert cleanly, then crash mid-UPDATE ---
+      (let ((g (make-graph *acid-graph-name* path :buffer-pool-size 1000)))
+        (unwind-protect
+             (let ((*graph* g))
+               (with-transaction ()
+                 (setq vid (id (make-ac-item :value 1 :label "before"))))
+               ;; Crash after apply-tx-writes so the update's .txn is left
+               ;; pending for recovery to replay.
+               (setf *after-apply-tx-writes-hook*
+                     (lambda () (error "simulated crash after lhash write")))
+               (handler-case
+                   (with-transaction ()
+                     (let ((v (copy (lookup-vertex vid))))
+                       (setf (slot-value v 'value) 2)
+                       (setf (slot-value v 'label) "after")
+                       (save v)))
+                 (error () nil))
+               (is (null *after-apply-tx-writes-hook*)
+                   "Hook must have self-cleared after firing"))
+          (ignore-errors (close-graph g :snapshot-p nil))
+          (setf *after-apply-tx-writes-hook* nil)))
+      ;; --- Phase 2: reopen -> recover-transactions replays the update .txn ---
+      (let ((g2 (open-graph *acid-graph-name* path)))
+        (unwind-protect
+             (let ((*graph* g2))
+               (let ((v (lookup-vertex vid)))
+                 (is-true v "Updated vertex must be present after recovery")
+                 (when v
+                   (is (= 2 (slot-value v 'value))
+                       "Recovered update must hold the NEW value 2, not the stale 1")
+                   (is (string= "after" (slot-value v 'label))
+                       "Recovered update must hold the NEW label"))))
+          (ignore-errors (close-graph g2 :snapshot-p nil))
+          (collect-garbage))))))
