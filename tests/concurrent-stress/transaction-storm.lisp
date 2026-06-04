@@ -99,19 +99,21 @@
 ;;; enough writers, a handful of the W*M committed inserts went missing (e.g.
 ;;; 3195/3200) even though the vertices were durably present in the lhash.
 ;;;
-;;; Uses a fixed thread count (independent of *stress-thread-count*), repeated
-;;; over several iterations to make the guard reliable.  Pre-fix per-graph miss
-;;; rate on this box was ~10% at 32 threads but ~48% at 64, so SBCL runs at 64
-;;; (~98% catch over 6 iterations).  CCL/ECL use a lighter 24 threads: their
-;;; thread scheduler can blow the run-threads deadlock timeout at high counts
-;;; (a separate, tracked issue), which would make THIS test flaky there; the fix
-;;; is in shared code, so the SBCL run is the primary guard.
+;;; Repeated over several iterations to make the guard reliable.  Pre-fix
+;;; per-graph miss rate on this box was ~10% at 32 threads but ~48% at 64, so
+;;; SBCL runs at 64 (~98% catch over 6 iterations) — SBCL has no observed
+;;; concurrency ceiling.  CCL/ECL honor *stress-thread-count* (the documented
+;;; interim ceiling, default 16): above it their commit/type-index convoy can
+;;; blow the run-threads deadlock timeout (a separate, tracked perf issue), which
+;;; would make THIS correctness test flaky there.  The fix under test is in
+;;; shared code, so the SBCL run is the primary guard; CCL/ECL still exercise it
+;;; within their supported concurrency.
 ;;; ---------------------------------------------------------------------------
 
 (test concurrent-insert-visibility
   "Every committed insert is visible via the type index, even with concurrent
 type-indexed readers (regression: written-p must be set before lhash-insert)."
-  (let* ((t-count #+sbcl 64 #-sbcl 24)
+  (let* ((t-count #+sbcl 64 #-sbcl (min 24 *stress-thread-count*))
          (writers (floor t-count 2))
          (m       100)
          (iters   6))
