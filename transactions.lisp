@@ -1203,6 +1203,13 @@ NEW-NODE was not produced by COPY.")
       (unless old-node
         (error 'modifying-non-copy
                :node new-node))
+      ;; Refresh the serialized bytes from the (modified) data: NEW-NODE is a
+      ;; COPY that still carries the ORIGINAL node's bytes, and mutating a slot
+      ;; updates DATA but not BYTES.  The write is serialized from BYTES into
+      ;; both the .txn log and the replication stream, so without this the
+      ;; logged/replicated update carries the OLD data (the master only looks
+      ;; correct because apply-tx-write re-serializes its own copy locally).
+      (setf (bytes new-node) (serialize (data new-node)))
       (add-to-object-set (make-instance 'tx-update
                                         :node new-node
                                         :old-node old-node)

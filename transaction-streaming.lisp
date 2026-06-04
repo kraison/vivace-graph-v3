@@ -410,7 +410,12 @@ retryable network error, retries with an exponential retry timeout."
    "This function is called in a slave to connect to a master and
    receive transaction packets.")
   (:method (graph)
-    (let ((host (master-host graph))
+    ;; Bind *graph* for this slave thread: the transaction deserializers
+    ;; (deserialize-edge-head etc.) default their :graph arg to *graph* when
+    ;; resolving node type-ids against the schema, and a fresh thread has it
+    ;; unbound.
+    (let ((*graph* graph)
+          (host (master-host graph))
           (port (replication-port graph))
           socket)
       (flet ((connect ()
@@ -455,8 +460,9 @@ retryable network error, retries with an exponential retry timeout."
   (setf (stop-replication-p graph) nil)
   (setf (replication-listener graph)
         (bordeaux-threads:make-thread
-         'server-accept-loop
-         :arguments (list graph)
+         ;; A closure, not 'server-accept-loop + :arguments: bordeaux-threads
+         ;; make-thread takes only :name, not the sb-thread :arguments key.
+         (lambda () (server-accept-loop graph))
          :name (format nil "server listener for ~A"
                        (graph-name graph)))))
 
@@ -473,8 +479,9 @@ retryable network error, retries with an exponential retry timeout."
   (setf (stop-replication-p graph) nil)
   (setf (slave-thread graph)
         (bordeaux-threads:make-thread
-         'slave-loop
-         :arguments (list graph)
+         ;; A closure, not 'slave-loop + :arguments (see start-replication
+         ;; master): bordeaux-threads make-thread takes only :name.
+         (lambda () (slave-loop graph))
          :name (format nil "~A-repl-slave-thread" (graph-name graph)))))
 
 (defmethod stop-replication ((graph slave-graph))
