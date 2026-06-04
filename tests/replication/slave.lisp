@@ -17,7 +17,16 @@
 ;; hosts don't); harmless when ql is already present (e.g. SBCL).
 (unless (find-package :ql)
   (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-(ql:quickload :graph-db :silent t)
+;; Bind *standard-output*/*error-output* to a real file around quickload: ECL's
+;; first build shells out (osicat C wrappers) via run-program, which needs a
+;; stream backed by a real file handle -- under the harness's stdout redirect it
+;; has none, giving COMPILE-FILE-ERROR.
+(with-open-file (s (merge-pathnames "build.log"
+                                    (or (uiop:getenv "REPL_WORK") #p"/tmp/"))
+                   :direction :output
+                   :if-exists :append :if-does-not-exist :create)
+  (let ((*standard-output* s) (*error-output* s))
+    (ql:quickload :graph-db :silent t)))
 (in-package :graph-db)
 (log:config :error)
 

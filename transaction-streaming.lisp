@@ -295,7 +295,12 @@ on SOCKET."
 (defun server-accept-loop (graph)
   (let ((port (replication-port graph))
         (address usocket:*wildcard-host*))
-    (usocket:with-socket-listener (listener address port :reuse-address t)
+    ;; :element-type on the LISTENER (not just socket-accept): on CCL the
+    ;; accepted socket inherits the listener's element-type, so without this the
+    ;; accepted stream is a character stream and binary read-sequence on the
+    ;; replication packets signals a type error.
+    (usocket:with-socket-listener (listener address port :reuse-address t
+                                            :element-type '(unsigned-byte 8))
       (loop
          (when (stop-replication-p graph)
            (return))
