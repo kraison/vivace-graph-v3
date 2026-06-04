@@ -11,6 +11,11 @@
 ;;;;
 ;;;; Coordination with the slave is via flag files under REPL_WORK.
 
+(require :asdf)
+;; Bootstrap quicklisp if the running Lisp didn't auto-load it (CCL/ECL on some
+;; hosts don't); harmless when ql is already present (e.g. SBCL).
+(unless (find-package :ql)
+  (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
 (ql:quickload :graph-db :silent t)
 (in-package :graph-db)
 (log:config :error)

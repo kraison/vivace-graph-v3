@@ -12,6 +12,11 @@
 ;;;;
 ;;;; Exits 0 on success, 1 on any failed check or timeout.
 
+(require :asdf)
+;; Bootstrap quicklisp if the running Lisp didn't auto-load it (CCL/ECL on some
+;; hosts don't); harmless when ql is already present (e.g. SBCL).
+(unless (find-package :ql)
+  (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
 (ql:quickload :graph-db :silent t)
 (in-package :graph-db)
 (log:config :error)
