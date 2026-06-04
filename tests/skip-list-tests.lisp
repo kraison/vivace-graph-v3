@@ -100,3 +100,69 @@ advanced its cursor.  It must now return the live element count."
       (is (= 1000 (sl-live-count sl)))
       (dolist (k '(0 1 250 499 500 999))
         (is (= (- k) (sl-find-value sl k)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Cursors (skip-list-cursors.lisp): keys/values cursors, map helpers, ranges.
+;;; ---------------------------------------------------------------------------
+
+(test cursor-walks-keys-and-values-in-order
+  "map-skip-list / -keys / -values and the keys/values cursors all walk the list
+in sorted key order."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (dolist (k '(5 1 9 3 7))
+        (add-to-skip-list sl k (* k 10)))
+      ;; map-skip-list (over nodes) visits in key order
+      (is (equal '(1 3 5 7 9)
+                 (map-skip-list (lambda (n) (%sn-key n)) sl :collect-p t)))
+      ;; map-skip-list-keys
+      (is (equal '(1 3 5 7 9)
+                 (map-skip-list-keys #'identity sl :collect-p t)))
+      ;; a keys cursor yields the same, one advance at a time
+      (let ((c (make-keys-cursor sl)) (got nil))
+        (do ((k (cursor-next c) (cursor-next c))) ((null k))
+          (push k got))
+        (is (equal '(1 3 5 7 9) (nreverse got))))
+      ;; a values cursor yields the values in key order
+      (let ((c (make-values-cursor sl)) (got nil))
+        (do ((v (cursor-next c) (cursor-next c))) ((null v))
+          (push v got))
+        (is (equal '(10 30 50 70 90) (nreverse got))))
+      ;; map-skip-list-values calls fn on each value in key order
+      (let ((vs nil))
+        (map-skip-list-values (lambda (v) (push v vs)) sl)
+        (is (equal '(10 30 50 70 90) (nreverse vs)))))))
+
+(test range-cursor-restricts-to-bounds
+  "make-range-cursor + cursor-next yields exactly the keys within [lo, hi], in
+ascending order."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (dolist (k (loop for i from 1 to 10 collect i))
+        (add-to-skip-list sl k k))
+      (let ((c (make-range-cursor sl 3 7)) (got nil))
+        (do ((node (cursor-next c) (cursor-next c))) ((null node))
+          (push (%sn-key node) got))
+        (is (equal '(3 4 5 6 7) (nreverse got))
+            "range [3,7] should yield exactly keys 3..7")))))
+
+(test fetch-all-returns-every-value-for-a-key
+  "On a duplicates-allowed skip list, skip-list-fetch-all returns every value
+stored under a key; a key with one value returns a single-element list and an
+absent key returns nil."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap :duplicates-allowed-p t)))
+      (add-to-skip-list sl 1 :a)
+      (add-to-skip-list sl 2 :b)
+      (add-to-skip-list sl 2 :c)
+      (add-to-skip-list sl 2 :d)
+      (add-to-skip-list sl 3 :e)
+      ;; all three values for key 2 come back (order-independent)
+      (let ((vals (skip-list-fetch-all sl 2)))
+        (is (= 3 (length vals)) "expected 3 values for key 2; got ~S" vals)
+        (is (null (set-difference '(:b :c :d) vals))
+            "expected {:b :c :d} for key 2; got ~S" vals))
+      ;; a singleton key
+      (is (equal '(:a) (skip-list-fetch-all sl 1)))
+      ;; an absent key
+      (is (null (skip-list-fetch-all sl 99))))))

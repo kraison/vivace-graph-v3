@@ -122,6 +122,6 @@
         (progn
           (do ((node (cursor-next cursor) (cursor-next cursor)))
               ((null node))
-            (push (second node) result))
+            (push (%sn-value node) result))
           (nreverse result))
         nil))))

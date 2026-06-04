@@ -54,7 +54,18 @@
                 #:skip-list-count
                 #:skip-list-to-list
                 #:%sn-value
+                #:%sn-key
                 #:%sl-length
+                ;; skip-list cursors
+                #:make-cursor
+                #:make-keys-cursor
+                #:make-values-cursor
+                #:make-range-cursor
+                #:cursor-next
+                #:map-skip-list
+                #:map-skip-list-keys
+                #:map-skip-list-values
+                #:skip-list-fetch-all
                 ;; index list
                 #:make-index-list
                 #:index-list-push
