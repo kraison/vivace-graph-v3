@@ -167,6 +167,7 @@
                (:file "graph-tests")
                (:file "view-tests")
                (:file "query-tests")
+               (:file "prolog-mutation-tests")
                (:file "reopen-tests")
                (:file "backup-tests")
                (:file "prolog-stress-tests"))

@@ -119,9 +119,13 @@
                 #:select
                 #:select-flat
                 #:select-one
+                #:do-query
                 #:is-a/2
                 #:select/2
                 #:node-slot-value/3
+                #:retract/1
+                #:retract/3
+                #:trigger/1
                 #:not/1
                 #:bagof/3
                 #:setof/3
