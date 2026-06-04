@@ -133,8 +133,10 @@ replication for a quick schema compatibility check."
     (map nil
          (lambda (octet)
            (format stream "~(~2,'0X~)" octet))
+         ;; :utf-8 (canonical) not :utf8 -- CCL's external-format normalizer
+         ;; rejects :utf8.  Same octets on every impl, so the digest is stable.
          (md5:md5sum-string (schema-string-representation schema)
-                             :external-format :utf8))))
+                             :external-format :utf-8))))
 
 (defmethod all-node-types ((graph graph))
   (let ((types nil))
