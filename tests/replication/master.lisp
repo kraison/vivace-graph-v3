@@ -1,0 +1,73 @@
+;;;; Replication test -- MASTER process.
+;;;;
+;;;; Driven by run-replication-test.sh.  Reads its configuration from the
+;;;; environment (REPL_MASTER_DIR, REPL_PORT, REPL_WORK), creates a master graph
+;;;; (which auto-starts replication), and runs the scenario:
+;;;;
+;;;;   TX1  insert two vertices + an edge   -- committed BEFORE the slave
+;;;;        connects, so the slave must CATCH UP from the log.
+;;;;   TX2  update a vertex's slot          -- committed AFTER the slave
+;;;;   TX3  delete the other vertex            connects, so these stream LIVE.
+;;;;
+;;;; Coordination with the slave is via flag files under REPL_WORK.
+
+(ql:quickload :graph-db :silent t)
+(in-package :graph-db)
+(log:config :error)
+
+(defun mflag (name) (format nil "~A/~A" (uiop:getenv "REPL_WORK") name))
+(defun write-flag (name) (with-open-file (s (mflag name) :direction :output
+                                            :if-exists :supersede
+                                            :if-does-not-exist :create)
+                           (format s "~A" name)))
+(defun wait-flag (name &optional (timeout 60))
+  (dotimes (i (* timeout 10) nil)
+    (when (probe-file (mflag name)) (return t))
+    (sleep 0.1)))
+(defun mexit (code) #+sbcl (sb-ext:exit :code code)
+                    #+ccl (ccl:quit code)
+                    #+ecl (ext:quit code)
+                    #-(or sbcl ccl ecl) (uiop:quit code))
+
+(load (merge-pathnames "schema.lisp" *load-pathname*))
+
+(handler-case
+    (let* ((dir  (uiop:getenv "REPL_MASTER_DIR"))
+           (port (parse-integer (uiop:getenv "REPL_PORT")))
+           (g (make-graph :repl-test-app dir :master-p t
+                          :replication-port port :replication-key "test-secret"
+                          :buffer-pool-size 1000)))
+      (let ((*graph* g))
+        ;; TX1: catch-up payload (committed before the slave exists)
+        (with-transaction ()
+          (let ((a (make-r-person :name "Alice" :age 30))
+                (b (make-r-person :name "Bob"   :age 25)))
+            (make-r-knows :from a :to b :since "2020")))
+        (format t "~&MASTER: TX1 committed (2 vertices + 1 edge)~%") (finish-output)
+        (write-flag "ready")
+        ;; wait for the slave to connect + verify catch-up
+        (unless (wait-flag "connected")
+          (format t "~&MASTER: timed out waiting for slave to connect~%")
+          (mexit 1))
+        ;; TX2 + TX3: live payload (streamed to the connected slave)
+        (flet ((by-name (n)
+                 (first (remove-if-not
+                         (lambda (x) (string= n (slot-value x 'name)))
+                         (map-vertices #'identity g :collect-p t
+                                                  :vertex-type 'r-person)))))
+          (with-transaction ()
+            (let ((v (copy (by-name "Alice"))))
+              (setf (slot-value v 'name) "Alice2")
+              (save v)))
+          (format t "~&MASTER: TX2 committed (Alice -> Alice2)~%") (finish-output)
+          (mark-deleted (by-name "Bob"))    ; mark-deleted self-wraps a txn
+          (format t "~&MASTER: TX3 committed (deleted Bob)~%") (finish-output))
+        (write-flag "phase2done"))
+      ;; stay alive until the slave is done (or 60s), then close cleanly
+      (wait-flag "slave-done")
+      (close-graph g :snapshot-p nil)
+      (format t "~&MASTER: closed~%") (finish-output)
+      (mexit 0))
+  (error (c)
+    (format t "~&MASTER ERROR: ~A~%" c) (finish-output)
+    (mexit 1)))
