@@ -65,15 +65,21 @@
 ;; yet (open/recovery, when no reaper races).
 (defmacro with-read-pin ((graph) &body body)
   (alexandria:with-gensyms (g tm tok)
-    `(let* ((,g ,graph)
-            (,tm (and (slot-boundp ,g 'transaction-manager)
-                      (transaction-manager ,g))))
-       (if ,tm
-           (let ((,tok (pin-read-epoch ,tm))
-                 (*read-pinned-p* t))
-             (unwind-protect (progn ,@body)
-               (unpin-read-epoch ,tm ,tok)))
-           (progn ,@body)))))
+    ;; A pin nested inside another (e.g. LOOKUP-VERTEX called from a MAP-VERTICES
+    ;; scan) is a no-op: the outer pin was taken at an earlier (smaller) epoch, so
+    ;; its floor is at least as conservative and already protects this read.  This
+    ;; keeps per-node lock traffic off scans -- only the outermost reader pins.
+    `(if *read-pinned-p*
+         (progn ,@body)
+         (let* ((,g ,graph)
+                (,tm (and (slot-boundp ,g 'transaction-manager)
+                          (transaction-manager ,g))))
+           (if ,tm
+               (let ((,tok (pin-read-epoch ,tm))
+                     (*read-pinned-p* t))
+                 (unwind-protect (progn ,@body)
+                   (unpin-read-epoch ,tm ,tok)))
+               (progn ,@body))))))
 
 (defclass master-graph (graph)
   ((replication-mbox :accessor replication-mbox :initarg :replication-mbox)
