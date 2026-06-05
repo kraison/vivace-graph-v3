@@ -118,6 +118,8 @@
                 #:invoke-graph-view
                 #:map-view
                 #:map-reduced-view
+                #:delete-view
+                #:regenerate-view
                 #:yield
                 #:string-id
                 ;; prolog queries.  The query compiler interns functor symbols

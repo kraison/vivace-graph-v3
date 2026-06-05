@@ -590,10 +590,15 @@ high-level lookup."
                until (or (null node) (and count (= found-count count)))
                do
                ;;(log:debug "~S" node)
-                 (when (or (null skip) (> cursor-count skip))
-                   (incf cursor-count)
-                   (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
-                     (unless (or include-deleted-p (null pnode) (deleted-p pnode))
+                 ;; Count VISIBLE (non-deleted) entries for paging, then SKIP the
+                 ;; first SKIP of them.  cursor-count must advance per visible
+                 ;; entry -- previously it was incremented only inside the skip
+                 ;; guard, so (> 0 skip) was never true and :skip dropped every
+                 ;; result.
+                 (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
+                   (unless (or include-deleted-p (null pnode) (deleted-p pnode))
+                     (incf cursor-count)
+                     (when (or (null skip) (> cursor-count skip))
                        (incf found-count)
                        (if collect-p
                            (push (funcall fn

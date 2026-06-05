@@ -130,3 +130,107 @@ were not reversed for descending order)."
                                             :start-key "d" :end-key "b"))))
       (is (equal '("d" "c" "b") slice)
           "descending slice from d down to b should be (d c b); got ~S" slice))))
+
+;;; ---------------------------------------------------------------------------
+;;; View maintenance: updates, deletions, paging, delete-view, persistence
+;;; ---------------------------------------------------------------------------
+
+(test view-reflects-slot-update
+  "Updating a node's indexed slot moves it in the view: the old key loses the
+entry and the new key gains it (update-in-views: remove + re-add)."
+  (with-test-graph (g)
+    (define-test-views)
+    (let (id)
+      (with-transaction () (setq id (id (make-g-person :name "Alice"))))
+      (is (= 1 (length (invoke-graph-view 'g-person 'people-by-name :key "Alice"))))
+      (with-transaction ()
+        (let ((v (copy (lookup-vertex id))))
+          (setf (slot-value v 'name) "Alicia")
+          (save v)))
+      (is (null (invoke-graph-view 'g-person 'people-by-name :key "Alice"))
+          "old key should no longer be indexed")
+      (is (= 1 (length (invoke-graph-view 'g-person 'people-by-name :key "Alicia")))
+          "new key should be indexed"))))
+
+(test view-reflects-deletion
+  "Deleting a node removes it from the view (remove-from-views)."
+  (with-test-graph (g)
+    (define-test-views)
+    (let (id)
+      (with-transaction () (setq id (id (make-g-person :name "Gone"))))
+      (is (= 1 (length (invoke-graph-view 'g-person 'people-by-name :key "Gone"))))
+      (with-transaction () (mark-deleted (lookup-vertex id)))
+      (is (null (invoke-graph-view 'g-person 'people-by-name :key "Gone"))
+          "deleted node should not appear in the view"))))
+
+(test map-view-count-and-skip-paging
+  "A view scan honours :count (limit) and :skip (offset), and they compose."
+  (with-test-graph (g)
+    (define-test-views)
+    (with-transaction ()
+      (dolist (n '("a" "b" "c" "d" "e")) (make-g-person :name n)))
+    (flet ((ks (&rest args)
+             (mapcar (lambda (h) (cdr (assoc :key h)))
+                     (apply #'invoke-graph-view 'g-person 'people-by-name args))))
+      (is (equal '("a" "b") (ks :count 2)) ":count limits results")
+      (is (equal '("c" "d" "e") (ks :skip 2)) ":skip offsets results")
+      (is (equal '("b" "c") (ks :skip 1 :count 2)) ":skip + :count page"))))
+
+(test delete-view-then-invoke-signals
+  "After delete-view the view is gone and invoking it signals invalid-view-error."
+  (with-test-graph (g)
+    (define-test-views)
+    (with-transaction () (make-g-person :name "X"))
+    (is (= 1 (length (invoke-graph-view 'g-person 'people-by-name :key "X"))))
+    (delete-view g 'g-person 'people-by-name)
+    (signals graph-db::invalid-view-error
+      (invoke-graph-view 'g-person 'people-by-name :key "X"))))
+
+(test invoke-nonexistent-view-signals
+  "Invoking a view that was never defined signals invalid-view-error."
+  (with-test-graph (g)
+    (define-test-views)
+    (signals graph-db::invalid-view-error
+      (invoke-graph-view 'g-person 'no-such-view :key "X"))))
+
+(test views-persist-across-reopen
+  "A view's definition and index survive close-graph + open-graph: it is
+restored (restore-views) and remains queryable without re-defining it."
+  (with-temp-directory (dir)
+    (let ((path (namestring dir)) id)
+      (let ((g (make-graph *integration-graph-name* path :buffer-pool-size 1000)))
+        (let ((*graph* g))
+          (define-test-views)
+          (with-transaction ()
+            (setq id (id (make-g-person :name "Persisted")))
+            (make-g-person :name "Other")))
+        (close-graph g :snapshot-p nil))
+      (let ((g2 (open-graph *integration-graph-name* path)))
+        (unwind-protect
+             (let ((*graph* g2))
+               (let ((hits (invoke-graph-view 'g-person 'people-by-name :key "Persisted")))
+                 (is (= 1 (length hits)) "view should be restored and queryable")
+                 (is (equalp id (cdr (assoc :id (first hits))))))
+               (is (= 2 (length (invoke-graph-view 'g-person 'people-by-name)))
+                   "restored view sees all indexed nodes"))
+          (ignore-errors (close-graph g2 :snapshot-p nil))
+          (collect-garbage))))))
+
+(test reduced-view-count-limits-groups
+  "map-reduced-view honours :count, limiting the number of reduced groups."
+  (with-test-graph (g)
+    (define-test-views)
+    (with-transaction ()
+      (let ((p1 (make-g-person :name "P1"))
+            (p2 (make-g-person :name "P2"))
+            (p3 (make-g-person :name "P3"))
+            (liker (make-g-person :name "Liker")))
+        (make-g-likes :from liker :to p1)
+        (make-g-likes :from liker :to p2)
+        (make-g-likes :from liker :to p3)))
+    (let ((all (map-reduced-view (lambda (k id v) (declare (ignore id v)) k)
+                                 'g-likes 'likes-received :collect-p t))
+          (two (map-reduced-view (lambda (k id v) (declare (ignore id v)) k)
+                                 'g-likes 'likes-received :count 2 :collect-p t)))
+      (is (= 3 (length all)) "three liked targets -> three groups")
+      (is (= 2 (length two)) ":count 2 limits to two groups"))))
