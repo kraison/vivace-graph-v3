@@ -150,6 +150,18 @@
                              :run-concurrent-stress-tests)
                       (error "graph-db concurrent stress tests failed."))))
 
+(defsystem graph-db/perf-test
+  :name "VivaceGraph performance benchmark suite"
+  :description "SBCL-focused performance benchmarks for graph-db (measurement, not pass/fail)."
+  :depends-on (:graph-db :bordeaux-threads)
+  :pathname "tests/perf/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "benchmarks"))
+  :perform (test-op (op c)
+                    (uiop:symbol-call :graph-db/perf-test :run-perf)))
+
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
