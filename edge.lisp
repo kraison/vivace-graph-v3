@@ -56,15 +56,16 @@
     edge))
 
 (defun serialize-edge-head (mf e offset)
-  (setq offset (serialize-node-head mf e offset))
-  (dotimes (i 16)
-    (set-byte mf (incf offset) (aref (from e) i)))
-  (dotimes (i 16)
-    (set-byte mf (incf offset) (aref (to e) i)))
-  (let ((int (ieee-floats:encode-float64 (weight e))))
-    (dotimes (i 8)
-      (set-byte mf (incf offset) (ldb (byte 8 0) int))
-      (setq int (ash int -8)))))
+  ;; Build the whole edge head (node head + from + to + weight) in one vector
+  ;; and move it with a single SET-BYTES (see SERIALIZE-NODE-HEAD).
+  (let ((vec (make-byte-vector +edge-header-size+))
+        (i 0))
+    (setq i (pack-node-head vec 0 e))      ;; i now past the node head
+    (replace vec (from e) :start1 i)       (incf i 16)
+    (replace vec (to e)   :start1 i)       (incf i 16)
+    (pack-uint vec i (ieee-floats:encode-float64 (weight e)) 8)
+    (set-bytes mf vec offset +edge-header-size+)
+    (+ offset (1- +edge-header-size+))))
 
 (defun deserialize-edge-head (mf offset)
   (multiple-value-bind

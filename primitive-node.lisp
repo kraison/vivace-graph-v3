@@ -40,26 +40,36 @@
                            (set-byte mf offset flags)))
                        (id node)))
 
+;; Little-endian (un)pack into a PLAIN byte vector.  The head codecs build the
+;; whole head in such a vector and move it to/from the mmap with ONE
+;; SET-BYTES/GET-BYTES, instead of per-byte SET-BYTE/GET-BYTE calls -- each of
+;; which establishes the mmap SEGV-retry handler and dispatches a generic
+;; function.  Heads are (de)serialized on every node write, so collapsing 31/71
+;; per-byte calls into one batched transfer is the dominant write-path win.
+(declaim (inline pack-uint))
+(defun pack-uint (vec offset value nbytes)
+  "Write VALUE little-endian into VEC[OFFSET..]; return the next free index."
+  (dotimes (i nbytes)
+    (setf (aref vec (+ offset i)) (ldb (byte 8 (* i 8)) value)))
+  (+ offset nbytes))
+
+(defun pack-node-head (vec i n)
+  "Fill the node head of N into VEC starting at index I; return the next index."
+  (setf (aref vec i) (flags-as-int n))
+  (setq i (pack-uint vec (1+ i) (type-id n)      2))
+  (setq i (pack-uint vec i       (revision n)     4))
+  (setq i (pack-uint vec i       (data-pointer n) 8))
+  (setq i (pack-uint vec i       (commit-epoch n) 8))   ;; MVCC v2
+  (setq i (pack-uint vec i       (prev-pointer n) 8))   ;; MVCC v2
+  i)
+
 (defun serialize-node-head (mf n offset)
-  ;; flags: deleted-p, written-p
-  (let ((flags (flags-as-int n)))
-    (set-byte mf offset flags))
-  ;; type-id
-  (dotimes (i 2)
-    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (type-id n))))
-  ;; revision
-  (dotimes (i 4)
-    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (revision n))))
-  ;; data-pointer
-  (dotimes (i 8)
-    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (data-pointer n))))
-  ;; commit-epoch (MVCC v2)
-  (dotimes (i 8)
-    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (commit-epoch n))))
-  ;; prev-pointer (MVCC v2)
-  (dotimes (i 8)
-    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (prev-pointer n))))
-  offset)
+  (let ((vec (make-byte-vector +node-header-size+)))
+    (pack-node-head vec 0 n)
+    (set-bytes mf vec offset +node-header-size+)
+    ;; Return the index of the LAST byte written (start + size - 1); the edge
+    ;; codec resumes from (1+ this) to position from/to/weight.
+    (+ offset (1- +node-header-size+))))
 
 (defun deserialize-node-head (mf offset)
   (let ((flags (get-byte mf offset)))

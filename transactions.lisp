@@ -19,6 +19,18 @@
 (defmethod get-byte ((array array) offset)
   (aref array offset))
 
+;; Batched counterparts so the head codecs' single SET-BYTES/GET-BYTES also work
+;; when the "file" is a plain byte array (the .txn transaction buffer and the
+;; codec round-trip tests), not just an mmap'd file.
+(defmethod set-bytes ((array array) vec offset length)
+  (replace array vec :start1 offset :end1 (+ offset length) :start2 0 :end2 length)
+  vec)
+
+(defmethod get-bytes ((array array) offset length)
+  (let ((vec (make-byte-vector length)))
+    (replace vec array :start2 offset :end2 (+ offset length))
+    vec))
+
 (defmethod serialize-uint64 ((array array) int offset)
   (setf (aref array (+ offset 0)) (ldb (byte 8  0) int))
   (setf (aref array (+ offset 1)) (ldb (byte 8  8) int))
