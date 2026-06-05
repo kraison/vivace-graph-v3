@@ -43,6 +43,17 @@
                 #:geohash-cell-size
                 #:geohash-prefix-range
                 #:geohash-covering
+                ;; spatial index (spatial extension)
+                #:make-spatial-index
+                #:open-spatial-index
+                #:spatial-index-p
+                #:spatial-index-address
+                #:spatial-index-precision
+                #:spatial-index-insert
+                #:spatial-index-remove
+                #:spatial-index-query-bbox
+                #:spatial-index-query-radius
+                #:delete-spatial-index
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory
