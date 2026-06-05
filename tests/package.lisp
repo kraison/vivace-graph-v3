@@ -18,6 +18,17 @@
                 #:serialize
                 #:deserialize
                 #:serialized-equal
+                ;; geometry (spatial extension)
+                #:make-point
+                #:make-linestring
+                #:make-polygon
+                #:make-multipolygon
+                #:geometryp
+                #:geometry-kind
+                #:geometry-coordinates
+                #:geometry-lon
+                #:geometry-lat
+                #:geometry-bbox
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory

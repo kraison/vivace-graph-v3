@@ -149,6 +149,7 @@
 ;; User-defined type identifiers for serializing. Start at 100
 (alexandria:define-constant +uuid+ 100)
 (alexandria:define-constant +timestamp+ 101)
+(alexandria:define-constant +geometry+ 102) ;; spatial extension (see geometry.lisp)
 
 (defparameter *initial-extents* 10)
 (defparameter *max-locks* 10000)
