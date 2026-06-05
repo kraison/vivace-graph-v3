@@ -27,18 +27,22 @@
 (alexandria:define-constant +spatial-min-key+ "" :test 'string=)
 (alexandria:define-constant +spatial-max-key+ "{" :test 'string=)
 
+;; Values are node ids -- 16-byte (unsigned-byte 8) uuid arrays.  The generic
+;; SERIALIZE passes ub8 vectors through raw and untagged, which DESERIALIZE
+;; cannot reverse, so we store ids as opaque bytes: the skip-node records each
+;; value's length, so an identity codec round-trips them exactly.
 (defun %spatial-make-sl (heap)
   (make-skip-list :heap heap
                   :key-equal 'string=
                   :key-comparison 'string<
-                  :head-key +spatial-min-key+ :head-value nil
-                  :tail-key +spatial-max-key+ :tail-value nil
+                  :head-key +spatial-min-key+ :head-value +null-key+
+                  :tail-key +spatial-max-key+ :tail-value +max-key+
                   :duplicates-allowed-p t
                   :value-equal 'equalp
                   :key-serializer 'serialize
                   :key-deserializer 'deserialize
-                  :value-serializer 'serialize
-                  :value-deserializer 'deserialize))
+                  :value-serializer 'identity
+                  :value-deserializer 'identity))
 
 (defun make-spatial-index (heap &key (precision 7))
   "Create a new spatial index in HEAP (a MEMORY).  PRECISION sets the geohash
@@ -54,7 +58,7 @@ PRECISION must match the value used at creation."
                               :key-equal 'string= :key-comparison 'string<
                               :duplicates-allowed-p t :value-equal 'equalp
                               :key-serializer 'serialize :key-deserializer 'deserialize
-                              :value-serializer 'serialize :value-deserializer 'deserialize)
+                              :value-serializer 'identity :value-deserializer 'identity)
    :heap heap :precision precision))
 
 (defun spatial-index-address (idx)

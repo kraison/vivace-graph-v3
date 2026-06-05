@@ -45,6 +45,7 @@
                 #:geohash-covering
                 ;; spatial index (spatial extension)
                 #:spatial-index            ; graph slot accessor
+                #:node-geometry            ; write-path indexing protocol
                 #:make-spatial-index
                 #:open-spatial-index
                 #:spatial-index-p

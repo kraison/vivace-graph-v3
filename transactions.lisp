@@ -747,6 +747,52 @@ APPLY-TRANSACTION)."
     (dolist (write writes)
       (apply-tx-write-to-views write graph))))
 
+;;; Applying transaction spatial-index updates (public spatial extension).
+;;;
+;;; Mirrors the view-maintenance pass above: a node's geometry -- obtained via
+;;; the NODE-GEOMETRY protocol, which an application specializes for its
+;;; geometry-bearing node types -- is (re)indexed on create/update and removed
+;;; on delete.  The spatial index keys on node id, so it is independent of the
+;;; MVCC version chains and the reaper (reaping an old version of a node never
+;;; changes its index entry).
+
+(defgeneric node-geometry (node)
+  (:documentation
+   "The GEOMETRY a node occupies, or NIL if it has none.  Applications
+specialize this for their geometry-bearing node types so those nodes are
+maintained automatically in the graph's spatial index.")
+  (:method (node) (declare (ignore node)) nil))
+
+(defgeneric apply-tx-write-to-spatial-index (write graph)
+  (:method (write graph) (declare (ignore write graph)) nil))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-create) graph)
+  (let ((node (node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((geom (node-geometry node)))
+        (when (and geom (not (deleted-p node)))
+          (spatial-index-insert idx (id node) geom))))))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-update) graph)
+  (let ((new-node (node write)) (old-node (old-node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((old-geom (node-geometry old-node))
+            (new-geom (node-geometry new-node)))
+        (when old-geom (spatial-index-remove idx (id old-node) old-geom))
+        (when (and new-geom (not (deleted-p new-node)))
+          (spatial-index-insert idx (id new-node) new-geom))))))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-delete) graph)
+  (let ((node (node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((geom (node-geometry node)))
+        (when geom (spatial-index-remove idx (id node) geom))))))
+
+(defgeneric apply-tx-writes-to-spatial-index (writes graph)
+  (:method (writes graph)
+    (dolist (write writes)
+      (apply-tx-write-to-spatial-index write graph))))
+
 ;; NB: the old free-the-prior-version GARBAGE-COLLECT-HEAP is gone.  Under MVCC
 ;; the prior version is retained (archived + chained) and reclaimed later by
 ;; REAP-OLD-VERSIONS; freeing it at commit would orphan the version chain.
@@ -769,6 +815,7 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
             (setf *after-apply-tx-writes-hook* nil)
             (funcall hook)))
         (apply-tx-writes-to-views writes graph)
+        (apply-tx-writes-to-spatial-index writes graph)
         (reap-old-versions writes graph)
         (persist-highest-transaction-id (transaction-id transaction) graph)))))
 
