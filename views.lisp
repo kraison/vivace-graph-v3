@@ -560,17 +560,30 @@ high-level lookup."
                           :view-name view-name))
                  (let* ((lookup-fn (view-lookup-fn view))
                         (skip-list (view-skip-list view))
+                        ;; The view skip list is sorted per the view's order, and
+                        ;; same-key entries are tiebroken by node id in that SAME
+                        ;; direction (see reduce-comp-lessp / reduce-comp-greaterp).
+                        ;; So the bounds that bracket a key must follow the order:
+                        ;; for :greaterp the id sentinels and the open-ended key
+                        ;; sentinels are reversed.  Otherwise a :key / :start-key /
+                        ;; :end-key lookup on a :greaterp view brackets an empty
+                        ;; range and returns nothing (issue #18).
+                        (greaterp-p (eql :greaterp (view-sort-order view)))
+                        (start-id (if greaterp-p +max-key+ +null-key+))
+                        (end-id   (if greaterp-p +null-key+ +max-key+))
+                        (start-sentinel (if greaterp-p +max-sentinel+ +min-sentinel+))
+                        (end-sentinel   (if greaterp-p +min-sentinel+ +max-sentinel+))
                         (cursor (if (and (null start-key) (null key) (null end-key))
                                     (make-cursor skip-list)
                                     (make-range-cursor skip-list
                                                        (list (cond (key key)
                                                                    (start-key start-key)
-                                                                   (t +min-sentinel+))
-                                                      +null-key+)
+                                                                   (t start-sentinel))
+                                                      start-id)
                                                 (list (cond (key key)
                                                             (end-key end-key)
-                                                            (t +max-sentinel+))
-                                                      +max-key+))))
+                                                            (t end-sentinel))
+                                                      end-id))))
                  (result nil) (found-count 0) (cursor-count 0))
             (loop
                for node = (cursor-next cursor)
