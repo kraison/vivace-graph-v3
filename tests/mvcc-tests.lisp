@@ -13,6 +13,12 @@
 
 (in-suite mvcc-suite)
 
+;; A dedicated graph + type for the per-type :keep-revisions test, isolated from
+;; the shared integration schema.
+(eval-when (:load-toplevel :execute)
+  (setf (gethash :mvcc-keep-test *schema-node-metadata*) nil))
+(def-vertex mvcc-kept-node () ((n)) :mvcc-keep-test :keep-revisions 2)
+
 (test node-head-v2-round-trip-vertex
   "A vertex head round-trips revision, data-pointer, commit-epoch and prev-pointer
 through serialize-node-head / deserialize-node-head (31-byte v2 head)."
@@ -219,3 +225,44 @@ chain."
                (is (<= 0 (version-chain-length (lookup-vertex id) g))))
           (close-graph g)
           (collect-garbage))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Retention config (P3): graph-level + per-type :keep-revisions
+;;; ---------------------------------------------------------------------------
+
+(test keep-revisions-graph-default-retains-window
+  "A graph created with :KEEP-REVISIONS N keeps N prior versions of every node in
+steady state (even when older versions are otherwise epoch-reclaimable)."
+  (with-temp-directory (dir)
+    (let ((g (make-graph *integration-graph-name* (namestring dir)
+                         :buffer-pool-size 1000 :keep-revisions 3))
+          id)
+      (unwind-protect
+           (let ((*graph* g))
+             (with-transaction () (setq id (id (make-g-person :name "k" :age 0))))
+             (dotimes (i 8) (bump-age id (1+ i)))   ; no concurrent readers
+             (is (= 3 (version-chain-length (lookup-vertex id) g))
+                 "graph keep-revisions=3 retains exactly three prior versions")
+             (is (= 8 (slot-value (lookup-vertex id) 'age))))
+        (close-graph g :snapshot-p nil)
+        (collect-garbage)))))
+
+(test keep-revisions-per-type-overrides-default
+  "A node-type defined with :KEEP-REVISIONS N retains N prior versions regardless
+of the graph default."
+  (with-temp-directory (dir)
+    (let ((g (make-graph :mvcc-keep-test (namestring dir) :buffer-pool-size 1000))
+          id)                              ; graph default keep-revisions = 0
+      (unwind-protect
+           (let ((*graph* g))
+             (with-transaction () (setq id (id (make-mvcc-kept-node :n 0))))
+             (dotimes (i 8)
+               (with-transaction ()
+                 (let ((c (copy (lookup-vertex id))))
+                   (setf (slot-value c 'n) (1+ i))
+                   (save c))))
+             (is (= 2 (version-chain-length (lookup-vertex id) g))
+                 "type keep-revisions=2 overrides the graph default (0)")
+             (is (= 8 (slot-value (lookup-vertex id) 'n))))
+        (close-graph g :snapshot-p nil)
+        (collect-garbage)))))

@@ -13,7 +13,11 @@
    #+lispworks (make-hash-table :test 'eql :single-thread nil)
    #+ecl (make-hash-table :test 'eql))
   (next-edge-id 1 :type (unsigned-byte 16))
-  (next-vertex-id 1 :type (unsigned-byte 16)))
+  (next-vertex-id 1 :type (unsigned-byte 16))
+  ;; MVCC: graph-wide default number of prior node versions the reaper retains
+  ;; regardless of epoch safety (0 = keep none beyond what active readers need).
+  ;; Appended last so cl-store can still restore pre-MVCC schema.dat.
+  (keep-revisions 0 :type (unsigned-byte 32)))
 
 ;; ECL's DEFSTRUCT defines a SETF *expander* for each accessor but no callable
 ;; (SETF SCHEMA-LOCK) function.  OPEN-GRAPH (graph.lisp) is compiled before
@@ -24,6 +28,13 @@
 (defun (setf schema-lock) (new-value schema)
   (setf (schema-lock schema) new-value))
 
+;; Same ECL workaround for SCHEMA-KEEP-REVISIONS: MAKE-GRAPH / OPEN-GRAPH
+;; (graph.lisp, compiled before this struct) emit (setf (schema-keep-revisions ...))
+;; as a function call, which ECL's defstruct does not provide.
+#+ecl
+(defun (setf schema-keep-revisions) (new-value schema)
+  (setf (schema-keep-revisions schema) new-value))
+
 (defstruct node-type
   name
   parent-type
@@ -31,7 +42,11 @@
   graph-name
   slots
   package
-  constructor)
+  constructor
+  ;; MVCC: per-type override for how many prior versions the reaper retains.
+  ;; NIL = inherit the graph-level schema default.  Appended last for cl-store
+  ;; restore compatibility with pre-MVCC schema.dat.
+  (keep-revisions nil))
 
 (defgeneric instantiate-node-type (node-type-def graph))
 
@@ -206,7 +221,7 @@ replication for a quick schema compatibility check."
   (finalize-inheritance (find-class (node-type-name meta)))
   (save-schema (schema graph) graph))
 
-(defmacro def-node-type (name parent-types slot-specs graph-name)
+(defmacro def-node-type (name parent-types slot-specs graph-name &key keep-revisions)
   "Define a persistent node type NAME for the graph named GRAPH-NAME.  This is
 the machinery behind DEF-VERTEX and DEF-EDGE; you normally use those instead.
 
@@ -248,7 +263,8 @@ be defined before or after the graph is created."
                   :graph-name ',graph-name
                   :slots ',slot-specs
                   :package (package-name *package*)
-                  :constructor ',constructor)))
+                  :constructor ',constructor
+                  :keep-revisions ,keep-revisions)))
            ;; FIXME: why is this necessary when inheriting from another node subclass?
            ;;(unless (class-finalized-p (find-class ',name))
            (finalize-inheritance (find-class ',name))
@@ -408,25 +424,31 @@ be defined before or after the graph is created."
                (instantiate-node-type ,meta ,graph)))
            )))))
 
-(defmacro def-vertex (name parent-types slot-specs graph-name)
+(defmacro def-vertex (name parent-types slot-specs graph-name &key keep-revisions)
   "Define a vertex (node) type NAME for the graph named GRAPH-NAME.
 
 PARENT-TYPES is a list of other vertex types to inherit from (often empty);
 VERTEX is appended automatically.  SLOT-SPECS are CLOS-style typed slots.
 Generates MAKE-NAME / LOOKUP-NAME / NAME-P and slot accessors.  Example:
   (def-vertex user () ((username :type string)) :social-app)
+:KEEP-REVISIONS N overrides, for this type, how many prior MVCC versions the
+reaper retains (NIL = inherit the graph default).
 See DEF-NODE-TYPE for full details and DEF-EDGE for relationships."
-  `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name))
+  `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name
+     :keep-revisions ,keep-revisions))
 
-(defmacro def-edge (name parent-types slot-specs graph-name)
+(defmacro def-edge (name parent-types slot-specs graph-name &key keep-revisions)
   "Define an edge (relationship) type NAME for the graph named GRAPH-NAME.
 
 Like DEF-VERTEX but the type inherits from EDGE, so its constructor also takes
 :FROM, :TO and :WEIGHT.  Generates MAKE-NAME / LOOKUP-NAME / NAME-P, slot
-accessors, and the Prolog query functors NAME/2 and NAME/3.  Example:
+accessors, and the Prolog query functors NAME/2 and NAME/3.  :KEEP-REVISIONS N
+overrides this type's retained-version count (NIL = inherit the graph default).
+Example:
   (def-edge follows () () :social-app)
   ... (make-follows :from alice :to bob)"
-  `(def-node-type ,name (,@parent-types edge) ,slot-specs ,graph-name))
+  `(def-node-type ,name (,@parent-types edge) ,slot-specs ,graph-name
+     :keep-revisions ,keep-revisions))
 
 (defmethod node-type-diff ((meta1 node-type) (meta2 node-type))
   (let ((new-slots (set-difference (node-type-slots meta2)
@@ -435,7 +457,11 @@ accessors, and the Prolog query functors NAME/2 and NAME/3.  Example:
         (removed-slots (set-difference (node-type-slots meta1)
                                        (node-type-slots meta2)
                                        :test 'equalp)))
-    (values (or new-slots removed-slots) new-slots removed-slots)))
+    (values (or new-slots removed-slots
+                ;; A changed :keep-revisions also counts as a redefinition.
+                (not (eql (node-type-keep-revisions meta1)
+                          (node-type-keep-revisions meta2))))
+            new-slots removed-slots)))
 
 (defmethod instantiate-node-type ((meta node-type) (graph graph))
   (with-recursive-lock-held ((schema-lock (schema graph)))

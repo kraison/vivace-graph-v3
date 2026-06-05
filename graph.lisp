@@ -7,7 +7,8 @@
                                    (vertex-buckets 8)
                                    (edge-buckets 8)
                                    (heap-size *default-heap-size*)
-                                   (index-size *default-index-size*))
+                                   (index-size *default-index-size*)
+                                   (keep-revisions 0))
   "Create a brand-new graph named NAME with its on-disk files under the
 directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
 return it.  The directory is created if necessary and must not already contain
@@ -88,6 +89,9 @@ to disk and remove it."
       ;; lock is gone; read paths now materialize bytes under a read pin instead.)
       (let ((*graph* graph))
         (init-schema graph)
+        ;; MVCC: graph-wide default retained-version count (per-type overrides via
+        ;; def-vertex/def-edge :keep-revisions).  Set before update-schema persists.
+        (setf (schema-keep-revisions (schema graph)) keep-revisions)
         (update-schema graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
@@ -109,7 +113,8 @@ to disk and remove it."
 (defun open-graph (name location &key master-p slave-p master-host replication-port
                    replication-key package (buffer-pool-p t) (gc-heap-p t)
                    (buffer-pool-size 100000)
-                   (accept-versions (list +storage-version+)))
+                   (accept-versions (list +storage-version+))
+                   keep-revisions)
   "Open the existing graph named NAME whose files live under directory
 LOCATION, register it, and return it.  Use this to reopen a graph created
 earlier with MAKE-GRAPH; the keyword arguments mirror MAKE-GRAPH's.
@@ -180,6 +185,9 @@ CLOSE-GRAPH when finished."
               (restore-schema-locks (schema graph)))
             (init-schema graph))
         (setf (schema-lock (schema graph)) (make-recursive-lock))
+        ;; MVCC: optional override of the persisted graph-wide keep-revisions.
+        (when keep-revisions
+          (setf (schema-keep-revisions (schema graph)) keep-revisions))
         (update-schema graph)
         (restore-views graph)
         (with-open-file (out dirty-file :direction :output)

@@ -526,19 +526,36 @@ retaining at least KEEP archived versions.  Repairs exactly one prev-pointer."
                  owner p
                  p prev)))))))
 
-(defun reap-old-versions (writes graph &optional (keep 0))
+(defun node-keep-revisions (node graph default)
+  "How many archived versions of NODE the reaper retains regardless of epoch
+safety: NODE's node-type :keep-revisions if set, else the graph DEFAULT."
+  (let ((type-id (type-id node)))
+    (or (and (integerp type-id) (> type-id 0)
+             (let ((meta (lookup-node-type-by-id
+                          type-id (if (typep node 'edge) :edge :vertex)
+                          :graph graph)))
+               (and meta (node-type-keep-revisions meta))))
+        default)))
+
+(defun reap-old-versions (writes graph)
   "Post-commit: reclaim archived versions of every updated/deleted node that no
-active reader/transaction can still observe.  Runs inside the transaction-manager
-lock (via APPLY-TRANSACTION)."
+active reader/transaction can still observe, keeping each node's configured
+:KEEP-REVISIONS window.  Runs inside the transaction-manager lock (via
+APPLY-TRANSACTION)."
   ;; During crash recovery OPEN-GRAPH replays transactions BEFORE it installs the
   ;; transaction-manager, so the slot may be unbound here.  No readers can be
   ;; active during recovery, so a NIL floor (reap-everything-safe) is correct.
   (let ((floor (let ((tm (and (slot-boundp graph 'transaction-manager)
                               (transaction-manager graph))))
-                 (and tm (reap-safe-floor tm)))))
+                 (and tm (reap-safe-floor tm))))
+        (default-keep (if (slot-boundp graph 'schema)
+                          (schema-keep-revisions (schema graph))
+                          0)))
     (dolist (write writes)
       (when (typep write 'tx-update)        ; tx-update and its subclass tx-delete
-        (reap-node-chain (node write) graph floor keep)))))
+        (let ((node (node write)))
+          (reap-node-chain node graph floor
+                           (node-keep-revisions node graph default-keep)))))))
 
 (defgeneric add-node-to-indexes (node graph &key unless-present)
   (:method ((node node) graph &key unless-present)
