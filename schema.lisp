@@ -92,6 +92,35 @@
         (setf (schema-class-locks schema) locks)
         schema))))
 
+(defmethod restore-schema-locks ((schema schema))
+  "Recreate the runtime per-class rw-locks for a schema just restored from disk.
+Locks are never persisted (SAVE-SCHEMA nils CLASS-LOCKS before cl-store, since
+the lock objects are runtime-only), so a restored schema's CLASS-LOCKS slot is
+nil.  Rebuild it with the base VERTEX / EDGE locks plus one rw-lock per
+already-registered node type, keyed by the type NAME -- the same key
+WITH-WRITE-LOCKED-CLASS / INSTANTIATE-NODE-TYPE use.  This preserves the
+persisted type-ids (unlike re-running INIT-SCHEMA from scratch)."
+  (let ((locks #+sbcl (make-hash-table :test 'eql :synchronized t)
+               #+ccl (make-hash-table :test 'eql :shared t)
+               #+lispworks (make-hash-table :test 'eql :single-thread nil)
+               #+ecl (make-hash-table :test 'eql)))
+    (setf (gethash 'vertex locks) (make-rw-lock)
+          (gethash 'edge locks) (make-rw-lock))
+    ;; The type-table nests sub-tables (by parent type) whose VALUES include the
+    ;; node-type metas; make a lock for each registered type by name.
+    (maphash (lambda (parent sub)
+               (declare (ignore parent))
+               (when (hash-table-p sub)
+                 (maphash (lambda (k v)
+                            (declare (ignore k))
+                            (when (node-type-p v)
+                              (setf (gethash (node-type-name v) locks)
+                                    (make-rw-lock))))
+                          sub)))
+             (schema-type-table schema))
+    (setf (schema-class-locks schema) locks)
+    schema))
+
 (defmethod get-next-type-id ((schema schema) parent)
   (with-recursive-lock-held ((schema-lock schema))
     (cond ((or (eql parent :edge) (eql parent 'edge))

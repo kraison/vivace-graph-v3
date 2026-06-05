@@ -63,3 +63,31 @@
                (is (string= "Snapshotted" (slot-value (lookup-vertex id) 'name))))
           (close-graph g2 :snapshot-p nil)
           (collect-garbage))))))
+
+(test schema-class-locks-restored-on-reopen
+  "Regression for issue #32: after open-graph, the per-class rw-locks are rebuilt
+(schema-class-locks is not nil), so the class locks work -- new nodes can be
+created post-reopen (make-* goes through with-write-locked-class).  Locks are
+not persisted; restore-schema-locks recreates them from the restored types."
+  (with-temp-directory (dir)
+    (let ((path (namestring dir)) id)
+      (let ((g (make-graph *integration-graph-name* path :buffer-pool-size 1000)))
+        (let ((*graph* g))
+          (with-transaction () (setq id (id (make-g-person :name "Before")))))
+        (close-graph g :snapshot-p nil))
+      (let ((g2 (open-graph *integration-graph-name* path)))
+        (unwind-protect
+             (let ((*graph* g2))
+               (is-true (graph-db::schema-class-locks (graph-db::schema g2))
+                        "schema-class-locks must be rebuilt (non-nil) after reopen")
+               (is-true (gethash 'g-person
+                                 (graph-db::schema-class-locks (graph-db::schema g2)))
+                        "the restored g-person class must have a lock")
+               ;; practical effect: creating a node post-reopen needs the class lock
+               (with-transaction () (make-g-person :name "After"))
+               (is (= 2 (length (map-vertices #'identity g2 :collect-p t
+                                                        :vertex-type 'g-person)))
+                   "a new node can be created after reopen")
+               (is-true (lookup-vertex id) "pre-existing data intact"))
+          (ignore-errors (close-graph g2 :snapshot-p nil))
+          (collect-garbage))))))

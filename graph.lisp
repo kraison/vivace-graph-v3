@@ -176,8 +176,13 @@ CLOSE-GRAPH when finished."
         (setf (%lhash-value-finalizer (edge-table graph))
               (make-node-data-finalizer heap))
         (if (probe-file schema-file)
-            (setf (schema graph)
-                  (cl-store:restore schema-file))
+            (progn
+              (setf (schema graph)
+                    (cl-store:restore schema-file))
+              ;; Locks aren't persisted; rebuild the per-class rw-locks for the
+              ;; restored types (otherwise schema-class-locks is nil and
+              ;; def-vertex/def-edge and with-*-locked-class fail -- issue #32).
+              (restore-schema-locks (schema graph)))
             (init-schema graph))
         (setf (schema-lock (schema graph)) (make-recursive-lock))
         (update-schema graph)
