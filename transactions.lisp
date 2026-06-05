@@ -185,15 +185,18 @@
 (defgeneric lookup-object (id table transaction graph)
   (:method (id table (transaction null) graph)
     ;; Non-transactional read: pin the read epoch so the reaper retains whatever
-    ;; version we observe, and materialize the node's bytes WHILE PINNED so it
-    ;; escapes self-contained (the lhash value-finalizer used to do this under the
-    ;; bucket lock).  Transactional reads -- the other method -- are covered by
-    ;; the transaction's own start-tx-id, so their lazy reads stay safe.
-    (with-read-pin (graph)
-      (let ((node (lookup-node table id graph)))
-        (when (node-p node)
-          (ensure-node-bytes node graph))
-        node)))
+    ;; version we observe.  If this is a STANDALONE lookup (no enclosing pin), the
+    ;; node escapes our pin, so materialize its bytes now (the lhash value-
+    ;; finalizer used to do this under the bucket lock).  If we are nested in a
+    ;; pinned scan, that scan already protects the node and handles escape, so we
+    ;; leave the data lazy.  Transactional reads -- the other method -- are
+    ;; covered by the transaction's own start-tx-id.
+    (let ((standalone (not *read-pinned-p*)))
+      (with-read-pin (graph)
+        (let ((node (lookup-node table id graph)))
+          (when (and standalone (node-p node))
+            (ensure-node-bytes node graph))
+          node))))
   (:method (id table transaction (graph t))
     (let ((local-cache (local-cache transaction))
           (graph-cache (graph-cache transaction)))

@@ -51,6 +51,12 @@
   (print-unreadable-object (graph stream :type t :identity t)
     (format stream "~S ~S" (graph-name graph) (location graph))))
 
+;; True while a read pin is held on the current thread (dynamic extent of a
+;; WITH-READ-PIN).  Lets a nested LOOKUP-OBJECT skip its own eager byte
+;; materialization: the enclosing pinned scope already protects the node, so its
+;; data can stay lazy (or be materialized by the scan only when it escapes).
+(defvar *read-pinned-p* nil)
+
 ;; MVCC read-epoch pin.  Defined here (early) because MAP-VERTICES / MAP-EDGES
 ;; use it and are compiled before transactions.lisp, which defines the
 ;; PIN-READ-EPOCH / UNPIN-READ-EPOCH functions this expands to (resolved at
@@ -63,7 +69,8 @@
             (,tm (and (slot-boundp ,g 'transaction-manager)
                       (transaction-manager ,g))))
        (if ,tm
-           (let ((,tok (pin-read-epoch ,tm)))
+           (let ((,tok (pin-read-epoch ,tm))
+                 (*read-pinned-p* t))
              (unwind-protect (progn ,@body)
                (unpin-read-epoch ,tm ,tok)))
            (progn ,@body)))))

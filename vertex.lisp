@@ -163,8 +163,15 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
   ;; (deserialize-vertex-head) resolves a node's type-id -> class via *GRAPH*'s
   ;; schema, so mapping a graph that isn't the current *GRAPH* would otherwise
   ;; fail (NO-APPLICABLE-METHOD on SCHEMA/VERTEX-TABLE with NIL).
-  (let ((result nil)
-        (*graph* graph))
+  (let* ((result nil)
+         (*graph* graph)
+         ;; When collecting, each node ESCAPES the scan pin, so materialize its
+         ;; bytes before FN sees it.  For a side-effect scan FN runs inside the
+         ;; pin, so its lazy reads are already safe and we don't pre-read bytes.
+         (fn (if collect-p
+                 (let ((user-fn fn))
+                   (lambda (node) (ensure-node-bytes node graph) (funcall user-fn node)))
+                 fn)))
     (with-read-pin (graph)        ; retain whatever versions this scan observes
     (flet ((map-it (vertex-type)
              (let* ((type-meta (or (and (integerp vertex-type)
@@ -208,10 +215,6 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
                                          (or include-deleted-p
                                              (not (deleted-p vertex))))
                                 (setf (id vertex) (car pair))
-                                ;; Materialize bytes while the scan's read pin
-                                ;; holds, so a node collected/returned here is
-                                ;; self-contained (no post-pin RAF heap read).
-                                (ensure-node-bytes vertex graph)
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))

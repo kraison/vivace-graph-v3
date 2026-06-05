@@ -314,8 +314,14 @@ OUTGOING-EDGES / INCOMING-EDGES."
   ;; Bind *GRAPH* to GRAPH so the value-deserializer (deserialize-edge-head)
   ;; resolves type-ids against the right schema even when mapping a graph that
   ;; isn't the current *GRAPH* (see the note in MAP-VERTICES).
-  (let ((result nil)
-        (*graph* graph))
+  (let* ((result nil)
+         (*graph* graph)
+         ;; Collected edges escape the scan pin -> materialize before FN; a
+         ;; side-effect scan runs FN inside the pin so its lazy reads are safe.
+         (fn (if collect-p
+                 (let ((user-fn fn))
+                   (lambda (e) (ensure-node-bytes e graph) (funcall user-fn e)))
+                 fn)))
     (with-read-pin (graph)        ; retain whatever versions this scan observes
     (cond ((and edge-type to-vertex from-vertex)
            (let ((type-meta (or (and (integerp edge-type)
@@ -428,9 +434,6 @@ OUTGOING-EDGES / INCOMING-EDGES."
                                            (active-edge-p edge))
                                        (not (member (type-of edge) exclude-edge-types)))
                               (setf (id edge) (car pair))
-                              ;; Materialize bytes while the scan's read pin holds
-                              ;; (self-contained escape; see map-vertices).
-                              (ensure-node-bytes edge graph)
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
