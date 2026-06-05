@@ -266,3 +266,37 @@ of the graph default."
              (is (= 8 (slot-value (lookup-vertex id) 'n))))
         (close-graph g :snapshot-p nil)
         (collect-garbage)))))
+
+;;; ---------------------------------------------------------------------------
+;;; P4 PROTOTYPE: snapshot-isolation reads
+;;; ---------------------------------------------------------------------------
+
+(test snapshot-read-sees-version-at-transaction-start
+  "A transaction reads the version that was live as of its start epoch: an
+update committed by a later transaction is invisible to it (repeatable read),
+and the older version is retained because the open transaction holds the floor."
+  (with-test-graph (g)
+    (let ((tm (graph-db::transaction-manager g))
+          id)
+      (with-transaction () (setq id (id (make-g-person :name "S" :age 0))))
+      ;; Open transaction A NOW (captures its start epoch) -- but do not commit.
+      (let ((txn-a (graph-db::create-transaction tm)))
+        (unwind-protect
+             (progn
+               ;; A concurrent, fully-committed update bumps age 0 -> 1.
+               (with-transaction ()
+                 (let ((c (copy (lookup-vertex id))))
+                   (setf (slot-value c 'age) 1)
+                   (save c)))
+               ;; Reads through A's snapshot still see age 0 (the version that was
+               ;; live when A started); the live head is age 1.
+               (let ((graph-db:*transaction* txn-a))
+                 (is (= 0 (slot-value (lookup-vertex id) 'age))
+                     "snapshot read sees the pre-update version"))
+               ;; With snapshot reads OFF, the same read sees the live version (1),
+               ;; confirming the resolver is what produces the isolation.
+               (let ((graph-db:*transaction* (graph-db::create-transaction tm))
+                     (graph-db::*snapshot-reads-p* nil))
+                 (is (= 1 (slot-value (lookup-vertex id) 'age))
+                     "without snapshot reads, a read sees the live version")))
+          (ignore-errors (graph-db::remove-transaction txn-a tm)))))))

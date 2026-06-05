@@ -206,8 +206,18 @@
             (let ((value (or (gethash id graph-cache)
                              (lookup-node table id (graph transaction)))))
               (when value
-                (add-to-object-set value (read-set transaction))
-                (setf (gethash id local-cache) value))))))))
+                ;; P4: resolve the version visible at this transaction's snapshot
+                ;; (commit-epoch < start-tx-id).  The resolved (possibly archived)
+                ;; version is cached only in the txn-private local-cache, so reads
+                ;; are repeatable within the transaction.  Validation keys the
+                ;; read-set by id, so OCC is unaffected.
+                (when *snapshot-reads-p*
+                  (setq value (resolve-version-at-epoch
+                               value (graph transaction)
+                               (start-tx-id transaction))))
+                (when value
+                  (add-to-object-set value (read-set transaction))
+                  (setf (gethash id local-cache) value)))))))))
 
 (defgeneric write-object (object transaction))
 
@@ -419,6 +429,37 @@ irrelevant to reaping)."
       (deserialize-node-head (heap graph) addr)
     (declare (ignore d w hw tiw vw vew vvw type-id rev off))
     (values data-ptr epoch prev)))
+
+;;; --- P4 (PROTOTYPE): snapshot-isolation reads -------------------------------
+;;; A transaction observes the newest version with commit-epoch < its
+;;; start-tx-id.  When the live head is too new (committed after the reader
+;;; started), walk the prev-pointer chain and materialize the archived version
+;;; that was live as of the reader's snapshot.  The reaper's floor retains every
+;;; version an active transaction could need, so the chain is guaranteed present.
+
+(defvar *snapshot-reads-p* t
+  "When true, transactional LOOKUP-OBJECT resolves the version visible at the
+transaction's start epoch (snapshot isolation).  Prototype toggle.")
+
+(defun resolve-version-at-epoch (live-node graph epoch)
+  "Return the version of LIVE-NODE visible to a reader whose snapshot is EPOCH
+(the newest version with commit-epoch < EPOCH), or NIL if the node did not exist
+before EPOCH.  Materializes an archived version (full head + data bytes) when the
+live head is newer than EPOCH."
+  (if (< (commit-epoch live-node) epoch)
+      live-node
+      (let ((id (id live-node))
+            (edge-p (typep live-node 'edge))
+            (p (prev-pointer live-node)))
+        (loop
+          (when (zerop p) (return nil))   ; nothing old enough -> invisible
+          (let ((ver (if edge-p
+                         (deserialize-edge-head (heap graph) p)
+                         (deserialize-vertex-head (heap graph) p))))
+            (setf (id ver) id)
+            (if (< (commit-epoch ver) epoch)
+                (progn (ensure-node-bytes ver graph) (return ver))
+                (setf p (prev-pointer ver))))))))
 
 ;;; Read-epoch pins (non-transactional reads).  A reader records the current
 ;;; epoch BEFORE it reads a node head and holds the pin until it has finished
