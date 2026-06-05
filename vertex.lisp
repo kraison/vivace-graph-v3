@@ -165,6 +165,7 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
   ;; fail (NO-APPLICABLE-METHOD on SCHEMA/VERTEX-TABLE with NIL).
   (let ((result nil)
         (*graph* graph))
+    (with-read-pin (graph)        ; retain whatever versions this scan observes
     (flet ((map-it (vertex-type)
              (let* ((type-meta (or (and (integerp vertex-type)
                                         (lookup-node-type-by-id vertex-type :vertex))
@@ -210,7 +211,7 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))
-                        (vertex-table graph)))))
+                        (vertex-table graph))))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))

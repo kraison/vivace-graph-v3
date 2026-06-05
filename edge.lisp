@@ -316,6 +316,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
   ;; isn't the current *GRAPH* (see the note in MAP-VERTICES).
   (let ((result nil)
         (*graph* graph))
+    (with-read-pin (graph)        ; retain whatever versions this scan observes
     (cond ((and edge-type to-vertex from-vertex)
            (let ((type-meta (or (and (integerp edge-type)
                                      (lookup-node-type-by-id edge-type :edge))
@@ -430,7 +431,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
-                      (edge-table graph))))
+                      (edge-table graph)))))
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)

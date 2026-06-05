@@ -163,6 +163,31 @@ in steady state) while the live head always reads the newest data."
       (is (= 3 (slot-value (lookup-vertex id) 'age))
           "the live head always reflects the newest committed value"))))
 
+(test read-pin-retains-versions-until-released
+  "A held read-epoch pin lower-bounds the reaper's safe floor, so every version
+that was live at/after the pin is retained while it is held; once released, the
+reaper collapses the chain back to the steady-state size."
+  (with-test-graph (g)
+    (let ((tm (graph-db::transaction-manager g))
+          id token)
+      (with-transaction () (setq id (id (make-g-person :name "p" :age 0))))
+      ;; Pin at the current epoch BEFORE any update.
+      (setq token (graph-db::pin-read-epoch tm))
+      (unwind-protect
+           (progn
+             (bump-age id 1)
+             (bump-age id 2)
+             (bump-age id 3)
+             (is (>= (version-chain-length (lookup-vertex id) g) 2)
+                 "a held read pin keeps prior versions from being reaped"))
+        (graph-db::unpin-read-epoch tm token))
+      ;; With the pin released the reaper can collapse the chain again.
+      (bump-age id 4)
+      (bump-age id 5)
+      (is (= 1 (version-chain-length (lookup-vertex id) g))
+          "after the pin is released the chain returns to steady-state size")
+      (is (= 5 (slot-value (lookup-vertex id) 'age))))))
+
 (test versioned-reopen-preserves-live-and-chain
   "CLOSE-GRAPH + OPEN-GRAPH (which runs the version-aware GC-HEAP) preserves the
 live data of a repeatedly-updated node and does not corrupt its retained version

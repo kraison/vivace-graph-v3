@@ -184,7 +184,11 @@
 
 (defgeneric lookup-object (id table transaction graph)
   (:method (id table (transaction null) graph)
-    (lookup-node table id graph))
+    ;; Non-transactional read: pin the read epoch so the reaper retains whatever
+    ;; version we observe.  (Transactional reads -- the other method -- are
+    ;; covered by the transaction's own start-tx-id.)
+    (with-read-pin (graph)
+      (lookup-node table id graph)))
   (:method (id table transaction (graph t))
     (let ((local-cache (local-cache transaction))
           (graph-cache (graph-cache transaction)))
@@ -408,10 +412,48 @@ irrelevant to reaping)."
     (declare (ignore d w hw tiw vw vew vvw type-id rev off))
     (values data-ptr epoch prev)))
 
+;;; Read-epoch pins (non-transactional reads).  A reader records the current
+;;; epoch BEFORE it reads a node head and holds the pin until it has finished
+;;; dereferencing that node's data.  While pinned, the reaper's floor is bounded
+;;; by the pin, so any version that was live at pin time (stop-epoch >= pin)
+;;; cannot be reclaimed out from under the reader.
+
+(defun pin-read-epoch (transaction-manager)
+  "Register a read pin at the current epoch; return its token (for UNPIN)."
+  ;; Racy read of tx-id-counter is fine: it is monotonic, and a slightly stale
+  ;; (smaller) value only makes the reaper MORE conservative, never less.
+  (let ((epoch (tx-id-counter transaction-manager)))
+    (with-recursive-lock-held ((read-pins-lock transaction-manager))
+      (let ((token (incf (read-pin-counter transaction-manager))))
+        (setf (gethash token (read-pins transaction-manager)) epoch)
+        token))))
+
+(defun unpin-read-epoch (transaction-manager token)
+  (with-recursive-lock-held ((read-pins-lock transaction-manager))
+    (remhash token (read-pins transaction-manager))))
+
+(defun minimum-read-pin (transaction-manager)
+  (with-recursive-lock-held ((read-pins-lock transaction-manager))
+    (let (min)
+      (maphash (lambda (token epoch)
+                 (declare (ignore token))
+                 (setf min (if min (min min epoch) epoch)))
+               (read-pins transaction-manager))
+      min)))
+
+;; WITH-READ-PIN (the macro) lives in graph-class.lisp -- it is used by
+;; MAP-VERTICES / MAP-EDGES, which are compiled before this file.
+
 (defun reap-safe-floor (transaction-manager)
-  "The oldest epoch any still-active transaction (or, from P2b, pinned reader)
-could observe.  NIL => nothing active => every archived version is reclaimable."
-  (minimum-start-transaction-id transaction-manager))
+  "The oldest epoch any still-active transaction OR pinned non-transactional
+reader could observe.  NIL => nothing active => every archived version is
+reclaimable."
+  (let ((s (minimum-start-transaction-id transaction-manager))
+        (p (minimum-read-pin transaction-manager)))
+    (cond ((and s p) (min s p))
+          (s s)
+          (p p)
+          (t nil))))
 
 (defun %sever-prev-pointer (owner table live-node graph)
   "Set OWNER's prev-pointer field to 0.  OWNER is :LIVE (LIVE-NODE's lhash head)
@@ -1403,7 +1445,21 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
    (graph
     :initarg :graph
     :reader graph
-    :initform *graph*)))
+    :initform *graph*)
+   ;; MVCC read-epoch pins: TOKEN -> epoch for each in-flight non-transactional
+   ;; read.  REAP-SAFE-FLOOR folds in the minimum so the reaper never frees a
+   ;; version a pinned reader could still dereference (the basis for dropping the
+   ;; read-after-free finalizer).  Transactional reads need no pin -- their
+   ;; start-tx-id already lower-bounds the floor.
+   (read-pins
+    :reader read-pins
+    :initform (make-hash-table :test 'eql))
+   (read-pins-lock
+    :reader read-pins-lock
+    :initform (make-recursive-lock "read-pins lock"))
+   (read-pin-counter
+    :accessor read-pin-counter
+    :initform 0)))
 
 (defmethod print-object ((transaction-manager transaction-manager) stream)
   (print-unreadable-object (transaction-manager stream :type t)

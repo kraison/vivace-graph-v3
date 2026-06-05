@@ -51,6 +51,23 @@
   (print-unreadable-object (graph stream :type t :identity t)
     (format stream "~S ~S" (graph-name graph) (location graph))))
 
+;; MVCC read-epoch pin.  Defined here (early) because MAP-VERTICES / MAP-EDGES
+;; use it and are compiled before transactions.lisp, which defines the
+;; PIN-READ-EPOCH / UNPIN-READ-EPOCH functions this expands to (resolved at
+;; runtime).  Holds a pin for BODY's dynamic extent so the reaper retains any
+;; version BODY may dereference; a no-op when GRAPH has no transaction-manager
+;; yet (open/recovery, when no reaper races).
+(defmacro with-read-pin ((graph) &body body)
+  (alexandria:with-gensyms (g tm tok)
+    `(let* ((,g ,graph)
+            (,tm (and (slot-boundp ,g 'transaction-manager)
+                      (transaction-manager ,g))))
+       (if ,tm
+           (let ((,tok (pin-read-epoch ,tm)))
+             (unwind-protect (progn ,@body)
+               (unpin-read-epoch ,tm ,tok)))
+           (progn ,@body)))))
+
 (defclass master-graph (graph)
   ((replication-mbox :accessor replication-mbox :initarg :replication-mbox)
    (replication-listener :accessor replication-listener :initarg :replication-listener)
