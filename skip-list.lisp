@@ -637,16 +637,33 @@ L1: 50%, L2: 25%, L3: 12.5%, ..."
        (= (%sn-level node) (1+ level))
        (not (%sn-marked-p skip-list node))))
 
-(defun remove-from-skip-list (skip-list key &optional value)
+(defun remove-from-skip-list (skip-list key &optional (value nil value-supplied-p))
+  "Remove a node from SKIP-LIST.  With VALUE, removes the specific key/value
+pair (needed for duplicate-key lists); without it, removes one occurrence of
+KEY (arbitrary when duplicates exist).  Returns T if a node was removed, NIL if
+none matched."
   (with-sl-lock (skip-list)
   (let ((node-to-delete nil) (marked-p nil) (top-level -1)
         (preds (make-array (%sl-max-level skip-list)))
         (succs (make-array (%sl-max-level skip-list)))
-        (lock nil))
+        (lock nil)
+        ;; Target a SPECIFIC node and use find-kv-in-skip-list's preds/succs,
+        ;; which are positioned for that exact (key,value) node.
+        ;; find-in-skip-list returns the tallest-tower duplicate but positions
+        ;; preds/succs at the LEFTMOST key match, so its level-0 predecessor
+        ;; points before a DIFFERENT node than the one being deleted -- the
+        ;; resulting splice skips (orphans) the intervening duplicates.  For a
+        ;; key-only removal we first read any matching node's value so we can
+        ;; then target it precisely with find-kv.
+        (target-value
+         (if value-supplied-p
+             value
+             (let ((n (find-in-skip-list skip-list key)))
+               (if n (%sn-value n) (return-from remove-from-skip-list nil))))))
     (unwind-protect
          (loop
             (multiple-value-bind (node level-found)
-                (find-in-skip-list skip-list key preds succs)
+                (find-kv-in-skip-list skip-list key target-value preds succs)
               (unless node (return-from remove-from-skip-list nil))
               (when (or marked-p
                         (and node (ok-to-delete-p skip-list node level-found)))

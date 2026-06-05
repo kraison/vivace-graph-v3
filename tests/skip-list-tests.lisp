@@ -204,18 +204,63 @@ duplicates, and returns nil when no such pair exists."
         (when n (is (eql :b (%sn-value n)))))
       (is (null (find-kv-in-skip-list sl 2 :z)) "absent value -> nil"))))
 
-(test remove-with-value-arg-removes-by-key
-  "remove-from-skip-list accepts a VALUE argument (currently ignored -- it
-removes by key).  On a unique-key list this removes exactly that key.
-(Duplicate-key removal is buggy and is covered by a separate task, not here.)"
+(test remove-one-duplicate-key-is-consistent
+  "Removing one of several duplicate-key entries removes exactly one occurrence
+and leaves the rest correctly linked: count, fetch-all and the level-0 node list
+all agree, and neighbouring keys are intact.  Repeated across random tower
+layouts to guard the (formerly nondeterministic) duplicate-splice corruption."
+  (dotimes (trial 12)
+    (with-temp-memory (heap)
+      (let ((sl (make-integer-skip-list heap :duplicates-allowed-p t)))
+        (dolist (v '(:a :b :c)) (add-to-skip-list sl 2 v))
+        (add-to-skip-list sl 1 :x)
+        (add-to-skip-list sl 3 :y)
+        (remove-from-skip-list sl 2)
+        (is (= 4 (skip-list-count sl))
+            "trial ~D: one of three key-2 dups removed (5 -> 4)" trial)
+        (is (= 2 (length (skip-list-fetch-all sl 2)))
+            "trial ~D: two key-2 values remain" trial)
+        (is (= 4 (length (skip-list-to-node-list sl)))
+            "trial ~D: level-0 list agrees with count" trial)
+        (is-true (find-in-skip-list sl 1) "neighbour key 1 intact")
+        (is-true (find-in-skip-list sl 3) "neighbour key 3 intact")))))
+
+(test remove-specific-value-among-duplicates
+  "remove-from-skip-list with a value removes exactly that key/value pair,
+leaving the other duplicates."
+  (dotimes (trial 12)
+    (with-temp-memory (heap)
+      (let ((sl (make-integer-skip-list heap :duplicates-allowed-p t)))
+        (dolist (v '(:a :b :c)) (add-to-skip-list sl 2 v))
+        (is-true (remove-from-skip-list sl 2 :b))
+        (let ((vals (skip-list-fetch-all sl 2)))
+          (is (= 2 (length vals)) "trial ~D: got ~S" trial vals)
+          (is (null (set-difference '(:a :c) vals))
+              "trial ~D: expected {:a :c}, got ~S" trial vals))))))
+
+(test remove-all-duplicates-empties-key
+  "Removing each duplicate of a key in turn leaves the key absent."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap :duplicates-allowed-p t)))
+      (dolist (v '(:a :b :c :d)) (add-to-skip-list sl 2 v))
+      (dotimes (k 4) (remove-from-skip-list sl 2))
+      (is (= 0 (skip-list-count sl)))
+      (is (null (find-in-skip-list sl 2)))
+      (is (null (skip-list-fetch-all sl 2))))))
+
+(test remove-with-value-on-unique-list
+  "The value arg works on a unique-key list, and removing a non-matching value
+is a no-op that returns nil."
   (with-temp-memory (heap)
     (let ((sl (make-integer-skip-list heap)))
       (add-to-skip-list sl 1 10)
       (add-to-skip-list sl 2 20)
-      (remove-from-skip-list sl 2 20)        ; value ignored; key 2 removed
+      (is-true (remove-from-skip-list sl 2 20))
       (is (= 1 (skip-list-count sl)))
       (is (null (find-in-skip-list sl 2)) "key 2 gone")
-      (is (= 10 (sl-find-value sl 1)) "key 1 untouched"))))
+      (is (= 10 (sl-find-value sl 1)) "key 1 untouched")
+      (is (null (remove-from-skip-list sl 1 999)) "wrong value -> no-op")
+      (is (= 1 (skip-list-count sl)) "count unchanged after no-op remove"))))
 
 (test to-node-list-returns-nodes-in-order
   "skip-list-to-node-list returns the nodes in ascending key order."
