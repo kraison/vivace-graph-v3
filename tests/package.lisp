@@ -44,6 +44,7 @@
                 #:geohash-prefix-range
                 #:geohash-covering
                 ;; spatial index (spatial extension)
+                #:spatial-index            ; graph slot accessor
                 #:make-spatial-index
                 #:open-spatial-index
                 #:spatial-index-p

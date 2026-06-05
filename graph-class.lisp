@@ -31,6 +31,7 @@
    (vev-index :accessor vev-index :initarg :vev-index)
    (vertex-index :accessor vertex-index :initarg :vertex-index)
    (edge-index :accessor edge-index :initarg :edge-index)
+   (spatial-index :accessor spatial-index :initarg :spatial-index :initform nil)
    (views-lock :accessor views-lock :initarg :views-lock
                :initform (make-recursive-lock))
    (views :accessor views :initarg :views)

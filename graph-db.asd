@@ -60,7 +60,8 @@
                (:file "vev-index" :depends-on ("index-list" "graph-class"))
                (:file "type-index" :depends-on ("vev-index"))
                (:file "graph" :depends-on
-                      ("ve-index" "vev-index" "type-index" "linear-hash" "allocator"))
+                      ("ve-index" "vev-index" "type-index" "linear-hash" "allocator"
+                       "spatial-index"))
                (:file "stats" :depends-on ("graph"))
                (:file "schema" :depends-on ("stats"))
                (:file "node-class" :depends-on ("schema"))
@@ -185,6 +186,7 @@
                (:file "index-list-tests")
                (:file "type-index-tests")
                (:file "graph-tests")
+               (:file "graph-spatial-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")
