@@ -208,6 +208,10 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
                                          (or include-deleted-p
                                              (not (deleted-p vertex))))
                                 (setf (id vertex) (car pair))
+                                ;; Materialize bytes while the scan's read pin
+                                ;; holds, so a node collected/returned here is
+                                ;; self-contained (no post-pin RAF heap read).
+                                (ensure-node-bytes vertex graph)
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))

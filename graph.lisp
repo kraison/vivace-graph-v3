@@ -84,12 +84,8 @@ to disk and remove it."
       (setf (edge-index graph)
             (make-type-index
              (format nil "~A/edge-index.dat" path) heap))
-      ;; Copy each node's heap data bytes under the lhash bucket lock at lookup
-      ;; (closes the node-data read-after-free vs concurrent delete/GC).
-      (setf (%lhash-value-finalizer (vertex-table graph))
-            (make-node-data-finalizer heap))
-      (setf (%lhash-value-finalizer (edge-table graph))
-            (make-node-data-finalizer heap))
+      ;; (MVCC: the lhash value-finalizer that copied node bytes under the bucket
+      ;; lock is gone; read paths now materialize bytes under a read pin instead.)
       (let ((*graph* graph))
         (init-schema graph)
         (update-schema graph)
@@ -172,12 +168,8 @@ CLOSE-GRAPH when finished."
               (open-type-index (format nil "~A/vertex-index.dat" path) heap))
         (setf (edge-index graph)
               (open-type-index (format nil "~A/edge-index.dat" path) heap))
-        ;; Copy node heap data bytes under the bucket lock at lookup (closes the
-        ;; node-data read-after-free vs concurrent delete/GC).
-        (setf (%lhash-value-finalizer (vertex-table graph))
-              (make-node-data-finalizer heap))
-        (setf (%lhash-value-finalizer (edge-table graph))
-              (make-node-data-finalizer heap))
+        ;; (MVCC: no lhash value-finalizer; read paths materialize node bytes
+        ;; under a read pin -- see ENSURE-NODE-BYTES.)
         (if (probe-file schema-file)
             (progn
               (setf (schema graph)

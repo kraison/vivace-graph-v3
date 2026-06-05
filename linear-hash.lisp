@@ -49,10 +49,10 @@
   (key-deserializer 'deserialize-key)
   (value-serializer 'serialize-uint64)
   (value-deserializer 'deserialize-uint64)
-  ;; Optional 1-arg function run on the deserialized value INSIDE %lhash-get's
-  ;; per-bucket lock (lookup path only).  The vertex/edge tables install one
-  ;; (make-node-data-finalizer) that copies a node's heap DATA bytes under that
-  ;; lock, so a concurrent commit cannot free the block out from under the read.
+  ;; OBSOLETE (MVCC): the node-data read-after-free finalizer is gone -- read
+  ;; paths now materialize bytes under a read pin (see ENSURE-NODE-BYTES).  The
+  ;; slot is retained (unused, always NIL) so cl-store can still restore lhash
+  ;; struct.dat files written before the finalizer was removed.
   (value-finalizer nil))
 
 ;; ECL does not expose SIMPLE-VECTOR as a class usable as a method
@@ -748,14 +748,8 @@
 (defun %lhash-get (lhash key)
   (let ((bucket (hash lhash (%lhash-level lhash) key)))
     (with-locked-hash-bucket (lhash bucket)
-      (let ((value (read-from-bucket lhash (%lhash-table lhash)
-                                     (bucket-offset lhash bucket) key))
-            (fin (%lhash-value-finalizer lhash)))
-        ;; Run the finalizer (e.g. copy a node's heap data bytes) while we still
-        ;; hold the bucket lock, so it is consistent with the head we just read.
-        (when (and value fin)
-          (funcall fin value))
-        value))))
+      (read-from-bucket lhash (%lhash-table lhash)
+                        (bucket-offset lhash bucket) key))))
 
 (defun lhash-get (lhash key)
   (handler-case

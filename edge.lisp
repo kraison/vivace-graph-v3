@@ -428,6 +428,9 @@ OUTGOING-EDGES / INCOMING-EDGES."
                                            (active-edge-p edge))
                                        (not (member (type-of edge) exclude-edge-types)))
                               (setf (id edge) (car pair))
+                              ;; Materialize bytes while the scan's read pin holds
+                              ;; (self-contained escape; see map-vertices).
+                              (ensure-node-bytes edge graph)
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
