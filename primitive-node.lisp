@@ -385,7 +385,7 @@ replaced the lhash value-finalizer (which copied under the bucket lock)."
   #+ccl
   (make-hash-table :test 'node-equal
                    :hash-function 'sxhash-node
-                   :weakness weakness
+                   :weak weakness          ; CCL spells it :weak (cf. make-id-table)
                    :shared synchronized)
   #+lispworks
   (make-hash-table :test 'node-equal

@@ -89,6 +89,14 @@ DEST as a string."
   "A pre-MVCC (v1, 15-byte head) graph cannot be opened directly by v2 code but
 MIGRATE-GRAPH carries it across (logical snapshot + replay), preserving every
 node, its slot data, the subclass, and the edge topology."
+  ;; The committed v1 fixture's struct.dat/schema.dat were cl-store'd by SBCL.
+  ;; cl-store's struct encoding is not portable across implementations, so ECL
+  ;; cannot restore an SBCL-written graph (a pre-existing property of the on-disk
+  ;; format, not of MIGRATE-GRAPH).  Skip there; SBCL and CCL restore it fine.
+  #+ecl
+  (skip "v1 fixture was cl-store'd by SBCL; ECL's cl-store cannot restore it ~
+(graph on-disk dirs are not portable across Lisp implementations).")
+  #-ecl
   (with-temp-directory (root)
     (let ((old-dir (extract-v1-fixture (merge-pathnames "v1/" root)))
           (new-dir (namestring (merge-pathnames "v2/" root))))
