@@ -166,3 +166,88 @@ absent key returns nil."
       (is (equal '(:a) (skip-list-fetch-all sl 1)))
       ;; an absent key
       (is (null (skip-list-fetch-all sl 99))))))
+
+;;; ---------------------------------------------------------------------------
+;;; update / find-kv / duplicate-aware remove / node-list / empty edge cases
+;;; ---------------------------------------------------------------------------
+
+(test update-changes-existing-value
+  "update-in-skip-list replaces the value for an existing key."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (add-to-skip-list sl 1 10)
+      (add-to-skip-list sl 2 20)
+      (update-in-skip-list sl 2 222 20)   ; pass old-value to hit the in-place path
+      (is (= 222 (sl-find-value sl 2)))
+      (is (= 10 (sl-find-value sl 1)) "other keys untouched")
+      (is (= 2 (sl-live-count sl)) "update must not change the count"))))
+
+(test update-missing-key-inserts
+  "update-in-skip-list on an absent key upserts it."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (is (null (find-in-skip-list sl 7)))
+      (update-in-skip-list sl 7 70)
+      (is (= 70 (sl-find-value sl 7)))
+      (is (= 1 (sl-live-count sl))))))
+
+(test find-kv-matches-key-and-value
+  "find-kv-in-skip-list locates the node with a given key AND value among
+duplicates, and returns nil when no such pair exists."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap :duplicates-allowed-p t)))
+      (add-to-skip-list sl 2 :a)
+      (add-to-skip-list sl 2 :b)
+      (add-to-skip-list sl 2 :c)
+      (let ((n (find-kv-in-skip-list sl 2 :b)))
+        (is-true n "should find the (2,:b) pair")
+        (when n (is (eql :b (%sn-value n)))))
+      (is (null (find-kv-in-skip-list sl 2 :z)) "absent value -> nil"))))
+
+(test remove-with-value-arg-removes-by-key
+  "remove-from-skip-list accepts a VALUE argument (currently ignored -- it
+removes by key).  On a unique-key list this removes exactly that key.
+(Duplicate-key removal is buggy and is covered by a separate task, not here.)"
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (add-to-skip-list sl 1 10)
+      (add-to-skip-list sl 2 20)
+      (remove-from-skip-list sl 2 20)        ; value ignored; key 2 removed
+      (is (= 1 (skip-list-count sl)))
+      (is (null (find-in-skip-list sl 2)) "key 2 gone")
+      (is (= 10 (sl-find-value sl 1)) "key 1 untouched"))))
+
+(test to-node-list-returns-nodes-in-order
+  "skip-list-to-node-list returns the nodes in ascending key order."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (dolist (k '(3 1 2)) (add-to-skip-list sl k (* k 10)))
+      (let ((nodes (skip-list-to-node-list sl)))
+        (is (equal '(1 2 3) (mapcar #'%sn-key nodes)))
+        (is (equal '(10 20 30) (mapcar #'%sn-value nodes)))))))
+
+(test empty-skip-list-edge-cases
+  "An empty skip list: find -> nil, count -> 0, to-list -> nil, removing a
+missing key is a no-op."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (is (null (find-in-skip-list sl 42)))
+      (is (= 0 (sl-live-count sl)))
+      (is (null (skip-list-to-list sl)))
+      (remove-from-skip-list sl 42)            ; must not error
+      (is (= 0 (sl-live-count sl))))))
+
+(test analyze-heights-runs-on-populated-list
+  "analyze-sl-heights runs and reports per-level node counts on a populated list."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (dotimes (i 50) (add-to-skip-list sl i i))
+      (let ((heights (analyze-sl-heights sl)))
+        (is-true heights "analyze-sl-heights should return a non-nil report")))))
+
+(test delete-skip-list-runs-clean
+  "delete-skip-list tears down a populated list without error."
+  (with-temp-memory (heap)
+    (let ((sl (make-integer-skip-list heap)))
+      (dotimes (i 20) (add-to-skip-list sl i i))
+      (finishes (delete-skip-list sl)))))

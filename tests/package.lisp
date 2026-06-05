@@ -50,9 +50,14 @@
                 #:make-skip-list
                 #:add-to-skip-list
                 #:find-in-skip-list
+                #:find-kv-in-skip-list
+                #:update-in-skip-list
                 #:remove-from-skip-list
                 #:skip-list-count
                 #:skip-list-to-list
+                #:skip-list-to-node-list
+                #:delete-skip-list
+                #:analyze-sl-heights
                 #:%sn-value
                 #:%sn-key
                 #:%sl-length
