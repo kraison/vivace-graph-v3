@@ -48,7 +48,7 @@
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
                    ve-written-p vev-written-p type-id revision pointer
                    commit-epoch prev-pointer)
-      (deserialize-node-head mf offset)
+      (funcall *node-head-reader* mf offset)
     (declare (ignore ve-written-p vev-written-p))
     (let* ((subclass (if (eq type-id 0)
                          'vertex

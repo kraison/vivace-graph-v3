@@ -71,7 +71,7 @@
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
                    ve-written-p vev-written-p type-id revision pointer
                    commit-epoch prev-pointer offset)
-      (deserialize-node-head mf offset)
+      (funcall *node-head-reader* mf offset)
     (let* ((subclass (if (eq type-id 0)
                          'edge
                          (let ((type-meta (lookup-node-type-by-id

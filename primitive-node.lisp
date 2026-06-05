@@ -103,6 +103,44 @@
        int)
      offset)))
 
+;; The head reader the vertex/edge codecs dispatch through.  Normally the v2
+;; (31-byte) reader; MIGRATE-GRAPH rebinds it to DESERIALIZE-NODE-HEAD-V1 to read
+;; a pre-MVCC (v1, 15-byte) graph so its data can be logically backed up + replayed.
+(defvar *node-head-reader* 'deserialize-node-head)
+
+(defun deserialize-node-head-v1 (mf offset)
+  "Read a pre-MVCC (v1) 15-byte node head: flags(1) type-id(2) revision(4)
+data-pointer(8).  Returns the same value shape as DESERIALIZE-NODE-HEAD with
+commit-epoch and prev-pointer forced to 0 and OFFSET stopped after data-pointer,
+so the edge codec positions from/to/weight at their v1 offsets."
+  (let ((flags (get-byte mf offset)))
+    (values
+     (ldb-test (byte 1 0) flags) ;; deleted-p
+     (ldb-test (byte 1 1) flags) ;; written-p
+     (ldb-test (byte 1 2) flags) ;; heap-written-p
+     (ldb-test (byte 1 3) flags) ;; type-idx-written-p
+     (ldb-test (byte 1 4) flags) ;; views-written-p
+     (ldb-test (byte 1 5) flags) ;; ve-written-p
+     (ldb-test (byte 1 6) flags) ;; vev-written-p
+     (let ((int 0)) ;; type-id
+       (declare (type (integer 0 65535) int))
+       (dotimes (i 2)
+         (setq int (dpb (get-byte mf (incf offset)) (byte 8 (* i 8)) int)))
+       int)
+     (let ((int 0)) ;; revision
+       (declare (type (integer 0 4294967295) int))
+       (dotimes (i 4)
+         (setq int (dpb (get-byte mf (incf offset)) (byte 8 (* i 8)) int)))
+       int)
+     (let ((int 0)) ;; data-pointer
+       #+sbcl (declare (type sb-ext:word int))
+       (dotimes (i 8)
+         (setq int (dpb (get-byte mf (incf offset)) (byte 8 (* i 8)) int)))
+       int)
+     0      ;; commit-epoch (v1 has none)
+     0      ;; prev-pointer (v1 has none)
+     offset)))
+
 (defun finalize-node (node table graph)
   (setf (written-p node) t)
   (save-node-flags table node)

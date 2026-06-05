@@ -62,3 +62,61 @@ auto-shifts with the larger v2 head)."
           (is (equalp aid (from e2)))
           (is (equalp bid (to e2)))
           (is (= 2.5 (weight e2))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; v1 -> v2 migration (MIGRATE-GRAPH)
+;;;
+;;; tests/fixtures/v1-graph.tar.gz is a pristine pre-MVCC (storage-version 1,
+;;; 15-byte head) graph built on the experiment branch with this same test
+;;; schema (g-person/g-employee/g-knows/g-likes): Alice(30) -knows-> Bob(25),
+;;; Bob -knows-> Carol(40, employee "Boss"), Alice -likes-> Carol.  The heap is a
+;;; 1 GB sparse file, so it ships tar+gzipped (~13 KB of zero-fill) and the test
+;;; extracts it to a scratch dir.
+;;; ---------------------------------------------------------------------------
+
+(defun extract-v1-fixture (dest)
+  "Extract the committed v1 graph fixture into DEST (created if needed); return
+DEST as a string."
+  (let ((tarball (asdf:system-relative-pathname
+                  :graph-db/test "tests/fixtures/v1-graph.tar.gz")))
+    (ensure-directories-exist dest)
+    (uiop:run-program (list "tar" "xzf" (namestring tarball)
+                            "-C" (namestring dest))
+                      :output t :error-output t)
+    (namestring dest)))
+
+(test migrate-v1-graph-to-v2
+  "A pre-MVCC (v1, 15-byte head) graph cannot be opened directly by v2 code but
+MIGRATE-GRAPH carries it across (logical snapshot + replay), preserving every
+node, its slot data, the subclass, and the edge topology."
+  (with-temp-directory (root)
+    (let ((old-dir (extract-v1-fixture (merge-pathnames "v1/" root)))
+          (new-dir (namestring (merge-pathnames "v2/" root))))
+      ;; v2 code refuses to open the v1 graph directly (the format gate).
+      (signals error (graph-db:open-graph :mvcc-mig-guard old-dir
+                                          :buffer-pool-p nil :gc-heap-p nil))
+      ;; ...but MIGRATE-GRAPH brings it forward to v2.
+      (let ((g (graph-db::migrate-graph :graph-db-mvcc-migration old-dir new-dir
+                                        :package :graph-db/test)))
+        (unwind-protect
+             (let ((*graph* g))
+               (is (= 2 graph-db::+storage-version+)
+                   "the migrated graph is written in the current (v2) format")
+               ;; All three people survive, with name + age intact.  :vertex-type
+               ;; g-person includes the g-employee subclass (Carol) by default.
+               (let ((people (sort (map-vertices
+                                    (lambda (v) (list (slot-value v 'name)
+                                                      (slot-value v 'age)))
+                                    g :collect-p t :vertex-type 'g-person)
+                                   #'string< :key #'car)))
+                 (is (equal '(("Alice" 30) ("Bob" 25) ("Carol" 40)) people)))
+               ;; Carol's subclass + extra slot round-tripped.
+               (let ((titles (map-vertices (lambda (v) (slot-value v 'title))
+                                           g :collect-p t :vertex-type 'g-employee)))
+                 (is (equal '("Boss") titles)))
+               ;; Edge topology: two g-knows, one g-likes.
+               (is (= 2 (length (map-edges #'identity g
+                                           :collect-p t :edge-type 'g-knows))))
+               (is (= 1 (length (map-edges #'identity g
+                                           :collect-p t :edge-type 'g-likes)))))
+          (graph-db:close-graph g :snapshot-p nil))))))

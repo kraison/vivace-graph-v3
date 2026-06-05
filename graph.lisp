@@ -112,7 +112,8 @@ to disk and remove it."
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
                    replication-key package (buffer-pool-p t) (gc-heap-p t)
-                   (buffer-pool-size 100000))
+                   (buffer-pool-size 100000)
+                   (accept-versions (list +storage-version+)))
   "Open the existing graph named NAME whose files live under directory
 LOCATION, register it, and return it.  Use this to reopen a graph created
 earlier with MAKE-GRAPH; the keyword arguments mirror MAKE-GRAPH's.
@@ -134,7 +135,8 @@ CLOSE-GRAPH when finished."
     (when buffer-pool-p
       (log:info "Initializing buffer pool.")
       (ensure-buffer-pool buffer-pool-size))
-    (let* ((heap (open-memory (format nil "~A/heap.dat" path)))
+    (let* ((heap (open-memory (format nil "~A/heap.dat" path)
+                              :accept-versions accept-versions))
            (graph
             (make-instance
              (cond (slave-p 'slave-graph)
@@ -157,7 +159,8 @@ CLOSE-GRAPH when finished."
                           (format nil "~A/edge/" path))
              :heap heap
              :indexes (open-memory
-                       (format nil "~A/indexes.dat" path))
+                       (format nil "~A/indexes.dat" path)
+                       :accept-versions accept-versions)
              :ve-index-in (open-ve-index
                            (format nil "~A/ve-index-in/" path))
              :ve-index-out (open-ve-index
