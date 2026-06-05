@@ -311,7 +311,11 @@ endpoint pair.  Deleted edges are skipped unless :INCLUDE-DELETED-P.  With
 :COLLECT-P, collect and return FN's values; otherwise return NIL.  This drives
 OUTGOING-EDGES / INCOMING-EDGES."
   ;; FIXME: need to handle subclasses when edge-type is specified
-  (let ((result nil))
+  ;; Bind *GRAPH* to GRAPH so the value-deserializer (deserialize-edge-head)
+  ;; resolves type-ids against the right schema even when mapping a graph that
+  ;; isn't the current *GRAPH* (see the note in MAP-VERTICES).
+  (let ((result nil)
+        (*graph* graph))
     (cond ((and edge-type to-vertex from-vertex)
            (let ((type-meta (or (and (integerp edge-type)
                                      (lookup-node-type-by-id edge-type :edge))
@@ -426,7 +430,7 @@ OUTGOING-EDGES / INCOMING-EDGES."
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
-                      (edge-table *graph*))))
+                      (edge-table graph))))
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)

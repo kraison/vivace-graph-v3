@@ -159,7 +159,12 @@ the id on a duplicate-key collision."
 (and, unless :INCLUDE-SUBCLASSES-P is nil, its subtypes); otherwise visit all
 vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
 :COLLECT-P, collect and return FN's values as a list; otherwise return NIL."
-  (let ((result nil))
+  ;; Bind *GRAPH* to the GRAPH argument: the lhash value-deserializer
+  ;; (deserialize-vertex-head) resolves a node's type-id -> class via *GRAPH*'s
+  ;; schema, so mapping a graph that isn't the current *GRAPH* would otherwise
+  ;; fail (NO-APPLICABLE-METHOD on SCHEMA/VERTEX-TABLE with NIL).
+  (let ((result nil)
+        (*graph* graph))
     (flet ((map-it (vertex-type)
              (let* ((type-meta (or (and (integerp vertex-type)
                                         (lookup-node-type-by-id vertex-type :vertex))
@@ -205,12 +210,12 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))
-                        (vertex-table *graph*)))))
+                        (vertex-table graph)))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))
   (map-edges (lambda (vertex)
                (when (deleted-p vertex)
                  (remove-from-type-index vertex graph)))
-             *graph*
+             graph
              :include-deleted-p t))

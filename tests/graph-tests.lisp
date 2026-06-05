@@ -147,3 +147,38 @@ set, with the right endpoints and weight."
       (let ((e (lookup-vertex eid)))
         (is (string= "Boss" (slot-value e 'name)))
         (is (string= "CEO" (slot-value e 'title)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; map-vertices / map-edges must use their GRAPH argument, not *graph*
+;;;
+;;; The all-types (no :vertex-type / :edge-type) branch used to read the dynamic
+;;; *graph* instead of the passed graph, so mapping a graph that isn't the
+;;; current *graph* errored (NO-APPLICABLE-METHOD on VERTEX-TABLE/EDGE-TABLE with
+;;; NIL).  That also broke CLOSE-GRAPH's default snapshot (snapshot ->
+;;; check-data-integrity -> map-vertices) on a non-current graph.
+;;; ---------------------------------------------------------------------------
+
+(test map-all-uses-graph-arg-not-dynamic
+  "map-vertices / map-edges (all-types branch) honor their GRAPH argument even
+when *graph* is bound to a different graph (or nil)."
+  (with-test-graph (g)
+    (with-transaction ()
+      (let ((a (make-g-person :name "A"))
+            (b (make-g-person :name "B")))
+        (make-g-knows :from a :to b)))
+    ;; Rebind *graph* away from G; the maps must still see G's contents.
+    (let ((*graph* nil))
+      (is (= 2 (length (map-vertices #'identity g :collect-p t))))
+      (is (= 1 (length (map-edges #'identity g :collect-p t)))))))
+
+(test close-graph-default-snapshot-without-current-graph
+  "CLOSE-GRAPH with the default :SNAPSHOT-P T succeeds even when *graph* is not
+bound to the graph being closed (snapshot walks the graph via map-vertices)."
+  (with-temp-directory (dir)
+    (let ((g (make-graph *integration-graph-name* (namestring dir)
+                         :buffer-pool-size 1000)))
+      (let ((*graph* g))
+        (with-transaction () (make-g-person :name "Solo")))
+      ;; *graph* is NOT bound to g here; default snapshot must not crash.
+      (finishes (close-graph g))
+      (collect-garbage))))

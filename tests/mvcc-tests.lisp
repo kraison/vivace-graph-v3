@@ -119,4 +119,4 @@ node, its slot data, the subclass, and the edge topology."
                                            :collect-p t :edge-type 'g-knows))))
                (is (= 1 (length (map-edges #'identity g
                                            :collect-p t :edge-type 'g-likes)))))
-          (graph-db:close-graph g :snapshot-p nil))))))
+          (graph-db:close-graph g))))))
