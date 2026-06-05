@@ -56,6 +56,11 @@
                 #:spatial-index-query-bbox
                 #:spatial-index-query-radius
                 #:delete-spatial-index
+                ;; index-backed spatial queries (spatial extension)
+                #:find-nodes-within
+                #:find-nodes-near
+                #:find-within/2
+                #:find-near/4
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory
