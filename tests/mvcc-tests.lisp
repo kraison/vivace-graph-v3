@@ -300,3 +300,51 @@ and the older version is retained because the open transaction holds the floor."
                  (is (= 1 (slot-value (lookup-vertex id) 'age))
                      "without snapshot reads, a read sees the live version")))
           (ignore-errors (graph-db::remove-transaction txn-a tm)))))))
+
+;; NOTE (prototype limitation): snapshot isolation here applies to LOOKUP only.
+;; Scans (map-vertices / map-edges) read the LIVE version of each node, so a
+;; transaction that scans can observe newer data than its lookups.  Full
+;; snapshot-consistent scans would resolve each node's version during the scan
+;; (extra cost) and are out of scope for this prototype.
+
+(test snapshot-consistent-across-multiple-lookups
+  "An open transaction sees a consistent point-in-time snapshot across several
+lookups: a later transaction that updates multiple nodes is invisible to it for
+ALL of them (not a torn mix of old and new)."
+  (with-test-graph (g)
+    (let ((tm (graph-db::transaction-manager g))
+          xid yid)
+      (with-transaction ()
+        (setq xid (id (make-g-person :name "X" :age 10))
+              yid (id (make-g-person :name "Y" :age 20))))
+      (let ((txn-a (graph-db::create-transaction tm)))
+        (unwind-protect
+             (progn
+               ;; One later transaction updates BOTH X and Y.
+               (with-transaction ()
+                 (let ((cx (copy (lookup-vertex xid)))
+                       (cy (copy (lookup-vertex yid))))
+                   (setf (slot-value cx 'age) 11) (save cx)
+                   (setf (slot-value cy 'age) 21) (save cy)))
+               (let ((graph-db:*transaction* txn-a))
+                 (is (= 10 (slot-value (lookup-vertex xid) 'age))
+                     "snapshot: X still at its pre-update value")
+                 (is (= 20 (slot-value (lookup-vertex yid) 'age))
+                     "snapshot: Y still at its pre-update value (consistent)")))
+          (ignore-errors (graph-db::remove-transaction txn-a tm)))))))
+
+(test snapshot-hides-nodes-created-after-start
+  "A node created by a transaction that commits after our snapshot started is
+invisible to a lookup in our transaction (no phantom)."
+  (with-test-graph (g)
+    (let ((tm (graph-db::transaction-manager g))
+          zid)
+      (with-transaction () (make-g-person :name "seed"))  ; advance the epoch past 0
+      (let ((txn-a (graph-db::create-transaction tm)))
+        (unwind-protect
+             (progn
+               (with-transaction () (setq zid (id (make-g-person :name "Z"))))
+               (let ((graph-db:*transaction* txn-a))
+                 (is (null (lookup-vertex zid))
+                     "node committed after snapshot start is invisible to lookup")))
+          (ignore-errors (graph-db::remove-transaction txn-a tm)))))))
