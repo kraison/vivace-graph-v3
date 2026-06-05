@@ -29,6 +29,13 @@
                 #:geometry-lon
                 #:geometry-lat
                 #:geometry-bbox
+                ;; geometry refine ops (spatial extension)
+                #:geodesic-distance
+                #:point-in-ring-p
+                #:point-in-polygon-rings-p
+                #:geometry-contains-point-p
+                #:bbox-overlap-p
+                #:geometry-distance
                 ;; geohash (spatial extension)
                 #:geohash-encode
                 #:geohash-decode
