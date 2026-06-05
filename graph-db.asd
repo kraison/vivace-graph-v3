@@ -168,6 +168,7 @@
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")
+               (:file "prolog-functor-tests")
                (:file "traverse-tests")
                (:file "write-path-tests")
                (:file "reopen-tests")

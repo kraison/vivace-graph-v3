@@ -137,6 +137,24 @@
                 #:not/1
                 #:bagof/3
                 #:setof/3
+                ;; comparison / arithmetic / type / control built-ins
+                #:=/2
+                #:==/2
+                #:/=/2
+                #:>/2
+                #:</2
+                #:>=/2
+                #:<=/2
+                #:is/2
+                #:numberp/1
+                #:atom/1
+                #:var/1
+                #:lisp/2
+                #:regex-match/2
+                #:call/1
+                #:if/2
+                #:if/3
+                #:unique/1
                 ;; rule definition + functor-table access (for stress tests).
                 ;; (! is shadowing-imported above.)
                 #:<-
