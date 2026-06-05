@@ -91,6 +91,9 @@
                 #:lookup-edge
                 #:outgoing-edges
                 #:incoming-edges
+                #:traverse
+                #:traversal-path
+                #:end-vertex
                 #:map-vertices
                 #:map-edges
                 #:weight
