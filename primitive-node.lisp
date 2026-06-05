@@ -6,6 +6,12 @@
 ;; reader is just "stop after data-pointer".  +edge-header-size+ derives from this.
 (alexandria:define-constant +node-header-size+ 31)
 
+;; Byte offset of the prev-pointer field WITHIN a head (after flags(1) type-id(2)
+;; revision(4) data-pointer(8) commit-epoch(8) = 23).  The reaper patches this
+;; field in place (in the lhash live head or an archived heap head) to sever a
+;; reclaimed version chain.
+(alexandria:define-constant +node-prev-pointer-offset+ 23)
+
 (defgeneric node-p (thing)
   (:method ((thing node)) t)
   (:method (thing) nil))

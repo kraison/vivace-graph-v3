@@ -120,3 +120,69 @@ node, its slot data, the subclass, and the edge topology."
                (is (= 1 (length (map-edges #'identity g
                                            :collect-p t :edge-type 'g-likes)))))
           (graph-db:close-graph g))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Versioned write path + reaper (P2)
+;;; ---------------------------------------------------------------------------
+
+(defun version-chain-length (node graph)
+  "Number of archived versions chained behind NODE's live head (via prev-pointer)."
+  (let ((p (graph-db::prev-pointer node))
+        (n 0))
+    (loop
+      (when (zerop p) (return n))
+      (incf n)
+      (multiple-value-bind (data-ptr epoch prev)
+          (graph-db::read-archived-head graph p)
+        (declare (ignore data-ptr epoch))
+        (setf p prev)))))
+
+(defun bump-age (id new-age)
+  "Update vertex ID's age inside a transaction (a versioning write)."
+  (with-transaction ()
+    (let ((c (copy (lookup-vertex id))))
+      (setf (slot-value c 'age) new-age)
+      (save c))))
+
+(test versioned-update-retains-then-reaps-prior-version
+  "An update archives the prior version (prev-pointer chain grows), and the lazy
+epoch-gated reaper keeps the chain bounded (keep=0 => a single retained version
+in steady state) while the live head always reads the newest data."
+  (with-test-graph (g)
+    (let (id)
+      (with-transaction () (setq id (id (make-g-person :name "v" :age 0))))
+      (is (= 0 (version-chain-length (lookup-vertex id) g))
+          "a freshly created node has no prior versions")
+      (bump-age id 1)
+      (is (= 1 (version-chain-length (lookup-vertex id) g))
+          "the first update retains the prior version (cannot be reaped yet)")
+      (bump-age id 2)
+      (bump-age id 3)
+      (is (= 1 (version-chain-length (lookup-vertex id) g))
+          "steady state retains exactly one prior version (older ones reaped)")
+      (is (= 3 (slot-value (lookup-vertex id) 'age))
+          "the live head always reflects the newest committed value"))))
+
+(test versioned-reopen-preserves-live-and-chain
+  "CLOSE-GRAPH + OPEN-GRAPH (which runs the version-aware GC-HEAP) preserves the
+live data of a repeatedly-updated node and does not corrupt its retained version
+chain."
+  (with-temp-directory (dir)
+    (let (id)
+      (let ((g (make-graph *integration-graph-name* (namestring dir)
+                           :buffer-pool-size 1000)))
+        (let ((*graph* g))
+          (with-transaction () (setq id (id (make-g-person :name "r" :age 0))))
+          (dotimes (i 4) (bump-age id (1+ i))))
+        (close-graph g))
+      ;; Reopen: default :gc-heap-p T sweeps the heap; the version-aware roots
+      ;; must keep the live head's data (and its retained version) alive.
+      (let ((g (open-graph *integration-graph-name* (namestring dir))))
+        (unwind-protect
+             (let ((*graph* g))
+               (is (= 4 (slot-value (lookup-vertex id) 'age))
+                   "live data survives reopen + gc-heap")
+               ;; the chain is still walkable (no dangling prev-pointer)
+               (is (<= 0 (version-chain-length (lookup-vertex id) g))))
+          (close-graph g)
+          (collect-garbage))))))

@@ -370,6 +370,126 @@ no data are not written."
         (error (c)
           (log:error "Unable to free ~A (~A): ~A" (string-id node) data-pointer c))))))
 
+;;; ---------------------------------------------------------------------------
+;;; MVCC versioned write path + lazy, epoch-gated reaper
+;;;
+;;; On update/delete the prior version's head is archived into its own heap block
+;;; (its data-pointer still references the -- now retained -- old data block) and
+;;; the new live head's PREV-POINTER chains to it.  COMMIT-EPOCH stamps every
+;;; write with the committing transaction-id.  Old versions are reclaimed lazily
+;;; by REAP-OLD-VERSIONS once no active reader/transaction can still observe them.
+;;; ---------------------------------------------------------------------------
+
+;; The committing transaction-id, bound by APPLY-TRANSACTION (the shared apply
+;; path, so masters, slaves, restore and recovery all stamp consistently).  Never
+;; travels on the replication wire -- the slave re-derives it from the tx header.
+(defvar *commit-epoch* 0)
+
+(defun archive-node-version (old-node graph)
+  "Copy OLD-NODE's current head into a freshly allocated heap block and return
+its address (for the new live head's PREV-POINTER).  The archived head keeps
+OLD-NODE's data-pointer/commit-epoch/prev-pointer, so the retained old data block
+and the rest of the version chain remain reachable."
+  (let* ((size (etypecase old-node
+                 (edge   +edge-header-size+)
+                 (vertex +node-header-size+)))
+         (addr (allocate (heap graph) size)))
+    (etypecase old-node
+      (edge   (serialize-edge-head   (heap graph) old-node addr))
+      (vertex (serialize-vertex-head (heap graph) old-node addr)))
+    addr))
+
+(defun read-archived-head (graph addr)
+  "Return (values data-pointer commit-epoch prev-pointer) of the archived head
+at heap ADDR.  Only the node-head prefix is read (an edge's from/to/weight are
+irrelevant to reaping)."
+  (multiple-value-bind (d w hw tiw vw vew vvw type-id rev data-ptr epoch prev off)
+      (deserialize-node-head (heap graph) addr)
+    (declare (ignore d w hw tiw vw vew vvw type-id rev off))
+    (values data-ptr epoch prev)))
+
+(defun reap-safe-floor (transaction-manager)
+  "The oldest epoch any still-active transaction (or, from P2b, pinned reader)
+could observe.  NIL => nothing active => every archived version is reclaimable."
+  (minimum-start-transaction-id transaction-manager))
+
+(defun %sever-prev-pointer (owner table live-node graph)
+  "Set OWNER's prev-pointer field to 0.  OWNER is :LIVE (LIVE-NODE's lhash head)
+or the heap address of an archived head."
+  (if (eq owner :live)
+      (progn
+        (lhash-custom-update
+         table
+         (lambda (mf off)
+           (dotimes (i 8) (set-byte mf (+ off +node-prev-pointer-offset+ i) 0)))
+         (id live-node))
+        (setf (prev-pointer live-node) 0))
+      (dotimes (i 8)
+        (set-byte (heap graph) (+ owner +node-prev-pointer-offset+ i) 0))))
+
+(defun %free-version-chain (addr graph)
+  "Free the archived-version head blocks from ADDR down its prev-pointer chain,
+plus each version's retained data block."
+  (let ((heap (heap graph))
+        (p addr))
+    (loop
+      (when (zerop p) (return))
+      (multiple-value-bind (data-ptr epoch prev) (read-archived-head graph p)
+        (declare (ignore epoch))
+        (let ((next prev))
+          (when (> data-ptr 0)
+            (handler-case (free heap data-ptr)
+              (error (c) (log:error "reaper: free data ~A failed: ~A" data-ptr c))))
+          (handler-case (free heap p)
+            (error (c) (log:error "reaper: free head ~A failed: ~A" p c)))
+          (setq p next))))))
+
+(defun reap-node-chain (live-node graph floor keep)
+  "Walk LIVE-NODE's prev-pointer chain and free the contiguous oldest suffix
+whose stop-epoch (the commit-epoch of the next-newer version) is < FLOOR,
+retaining at least KEEP archived versions.  Repairs exactly one prev-pointer."
+  (let ((table (tx-write-table live-node graph))
+        (above-epoch (commit-epoch live-node))  ; stop-epoch of the first archived ver
+        (owner :live)                           ; :live or a heap address
+        (p (prev-pointer live-node))
+        (kept 0))
+    (loop
+      (when (zerop p) (return))
+      (multiple-value-bind (data-ptr epoch prev) (read-archived-head graph p)
+        (declare (ignore data-ptr))
+        (cond
+          ;; A reader with start-tx-id S observes versions with commit-epoch < S.
+          ;; The version at P stopped being live at ABOVE-EPOCH (its successor's
+          ;; commit-epoch), so a reader needs it iff S <= ABOVE-EPOCH.  Hence it
+          ;; is reclaimable iff every active start is strictly past ABOVE-EPOCH,
+          ;; i.e. ABOVE-EPOCH < FLOOR (strict).  NIL floor => nothing active.
+          ((and (>= kept keep)
+                (or (null floor) (< above-epoch floor)))
+           ;; This version (and all older) can no longer be observed: cut here.
+           (%sever-prev-pointer owner table live-node graph)
+           (%free-version-chain p graph)
+           (return))
+          (t
+           ;; Retain this version; descend one link.
+           (incf kept)
+           (setf above-epoch epoch
+                 owner p
+                 p prev)))))))
+
+(defun reap-old-versions (writes graph &optional (keep 0))
+  "Post-commit: reclaim archived versions of every updated/deleted node that no
+active reader/transaction can still observe.  Runs inside the transaction-manager
+lock (via APPLY-TRANSACTION)."
+  ;; During crash recovery OPEN-GRAPH replays transactions BEFORE it installs the
+  ;; transaction-manager, so the slot may be unbound here.  No readers can be
+  ;; active during recovery, so a NIL floor (reap-everything-safe) is correct.
+  (let ((floor (let ((tm (and (slot-boundp graph 'transaction-manager)
+                              (transaction-manager graph))))
+                 (and tm (reap-safe-floor tm)))))
+    (dolist (write writes)
+      (when (typep write 'tx-update)        ; tx-update and its subclass tx-delete
+        (reap-node-chain (node write) graph floor keep)))))
+
 (defgeneric add-node-to-indexes (node graph &key unless-present)
   (:method ((node node) graph &key unless-present)
     (add-to-type-index node graph :unless-present unless-present)
@@ -436,6 +556,9 @@ no data are not written."
     ;; fails) and the insert is lost from type-indexed scans.  Setting it here
     ;; means the lhash entry carries written-p=1 from its first appearance.
     (setf (written-p node) t)
+    ;; MVCC: stamp the committing epoch; a fresh node has no prior version.
+    (setf (commit-epoch node) *commit-epoch*
+          (prev-pointer node) 0)
     (handler-case
         (lhash-insert table (id node) node)
       (duplicate-key-error (condition)
@@ -453,10 +576,12 @@ no data are not written."
     (setf (bytes new-node)
           (serialize (data new-node)))
     (maybe-write-to-heap new-node graph)
-    (lhash-update table (id new-node) new-node)
-    ;; KTR: moved to post-view generation
-    ;;(maybe-free-from-heap old-node graph)
-    )
+    ;; MVCC: archive the prior version's head (it still points at the retained
+    ;; old data block) and chain the new live head to it.  The old data block is
+    ;; NO LONGER freed here -- REAP-OLD-VERSIONS reclaims it when epoch-safe.
+    (setf (prev-pointer new-node) (archive-node-version old-node graph)
+          (commit-epoch new-node) *commit-epoch*)
+    (lhash-update table (id new-node) new-node))
   write)
 
 
@@ -555,15 +680,9 @@ no data are not written."
     (dolist (write writes)
       (apply-tx-write-to-views write graph))))
 
-(defgeneric garbage-collect-heap (writes graph)
-  (:method (writes graph)
-    (let ((old-nodes (delete-duplicates
-                      (mapcar 'old-node
-                              (remove-if-not (lambda (write)
-                                               (typep write 'tx-update))
-                                             writes)))))
-      (dolist (old-node old-nodes)
-        (maybe-free-from-heap old-node graph)))))
+;; NB: the old free-the-prior-version GARBAGE-COLLECT-HEAP is gone.  Under MVCC
+;; the prior version is retained (archived + chained) and reclaimed later by
+;; REAP-OLD-VERSIONS; freeing it at commit would orphan the version chain.
 
 (defvar *after-apply-tx-writes-hook* nil
   "When non-nil, a zero-argument function called after apply-tx-writes but
@@ -574,14 +693,16 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
-      (let ((writes (writes transaction)))
+      (let ((writes (writes transaction))
+            ;; MVCC: every write in this transaction is stamped with this id.
+            (*commit-epoch* (transaction-id transaction)))
         (apply-tx-writes writes graph)
         (when *after-apply-tx-writes-hook*
           (let ((hook *after-apply-tx-writes-hook*))
             (setf *after-apply-tx-writes-hook* nil)
             (funcall hook)))
         (apply-tx-writes-to-views writes graph)
-        (garbage-collect-heap writes graph)
+        (reap-old-versions writes graph)
         (persist-highest-transaction-id (transaction-id transaction) graph)))))
 
 (defmethod apply-transaction :after (transaction (graph master-graph))
