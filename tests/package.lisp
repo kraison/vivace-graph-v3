@@ -29,6 +29,13 @@
                 #:geometry-lon
                 #:geometry-lat
                 #:geometry-bbox
+                ;; geohash (spatial extension)
+                #:geohash-encode
+                #:geohash-decode
+                #:geohash-bbox
+                #:geohash-cell-size
+                #:geohash-prefix-range
+                #:geohash-covering
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory
