@@ -9,6 +9,7 @@ It currently only works with SBCL versions >= 1.045, LispWorks and Clozure CL, t
 
 To get started, please see example.lisp.
 
+[documentation](docs/phase1/readme.md)
 ### Announcement, 2024-10-15
 
 The author is still volunteering in Ukraine, and is looking for help maintaining this codebase while he is away (and after he returns).  There are currently 11 outstanding issues and very little documentation.  Please let kevin@chatsubolabs.com know if you are interested in helping out.
