@@ -185,6 +185,7 @@
                (:file "write-path-tests")
                (:file "reopen-tests")
                (:file "backup-tests")
+               (:file "mvcc-tests")
                (:file "rest-tests")
                (:file "prolog-stress-tests"))
   :perform (test-op (op c)

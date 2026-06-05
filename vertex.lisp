@@ -14,7 +14,8 @@
   (:method (thing) nil))
 
 (defun %make-vertex (&key id type-id revision deleted-p data-pointer data bytes
-                     written-p heap-written-p type-idx-written-p views-written-p)
+                     written-p heap-written-p type-idx-written-p views-written-p
+                     commit-epoch prev-pointer)
   (let ((vertex (get-vertex-buffer)))
     (cond (id
            (setf (id vertex) id))
@@ -22,6 +23,8 @@
            (setf (id vertex) (gen-vertex-id))))
     (when type-id (setf (type-id vertex) type-id))
     (when revision (setf (revision vertex) revision))
+    (when commit-epoch (setf (commit-epoch vertex) commit-epoch))
+    (when prev-pointer (setf (prev-pointer vertex) prev-pointer))
 
     (when deleted-p (setf (deleted-p vertex) deleted-p))
     (when written-p (setf (written-p vertex) written-p))
@@ -43,7 +46,8 @@
 (defun deserialize-vertex-head (mf offset)
   (multiple-value-bind
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
-                   ve-written-p vev-written-p type-id revision pointer)
+                   ve-written-p vev-written-p type-id revision pointer
+                   commit-epoch prev-pointer)
       (deserialize-node-head mf offset)
     (declare (ignore ve-written-p vev-written-p))
     (let* ((subclass (if (eq type-id 0)
@@ -58,7 +62,9 @@
                             :views-written-p views-written-p
                             :type-id type-id
                             :revision revision
-                            :data-pointer pointer)))
+                            :data-pointer pointer
+                            :commit-epoch commit-epoch
+                            :prev-pointer prev-pointer)))
       (change-class v subclass))))
 
 (defun make-vertex-table (location &key (key-test 'uuid-array-equal)

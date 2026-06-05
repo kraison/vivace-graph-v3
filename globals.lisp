@@ -38,7 +38,9 @@
 (defvar *schema-node-metadata* (make-hash-table :test 'equal))
 (alexandria:define-constant +max-node-types+ 65536)
 
-(alexandria:define-constant +storage-version+     #x01)
+;; v2 (2026): MVCC node head grew 15 -> 31 bytes (commit-epoch + prev-pointer).
+;; Old (v1) graphs must be migrated via MIGRATE-GRAPH (snapshot + replay).
+(alexandria:define-constant +storage-version+     #x02)
 (alexandria:define-constant +fixed-integer-64+    #x01)
 (alexandria:define-constant +data-magic-byte+     #x17)
 (alexandria:define-constant +lhash-magic-byte+    #x18)

@@ -247,9 +247,12 @@
     (when (memory-magic-byte-corrupt-p memory)
       (munmap-file (memory-mmap memory))
       (error "~A is not a memory file!" location))
-    (unless (= +storage-version+ (get-byte (memory-mmap memory) +memory-storage-version-offset+))
-      (munmap-file (memory-mmap memory))
-      (error "~A is the wrong data version!" location))
+    (let ((found (get-byte (memory-mmap memory) +memory-storage-version-offset+)))
+      (unless (= +storage-version+ found)
+        (munmap-file (memory-mmap memory))
+        (error "~A is storage format v~D but this build expects v~D. ~
+Pre-MVCC (v1) graphs must be migrated with MIGRATE-GRAPH (snapshot + replay)."
+               location found +storage-version+)))
     (setf (memory-pointer memory) (read-memory-pointer memory)
           (memory-size memory) (size-of (memory-mmap memory)))
     (init-free-list memory)

@@ -172,6 +172,14 @@
               :meta t :persistent nil)
    (data-pointer :accessor data-pointer :initform 0 :initarg :data-pointer
                  :type (unsigned-byte 64) :meta t :persistent nil)
+   ;; MVCC (v2 head): commit-epoch = the committing transaction-id when this
+   ;; version was written (global monotonic; for snapshot reads + the reaper).
+   ;; prev-pointer = LOCAL heap address of the previous version's archived head
+   ;; (0 = none).  Both are serialized in the node head; see serialize-node-head.
+   (commit-epoch :accessor commit-epoch :initform 0 :initarg :commit-epoch
+                 :type (unsigned-byte 64) :meta t :persistent nil)
+   (prev-pointer :accessor prev-pointer :initform 0 :initarg :prev-pointer
+                 :type (unsigned-byte 64) :meta t :persistent nil)
    (deleted-p :accessor deleted-p :initform nil :initarg :deleted-p :type boolean
               :meta t :persistent nil)
    (data :accessor data :initarg :data :initform nil :meta t :persistent nil)

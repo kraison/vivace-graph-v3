@@ -27,7 +27,8 @@
 
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
                      to weight written-p heap-written-p type-idx-written-p
-                     ve-written-p vev-written-p views-written-p)
+                     ve-written-p vev-written-p views-written-p
+                     commit-epoch prev-pointer)
   (let ((edge (get-edge-buffer)))
     (cond (id
            (setf (id edge) id))
@@ -38,6 +39,8 @@
     (when weight (setf (weight edge) weight))
     (when type-id (setf (type-id edge) type-id))
     (when revision (setf (revision edge) revision))
+    (when commit-epoch (setf (commit-epoch edge) commit-epoch))
+    (when prev-pointer (setf (prev-pointer edge) prev-pointer))
     ;; Flags
     (when deleted-p (setf (deleted-p edge) deleted-p))
     (when written-p (setf (written-p edge) written-p))
@@ -66,7 +69,8 @@
 (defun deserialize-edge-head (mf offset)
   (multiple-value-bind
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
-                   ve-written-p vev-written-p type-id revision pointer offset)
+                   ve-written-p vev-written-p type-id revision pointer
+                   commit-epoch prev-pointer offset)
       (deserialize-node-head mf offset)
     (let* ((subclass (if (eq type-id 0)
                          'edge
@@ -84,6 +88,8 @@
                :type-id type-id
                :revision revision
                :data-pointer pointer
+               :commit-epoch commit-epoch
+               :prev-pointer prev-pointer
                :from (let ((vec (get-buffer 16)))
                        (dotimes (i 16)
                          (setf (aref vec i) (get-byte mf (incf offset))))

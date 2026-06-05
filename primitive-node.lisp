@@ -1,6 +1,10 @@
 (in-package :graph-db)
 
-(alexandria:define-constant +node-header-size+ 15)
+;; v2 head (MVCC): flags(1) type-id(2) revision(4) data-pointer(8)
+;;                 commit-epoch(8) prev-pointer(8) = 31.
+;; The first 15 bytes are byte-identical to the v1 head (append-only), so a v1
+;; reader is just "stop after data-pointer".  +edge-header-size+ derives from this.
+(alexandria:define-constant +node-header-size+ 31)
 
 (defgeneric node-p (thing)
   (:method ((thing node)) t)
@@ -49,6 +53,12 @@
   ;; data-pointer
   (dotimes (i 8)
     (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (data-pointer n))))
+  ;; commit-epoch (MVCC v2)
+  (dotimes (i 8)
+    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (commit-epoch n))))
+  ;; prev-pointer (MVCC v2)
+  (dotimes (i 8)
+    (set-byte mf (incf offset) (ldb (byte 8 (* i 8)) (prev-pointer n))))
   offset)
 
 (defun deserialize-node-head (mf offset)
@@ -74,6 +84,18 @@
                         (byte 8 (* i 8)) int)))
        int)
      (let ((int 0)) ;; data-pointer
+       #+sbcl (declare (type sb-ext:word int))
+       (dotimes (i 8)
+         (setq int (dpb (get-byte mf (incf offset))
+                        (byte 8 (* i 8)) int)))
+       int)
+     (let ((int 0)) ;; commit-epoch (MVCC v2)
+       #+sbcl (declare (type sb-ext:word int))
+       (dotimes (i 8)
+         (setq int (dpb (get-byte mf (incf offset))
+                        (byte 8 (* i 8)) int)))
+       int)
+     (let ((int 0)) ;; prev-pointer (MVCC v2)
        #+sbcl (declare (type sb-ext:word int))
        (dotimes (i 8)
          (setq int (dpb (get-byte mf (incf offset))
