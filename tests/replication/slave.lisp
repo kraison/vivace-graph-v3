@@ -64,9 +64,12 @@
         (format t "~&SLAVE: master never became ready~%") (sexit 1))
       (let* ((dir  (uiop:getenv "REPL_SLAVE_DIR"))
              (port (parse-integer (uiop:getenv "REPL_PORT")))
+             ;; :keep-revisions 2 (slave-local reaper config, independent of the
+             ;; master) so replicated updates leave a retained version chain we
+             ;; can walk to prove the slave built it from LOCAL heap addresses.
              (g (make-graph :repl-test-app dir :slave-p t :master-host "localhost"
                             :replication-port port :replication-key "test-secret"
-                            :buffer-pool-size 1000)))
+                            :buffer-pool-size 1000 :keep-revisions 2)))
         (let ((*graph* g))
           (flet ((live ()  (map-vertices #'identity g :collect-p t :vertex-type 'r-person))
                  (edges () (map-edges #'identity g :collect-p t)))
@@ -87,18 +90,46 @@
             (write-flag "connected")
             (unless (wait-flag "phase2done")
               (check nil "master never finished phase 2"))
-            ;; --- Phase 2: live update + delete ---
+            ;; --- Phase 2: live update(s) + delete ---
+            ;; Wait for the FINAL state (name Alice2, age 33 after 3 bumps).
             (wait-until (lambda ()
                           (let ((lv (live)))
                             (and (= 1 (length lv))
-                                 (string= "Alice2" (slot-value (first lv) 'name))))))
+                                 (string= "Alice2" (slot-value (first lv) 'name))
+                                 (eql 33 (slot-value (first lv) 'age))))))
             (check (= 1 (length (live))) "live: exactly 1 live vertex (got ~D)" (length (live)))
             (let ((v (first (live))))
               (when v
                 (check (string= "Alice2" (slot-value v 'name))
-                       "live: update propagated (name=~S)" (slot-value v 'name))))
+                       "live: name update propagated (name=~S)" (slot-value v 'name))
+                (check (eql 33 (slot-value v 'age))
+                       "live: all 3 age updates propagated (age=~S)" (slot-value v 'age))
+                ;; MVCC: the slave built its OWN version chain (the master's
+                ;; prev-pointers were heap addresses meaningless here).  Walk it:
+                ;; it must terminate quickly and every archived head must be a
+                ;; sane local heap offset -- a copied master address would dangle
+                ;; or fail to read.  (keep-revisions=0, so it should be short.)
+                (let* ((heap (graph-db::heap g))
+                       (hi (graph-db::memory-pointer heap))
+                       (p (graph-db::prev-pointer v))
+                       (n 0) (ok t))
+                  (loop (when (zerop p) (return))
+                        (incf n)
+                        (when (or (> n 16) (>= p hi)) (setf ok nil) (return))
+                        (handler-case
+                            (multiple-value-bind (dp ep pv)
+                                (graph-db::read-archived-head g p)
+                              (declare (ignore ep))
+                              (when (or (>= dp hi) (>= pv hi)) (setf ok nil) (return))
+                              (setf p pv))
+                          (error () (setf ok nil) (return))))
+                  (check ok "live: slave version chain is local + well-formed (depth ~D)" n))))
             (check (= 0 (length (edges)))
-                   "live: edge gone after deleting Bob (got ~D)" (length (edges)))))
+                   "live: edge gone after deleting Bob (got ~D)" (length (edges)))
+            ;; Exercise version-aware GC over the replicated chains; must not error.
+            (check (handler-case (progn (graph-db::gc-heap g) t)
+                     (error (c) (format t "~&  gc-heap error: ~A~%" c) nil))
+                   "live: gc-heap walks replicated version chains cleanly")))
         (close-graph g :snapshot-p nil))
       (write-flag "slave-done")
       (if (zerop *fails*)

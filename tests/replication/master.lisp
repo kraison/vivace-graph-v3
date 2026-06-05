@@ -74,6 +74,17 @@
               (setf (slot-value v 'name) "Alice2")
               (save v)))
           (format t "~&MASTER: TX2 committed (Alice -> Alice2)~%") (finish-output)
+          ;; MVCC: update Alice2 repeatedly so the slave builds a real multi-
+          ;; version prev-pointer chain (the 2nd+ update's old-node carries a
+          ;; non-zero prev-pointer -- a MASTER heap address that must NOT be
+          ;; copied into the slave's chain; the slave re-derives it locally).
+          (dotimes (i 3)
+            (with-transaction ()
+              (let ((v (copy (by-name "Alice2"))))
+                (setf (slot-value v 'age) (+ 31 i))   ; -> 31, 32, 33
+                (save v))))
+          (format t "~&MASTER: TX2b committed (Alice2 age -> 33 over 3 updates)~%")
+          (finish-output)
           (mark-deleted (by-name "Bob"))    ; mark-deleted self-wraps a txn
           (format t "~&MASTER: TX3 committed (deleted Bob)~%") (finish-output))
         (write-flag "phase2done"))

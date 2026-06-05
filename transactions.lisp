@@ -1125,16 +1125,22 @@ lhash write and the view update, leaving a pending .txn file for recovery.")
           (deserialize-transaction-node-vector vector offset))
     (if (= count 2)
         (let ((old-node (deserialize-transaction-node-vector vector offset)))
-          ;; get local data-pointer to replace the one read from the txn file
+          ;; The wire/txn copy of OLD-NODE carries the writer's LOCAL heap
+          ;; addresses + epoch (the master's, for a replicated tx), which are
+          ;; meaningless here.  Re-derive them from THIS graph's current node so
+          ;; ARCHIVE-NODE-VERSION builds a correct local version chain (the MVCC
+          ;; prev-pointer is a local heap address and must never be copied across
+          ;; the wire).  COMMIT-EPOCH of the new live head is re-stamped from the
+          ;; transaction-id in APPLY-TRANSACTION, so it stays consistent.
           (log:debug "FINDING PROPER DATA-POINTER FOR ~A (~A)"
                      (id old-node) (data-pointer old-node))
           (let ((local-old-node (if (vertex-p old-node)
                                     (lookup-vertex (id old-node))
                                     (lookup-edge (id old-node)))))
-            (log:debug "SETTING DATA-POINTER OF ~A TO ~A"
-                       (id old-node)
-                       (data-pointer local-old-node))
-            (setf (data-pointer old-node) (data-pointer local-old-node)))
+            (when local-old-node
+              (setf (data-pointer old-node)  (data-pointer local-old-node)
+                    (prev-pointer old-node)  (prev-pointer local-old-node)
+                    (commit-epoch old-node)  (commit-epoch local-old-node))))
           (make-instance class
                          :node node
                          :old-node old-node))
