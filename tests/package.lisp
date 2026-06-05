@@ -194,6 +194,10 @@
                 #:if/2
                 #:if/3
                 #:unique/1
+                ;; spatial predicates (spatial extension)
+                #:geo-distance/5
+                #:geo-near/5
+                #:geo-within/3
                 ;; rule definition + functor-table access (for stress tests).
                 ;; (! is shadowing-imported above.)
                 #:<-
