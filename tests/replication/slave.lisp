@@ -94,15 +94,16 @@
                        "catch-up: Alice has 1 outgoing edge (got ~D)"
                        (length (outgoing-edges alice)))))
             ;; --- Subset replication + replicated spatial index (catch-up) ---
-            ;; The in-AO Kharkiv place replicated and is in the slave's spatial
-            ;; index; the out-of-AO Lviv place was filtered out entirely.
+            ;; The in-AO places (Kharkiv site + Crosser-out) replicated and are in
+            ;; the slave's spatial index; the out-of-AO places (Lviv site +
+            ;; Crosser-in) were filtered out entirely.
             (let ((kh (find-nodes-near 49.2020d0 37.1724d0 2000d0 :graph g))
                   (lv (find-nodes-near 50.0263d0 23.7183d0 2000d0 :graph g)))
-              (check (= 1 (length kh))
-                     "catch-up subset: in-AO Kharkiv place replicated + indexed (got ~D)"
+              (check (= 2 (length kh))
+                     "catch-up subset: 2 in-AO places replicated + indexed (got ~D)"
                      (length kh))
               (check (= 0 (length lv))
-                     "catch-up subset: out-of-AO Lviv place filtered out (got ~D)"
+                     "catch-up subset: out-of-AO places filtered out (got ~D)"
                      (length lv)))
             ;; signal master to send the live update + delete
             (write-flag "connected")
@@ -144,13 +145,24 @@
                   (check ok "live: slave version chain is local + well-formed (depth ~D)" n))))
             (check (= 0 (length (edges)))
                    "live: edge gone after deleting Bob (got ~D)" (length (edges)))
-            ;; --- Replicated spatial index (live) ---
-            ;; The live in-AO place streamed through and was indexed too, so the
-            ;; Kharkiv area now holds both the catch-up and the live place.
+            ;; --- Replicated spatial index + AO-boundary reconciliation (live) ---
+            ;; After the live phase the Kharkiv area holds: Kharkiv site (catch-up),
+            ;; Kharkiv live, and Crosser-in (entered the AO).  Crosser-out LEFT the
+            ;; AO and was deleted on the slave -> 3 in-AO places near Kharkiv.
             (let ((kh (find-nodes-near 49.2020d0 37.1724d0 2000d0 :graph g)))
-              (check (= 2 (length kh))
-                     "live: 2 in-AO places indexed after live replication (got ~D)"
+              (check (= 3 (length kh))
+                     "live: 3 in-AO places indexed after live replication (got ~D)"
                      (length kh)))
+            ;; The boundary crossers, by label: Crosser-out must be GONE (it moved
+            ;; out of the AO -> reconciled to a delete on the slave); Crosser-in
+            ;; must be PRESENT (it moved in -> reconciled to a create on the slave).
+            (let ((labels (mapcar (lambda (p) (slot-value p 'label))
+                                  (map-vertices #'identity g :collect-p t
+                                                             :vertex-type 'r-place))))
+              (check (not (member "Crosser-out" labels :test 'string=))
+                     "live: Crosser-out deleted on slave after LEAVING the AO")
+              (check (member "Crosser-in" labels :test 'string=)
+                     "live: Crosser-in created on slave after ENTERING the AO"))
             ;; Exercise version-aware GC over the replicated chains; must not error.
             (check (handler-case (progn (graph-db::gc-heap g) t)
                      (error (c) (format t "~&  gc-heap error: ~A~%" c) nil))

@@ -61,7 +61,12 @@
                 (b (make-r-person :name "Bob"   :age 25)))
             (make-r-knows :from a :to b :since "2020"))
           (make-r-place :label "Kharkiv site" :location (make-point 37.1724d0 49.2020d0))
-          (make-r-place :label "Lviv site"    :location (make-point 23.7183d0 50.0263d0)))
+          (make-r-place :label "Lviv site"    :location (make-point 23.7183d0 50.0263d0))
+          ;; Two places that will CROSS the slave's AO boundary on a later update:
+          ;; Crosser-out starts IN the AO (slave holds it), Crosser-in starts OUT
+          ;; (slave filters it).  See the live phase below.
+          (make-r-place :label "Crosser-out" :location (make-point 37.1750d0 49.2050d0))
+          (make-r-place :label "Crosser-in"  :location (make-point 23.7000d0 50.0000d0)))
         (format t "~&MASTER: TX1 committed (2 persons + 1 edge + 2 places)~%") (finish-output)
         (write-flag "ready")
         ;; wait for the slave to connect + verify catch-up
@@ -84,6 +89,24 @@
           (with-transaction ()
             (make-r-place :label "Kharkiv live" :location (make-point 37.1730d0 49.2030d0)))
           (format t "~&MASTER: live place committed (Kharkiv live)~%") (finish-output)
+          ;; AO-boundary-crossing updates (ordered before the age bumps, so the
+          ;; slave has applied them by the time it observes age=33).  Crosser-out
+          ;; moves OUT of the AO (slave must DELETE it); Crosser-in moves INTO the
+          ;; AO (slave must CREATE it -- it never held it before).
+          (flet ((by-label (l)
+                   (first (remove-if-not
+                           (lambda (x) (string= l (slot-value x 'label)))
+                           (map-vertices #'identity g :collect-p t :vertex-type 'r-place)))))
+            (with-transaction ()
+              (let ((v (copy (by-label "Crosser-out"))))
+                (setf (slot-value v 'location) (make-point 23.7183d0 50.0263d0)) ; -> Lviv (out)
+                (save v)))
+            (with-transaction ()
+              (let ((v (copy (by-label "Crosser-in"))))
+                (setf (slot-value v 'location) (make-point 37.1740d0 49.2040d0)) ; -> Kharkiv (in)
+                (save v))))
+          (format t "~&MASTER: AO crossers committed (out->Lviv, in->Kharkiv)~%")
+          (finish-output)
           ;; MVCC: update Alice2 repeatedly so the slave builds a real multi-
           ;; version prev-pointer chain (the 2nd+ update's old-node carries a
           ;; non-zero prev-pointer -- a MASTER heap address that must NOT be

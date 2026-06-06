@@ -215,6 +215,12 @@
            #:geometry-make-valid
            #:geometry-valid-p
            #:geometry-distance-exact
+           #:geometry-geodesic-distance
+           #:geometry-union
+           #:geometry-intersection
+           #:geometry-difference
+           #:geometry-buffer
+           #:geometry-area
            #:geos-available-p
            #:geos-shutdown
            #:*geos-available-p*

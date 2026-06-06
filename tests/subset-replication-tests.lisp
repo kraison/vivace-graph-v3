@@ -62,3 +62,47 @@ rejects spatial nodes outside the area."
     (is (null (replication-filter s)))
     (setf (replication-filter s) (make-spatial-replication-filter (make-polygon *ao*)))
     (is (functionp (replication-filter s)))))
+
+(test reconcile-handles-boundary-crossing
+  "reconcile-slave-writes transforms an update that crosses the AO boundary: a
+node LEAVING the subset becomes a delete; one ENTERING becomes a create; a node
+staying in/out keeps/drops.  (Generalises filter-writes with slave presence.)"
+  (with-test-graph (g)
+    (let (p a)
+      (with-transaction ()
+        (setq p (make-geo-place :loc (make-point 37.175d0 49.203d0))   ; present, in-AO
+              a (make-geo-place :loc (make-point 37.176d0 49.204d0))))  ; will be removed
+      ;; A previously left the subset, so the slave no longer holds it (deleted).
+      (with-transaction () (mark-deleted (lookup-vertex (id a))))
+      (let* ((filter (make-spatial-replication-filter (make-polygon *ao*)))
+             (lviv   (make-point 23.72d0 50.03d0))
+             (live-p (lookup-vertex (id p)))
+             (mv (lambda (src lon-lat-geom)            ; copy SRC, set its loc
+                   (let ((v (copy src)))
+                     (setf (slot-value v 'loc) lon-lat-geom) v)))
+             (w-p-out (make-instance 'graph-db::tx-update
+                                     :node (funcall mv live-p lviv) :old-node live-p))
+             (w-p-in  (make-instance 'graph-db::tx-update
+                                     :node (funcall mv live-p (make-point 37.177d0 49.205d0))
+                                     :old-node live-p))
+             (w-a-in  (make-instance 'graph-db::tx-update
+                                     :node (funcall mv a (make-point 37.178d0 49.205d0))
+                                     :old-node a))
+             (w-a-out (make-instance 'graph-db::tx-update
+                                     :node (funcall mv a lviv) :old-node a)))
+        (flet ((one (w) (graph-db::reconcile-slave-writes (list w) filter g)))
+          ;; present + leaves subset -> delete
+          (let ((r (one w-p-out)))
+            (is (= 1 (length r)))
+            (is (typep (first r) 'graph-db::tx-delete) "leaving node -> delete"))
+          ;; present + stays in subset -> update kept
+          (let ((r (one w-p-in)))
+            (is (= 1 (length r)))
+            (is (eq w-p-in (first r)) "staying node -> update kept"))
+          ;; absent + enters subset -> create
+          (let ((r (one w-a-in)))
+            (is (= 1 (length r)))
+            (is (typep (first r) 'graph-db::tx-create) "entering node -> create")
+            (is (not (typep (first r) 'graph-db::tx-update))))
+          ;; absent + stays out -> dropped
+          (is (null (one w-a-out)) "still-outside node -> dropped"))))))

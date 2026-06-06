@@ -888,6 +888,73 @@ Used for subset replication: a slave applies just the writes its filter accepts.
       (remove-if-not (lambda (w) (funcall filter (node w))) writes)
       writes))
 
+;;; --- Subset-replication reconciliation -------------------------------------
+;;;
+;;; Plain FILTER-WRITES keeps a write iff its (new) node passes the filter.  That
+;;; is wrong for a node that CROSSES the subset boundary on an update: a node that
+;;; leaves the subset would be dropped, leaving the slave holding a stale in-subset
+;;; copy; a node that enters the subset would be applied as an update the slave
+;;; cannot satisfy (it never had the node).  RECONCILE-SLAVE-WRITES fixes both by
+;;; considering the filter AND whether the slave currently holds the node:
+;;;
+;;;   update, passes, slave has it      -> apply update
+;;;   update, passes, slave lacks it    -> apply as CREATE (node entered subset)
+;;;   update, fails,  slave has it      -> apply as DELETE (node left subset)
+;;;   update, fails,  slave lacks it    -> drop
+;;;   create, passes / delete, present  -> keep; otherwise drop
+;;;
+;;; This is the generic predicate-filtered-replication MECHANISM (it works for any
+;;; REPLICATION-FILTER, spatial or not); the area predicate itself is supplied by
+;;; the application (e.g. MAKE-SPATIAL-REPLICATION-FILTER).
+
+(defun %slave-current-node (node graph)
+  "The slave's live local node with NODE's id (a vertex or edge), or NIL."
+  (etypecase node
+    (vertex (lookup-vertex (id node) :graph graph))
+    (edge   (lookup-edge (id node) :graph graph))))
+
+(defun %slave-has-node-p (node graph)
+  (let ((n (%slave-current-node node graph)))
+    (and n (not (deleted-p n)))))
+
+(defun %make-slave-delete-write (write graph)
+  "A tx-delete that removes the node from the slave because it left the subset.
+Built from the slave's CURRENT local node (so the MVCC archive/chain uses local
+heap addresses), mirroring DELETE-NODE."
+  (let ((current (%slave-current-node (node write) graph)))
+    (when current
+      (let ((deleted (copy current)))
+        (setf (bytes deleted) (bytes current)
+              (deleted-p deleted) t)
+        (make-instance 'tx-delete :node deleted :old-node current)))))
+
+(defun reconcile-slave-write (write new-passes present graph)
+  "Map one incoming WRITE to the write the slave should apply (or NIL to drop),
+given whether its new node passes the filter and whether the slave holds it.
+NB: tx-delete is a subclass of tx-update, so it must be matched first."
+  (typecase write
+    (tx-delete (and present write))
+    (tx-create (and new-passes write))
+    (tx-update
+     (cond ((and new-passes present) write)
+           (new-passes (make-instance 'tx-create :node (node write)))
+           (present (%make-slave-delete-write write graph))
+           (t nil)))
+    (t (and new-passes write))))
+
+(defun reconcile-slave-writes (writes filter graph)
+  "FILTER-WRITES with boundary-crossing reconciliation (see commentary above).
+With no FILTER, returns WRITES unchanged."
+  (if (null filter)
+      writes
+      (loop for w in writes
+            for reconciled = (reconcile-slave-write
+                              w
+                              (funcall filter (node w))
+                              (%slave-has-node-p (node w) graph)
+                              graph)
+            when reconciled collect it)))
+
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
@@ -899,7 +966,8 @@ Used for subset replication: a slave applies just the writes its filter accepts.
         ;; spatial index all stay consistent.  The highest-transaction-id is
         ;; still advanced below, so filtered transactions are not re-requested.
         (when (slave-graph-p graph)
-          (setq writes (filter-writes writes (replication-filter graph))))
+          (setq writes (reconcile-slave-writes
+                        writes (replication-filter graph) graph)))
         (apply-tx-writes writes graph)
         (when *after-apply-tx-writes-hook*
           (let ((hook *after-apply-tx-writes-hook*))

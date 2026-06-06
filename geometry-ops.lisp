@@ -144,3 +144,49 @@ metric distance between points).  Requires graph-db/geos; the default signals
 GEOS-REQUIRED-FOR-OPERATION.")
   (:method ((a geometry) (b geometry))
     (error 'geos-required-for-operation :operation 'geometry-distance-exact)))
+
+(defgeneric geometry-geodesic-distance (a b)
+  (:documentation
+   "Minimum GEODESIC distance in METRES between geometries A and B.  For two
+:POINT geometries this is the haversine distance (no GEOS needed).  For extended
+geometries it is the haversine distance between their closest pair of points,
+which requires graph-db/geos (GEOSNearestPoints); the default signals
+GEOS-REQUIRED-FOR-OPERATION for that case.")
+  (:method ((a geometry) (b geometry))
+    (if (and (eq (geometry-kind a) :point) (eq (geometry-kind b) :point))
+        (geometry-distance a b)
+        (error 'geos-required-for-operation :operation 'geometry-geodesic-distance))))
+
+;;; Constructive (overlay) operations -- all require graph-db/geos; defaults
+;;; signal.  Each returns a VG geometry (the GEOS result converted back).
+
+(defgeneric geometry-union (a b)
+  (:documentation "Union of geometries A and B.  Requires graph-db/geos.")
+  (:method ((a geometry) (b geometry))
+    (error 'geos-required-for-operation :operation 'geometry-union)))
+
+(defgeneric geometry-intersection (a b)
+  (:documentation "Intersection of geometries A and B.  Requires graph-db/geos.")
+  (:method ((a geometry) (b geometry))
+    (error 'geos-required-for-operation :operation 'geometry-intersection)))
+
+(defgeneric geometry-difference (a b)
+  (:documentation "A minus B (the part of A not in B).  Requires graph-db/geos.")
+  (:method ((a geometry) (b geometry))
+    (error 'geos-required-for-operation :operation 'geometry-difference)))
+
+(defgeneric geometry-buffer (g width &optional quadrant-segments)
+  (:documentation
+   "Buffer geometry G by WIDTH (in COORDINATE UNITS -- degrees for lon/lat, NOT
+metres), approximating round corners with QUADRANT-SEGMENTS segments per quarter
+circle (default 8).  Requires graph-db/geos.")
+  (:method ((g geometry) width &optional (quadrant-segments 8))
+    (declare (ignore width quadrant-segments))
+    (error 'geos-required-for-operation :operation 'geometry-buffer)))
+
+(defgeneric geometry-area (g)
+  (:documentation
+   "Area of geometry G in SQUARED COORDINATE UNITS (squared degrees for lon/lat,
+NOT m^2).  Requires graph-db/geos.")
+  (:method ((g geometry))
+    (error 'geos-required-for-operation :operation 'geometry-area)))

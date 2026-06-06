@@ -70,6 +70,13 @@ and the spatial seam uses its dependency-free fallbacks."
           (setf *geos-version* version
                 *geos-makevalid-available-p* (%geos-version>= version 3 8)
                 *geos-available-p* t)
+          ;; (Re)loading libgeos invalidates any GEOS context handles created
+          ;; against the prior load, so discard the pool -- otherwise pooled
+          ;; contexts created earlier corrupt when reused after a reload.  Guarded
+          ;; with FBOUNDP because the initial LOAD-GEOS (at the bottom of this
+          ;; file) runs before geos-context.lisp defines GEOS-SHUTDOWN; at that
+          ;; point the pool is empty anyway, so skipping it is correct.
+          (when (fboundp 'geos-shutdown) (funcall 'geos-shutdown))
           (log:info "GEOS loaded: version ~A (makeValid ~:[unavailable~;available~])"
                     version *geos-makevalid-available-p*)
           t))
@@ -148,6 +155,30 @@ dependency-free fallbacks. (~A)" e)
 ;; PLANAR distance in coordinate units (degrees for lon/lat -- NOT metres).
 (cffi:defcfun ("GEOSDistance_r" %geos-distance) :int
   (handle :pointer) (g1 :pointer) (g2 :pointer) (out :pointer))
+
+;; Constructive (overlay) ops: each returns a NEW geometry (or NULL).
+(cffi:defcfun ("GEOSUnion_r" %geos-union) :pointer
+  (handle :pointer) (g1 :pointer) (g2 :pointer))
+(cffi:defcfun ("GEOSIntersection_r" %geos-intersection) :pointer
+  (handle :pointer) (g1 :pointer) (g2 :pointer))
+(cffi:defcfun ("GEOSDifference_r" %geos-difference) :pointer
+  (handle :pointer) (g1 :pointer) (g2 :pointer))
+;; GEOSBuffer_r(handle, g, width, quadsegs): width in coordinate units (degrees).
+(cffi:defcfun ("GEOSBuffer_r" %geos-buffer) :pointer
+  (handle :pointer) (geom :pointer) (width :double) (quadsegs :int))
+;; int GEOSArea_r(handle, g, double *out);  area in squared coordinate units.
+(cffi:defcfun ("GEOSArea_r" %geos-area) :int
+  (handle :pointer) (geom :pointer) (out :pointer))
+
+;; Nearest points: a 2-point coordinate sequence (closest pair), or NULL.
+(cffi:defcfun ("GEOSNearestPoints_r" %geos-nearest-points) :pointer
+  (handle :pointer) (g1 :pointer) (g2 :pointer))
+(cffi:defcfun ("GEOSCoordSeq_getX_r" %geos-coordseq-getx) :int
+  (handle :pointer) (seq :pointer) (idx :unsigned-int) (out :pointer))
+(cffi:defcfun ("GEOSCoordSeq_getY_r" %geos-coordseq-gety) :int
+  (handle :pointer) (seq :pointer) (idx :unsigned-int) (out :pointer))
+(cffi:defcfun ("GEOSCoordSeq_destroy_r" %geos-coordseq-destroy) :void
+  (handle :pointer) (seq :pointer))
 
 ;; Attempt the load when this add-on system is loaded.  Inert for core graph-db,
 ;; which never loads this file.

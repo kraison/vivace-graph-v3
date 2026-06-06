@@ -42,6 +42,13 @@
                 #:geometry-make-valid
                 #:geometry-valid-p
                 #:geometry-distance-exact
+                #:geometry-geodesic-distance
+                #:geometry-union
+                #:geometry-intersection
+                #:geometry-difference
+                #:geometry-buffer
+                #:geometry-area
+                #:geometry-distance
                 #:geometry-contains-point-p
                 #:geos-available-p
                 #:geos-error
@@ -63,4 +70,5 @@
                 #:find-nodes-near
                 #:*schema-node-metadata*)
   (:export #:run-geos-tests
-           #:geos-suite))
+           #:geos-suite
+           #:run-geos-perf))
