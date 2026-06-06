@@ -1632,6 +1632,35 @@ A replication *slave* can hold only a subset of the master's data — useful for
 
 This is a prototype: end-to-end master/slave streaming is exercised by the harness in =tests/replication/=, and a node that /moves/ across the area boundary on an update is not yet reconciled.
 
+*** Exact topology with GEOS (optional)
+
+The dependency-free refine layer answers "is this point in this area" exactly, but it judges an /extended/ geometry (a polygon or line node) only by a representative point, and it has no polygon↔polygon intersection or validity repair. For exact topology, load the optional ~graph-db/geos~ system, a thin in-house CFFI binding to the GEOS C library (~libgeos_c~):
+
+#+BEGIN_SRC lisp
+  (ql:quickload :graph-db/geos)   ; needs libgeos_c (e.g. brew install geos)
+#+END_SRC
+
+Core ~graph-db~ never depends on libgeos. Loading the add-on binds the library if present and flips ~*geos-available-p*~; if the library is missing it logs a warning and leaves the flag NIL — the seam below simply keeps using the fallbacks. So the add-on is safe to load unconditionally.
+
+The add-on /upgrades/ a set of generic functions in place (no API change). When it is loaded:
+
+- ~find-nodes-within~ judges extended-geometry nodes by **exact containment**, not their bbox centre.
+- ~find-nodes-intersecting~ / ~find-intersects/2~ become **exact** (without GEOS they fall back to a coarse bounding-box overlap).
+- ~geometry-intersects-p~, ~geometry-contains-geometry-p~ answer exactly for all geometry kinds.
+- ~geometry-make-valid~ repairs an invalid geometry (e.g. a self-intersecting polygon from a messy KML); ~geometry-valid-p~ tests validity. (~make-valid~ needs GEOS >= 3.8.)
+- ~geometry-distance-exact~ gives planar distance — note this is in *coordinate units* (degrees for lon/lat), not metres; use ~geodesic-distance~ / ~geometry-distance~ for metric distance between points.
+
+#+BEGIN_SRC lisp
+  ;; nodes whose footprint actually overlaps the area (exact with GEOS):
+  (find-nodes-intersecting my-task-area)
+
+  ;; repair a self-intersecting polygon before indexing it:
+  (let ((clean (geometry-make-valid messy-polygon)))
+    (with-transaction () (make-observation :location clean)))
+#+END_SRC
+
+Threading: GEOS's reentrant API forbids sharing a context between concurrent threads, and VivaceGraph runs transactions in the caller's thread. The add-on keeps a process-global **borrow/return context pool** (~with-geos-context~): each operation checks out a context for its duration, so a context is only ever used by one thread at a time, and contexts are reused across threads (bounded by peak concurrency). ~geos-shutdown~ releases the pool. This is validated under a concurrency storm and cross-checked against Python ~shapely~ in =tests/geos/=.
+
 ** API Reference
 
 This chapter provides a categorized reference for the most important exported symbols from the ~graph-db~ package. It is not an exhaustive list of every internal function but focuses on the public API you will use most often when building applications.

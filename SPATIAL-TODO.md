@@ -25,12 +25,16 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
 
 ## Known limitations (current design choices)
 
-- **`find-within` on extended geometries is approximate** — matches by
-  representative point (the point itself for `:point`; bbox centre otherwise).
-  Exact for the point-in-area case; a polygon node is judged by its centroid.
-- **No polygon↔polygon ops** — no intersects/union/buffer/validity-repair; only
-  point-in-polygon refine. Self-intersecting polygons can't be repaired in-engine.
-- **Distance is haversine** (~0.5% vs ellipsoid).
+- **`find-within` on extended geometries is approximate WITHOUT GEOS** — matches
+  by representative point (the point itself for `:point`; bbox centre otherwise).
+  With the optional `graph-db/geos` add-on it is **exact** (GEOS containment); the
+  centroid path is only the dependency-free fallback.
+- **polygon↔polygon ops need GEOS** — intersects + exact containment + validity
+  repair (`make-valid`) live in the optional `graph-db/geos` add-on; core has only
+  point-in-polygon + a coarse bbox-overlap fallback for intersects.
+- **Distance is haversine** (~0.5% vs ellipsoid); `geometry-distance-exact` (GEOS)
+  is PLANAR in coordinate units (degrees for lon/lat), not metres — use it for
+  ordering, not real distance.
 - **Single grid precision per graph** — set with `make-graph :spatial-precision`
   (default 7, ~150 m cells); geohash (Z-order), not Hilbert.
 - **No regenerate/rebuild** of the index (views have `regenerate-view`). *(Done —
@@ -48,18 +52,29 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       harness (in-AO replicated/indexed, out-of-AO filtered). **Remaining:**
       AO-boundary-crossing *updates* (a node moving in/out of the AO) are not yet
       reconciled.
-- [ ] **`find-intersects` query** — nodes whose geometry *intersects* an area
-      (needs polygon ops → GEOS).
+- [x] **`find-intersects` query** — DONE (`graph-db/geos`): `find-nodes-intersecting`
+      (Lisp) + `find-intersects/2` (Prolog), index bbox candidates refined by the
+      `geometry-intersects-p` seam (exact with GEOS, coarse bbox fallback without).
 - [x] **`rebuild-spatial-index`** — DONE (`spatial-query.lisp`): drop + recreate the
       index, re-index every live node with a `node-geometry`; optional `:precision`
       change; returns the count. Mirrors `regenerate-view`.
-- [ ] **Exact extended-geometry containment** — replace the centroid approximation
-      in `find-within` (depends on GEOS).
+- [x] **Exact extended-geometry containment** — DONE (`graph-db/geos`):
+      `find-nodes-within` routes non-point candidates through the exact
+      `geometry-contains-geometry-p` (GEOS) seam, dropping the centroid
+      approximation; without the add-on it falls back to the old centroid path.
 
 ### P2 — Accuracy & robustness
-- [ ] **Evaluate/harden `cl-geos`** for intersects/union/`buffer(0)` repair, with
-      the hand-rolled predicates as fallback (watch per-thread GEOS contexts +
-      finalizers under VG concurrency).
+- [x] **GEOS integration** — DONE: evaluated `cl-geos` (unmaintained since 2018;
+      no buffer/makeValid/distance; unsafe shared global context; won't load on
+      macOS arm64) and instead built an OPTIONAL in-house CFFI binding
+      `graph-db/geos` to libgeos_c's reentrant `_r` API. Provides exact
+      `geometry-intersects-p` / `geometry-contains-geometry-p` / `geometry-make-valid`
+      / `geometry-valid-p` / `geometry-distance-exact` behind a generic-function
+      refine seam (dependency-free fallbacks in core; core stays libgeos-free).
+      Threads share a borrow/return **context pool** (`with-geos-context`) — never
+      two threads per context. Green on SBCL+ECL incl. a concurrency storm and a
+      shapely oracle cross-check. *(Remaining: union/buffer + geodesic polygon
+      distance not yet bound; centroid fallback still used when the add-on is absent.)*
 - [x] **Geohash neighbors/adjacent** — DONE (`geohash.lisp`): `geohash-neighbor`
       (step one cell in lon/lat, wraps the antimeridian, NIL off a pole) and
       `geohash-neighbors` (the 8 surrounding same-precision cells). Covered by

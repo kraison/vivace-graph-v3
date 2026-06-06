@@ -151,6 +151,18 @@
 (alexandria:define-constant +timestamp+ 101)
 (alexandria:define-constant +geometry+ 102) ;; spatial extension (see geometry.lisp)
 
+;; GEOS availability flags.  These are inert in core graph-db (no FFI, no libgeos
+;; dependency).  The OPTIONAL `graph-db/geos' add-on system flips them at load
+;; time when it successfully binds libgeos_c; the spatial refine seam
+;; (geometry-ops.lisp) consults them to decide between exact GEOS topology and
+;; the dependency-free fallbacks.  Core stays libgeos-free.
+(defvar *geos-available-p* nil
+  "True once the graph-db/geos add-on has loaded libgeos_c successfully.")
+(defvar *geos-version* nil
+  "GEOS C library version as a list (major minor patch), or NIL if unloaded.")
+(defvar *geos-makevalid-available-p* nil
+  "True when the loaded GEOS is new enough (>= 3.8) for GEOSMakeValid_r.")
+
 (defparameter *initial-extents* 10)
 (defparameter *max-locks* 10000)
 

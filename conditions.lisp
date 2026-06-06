@@ -81,3 +81,24 @@
                (format stream
                        "View locking error: '~A'"
                        message)))))
+
+;;; Spatial / GEOS conditions.  Defined in core (GEOS-free) so the refine seam
+;;; and its callers can reference them whether or not the graph-db/geos add-on
+;;; is loaded.
+
+(define-condition geos-error (error)
+  ((message :initarg :message :initform nil :reader geos-error-message))
+  (:report (lambda (error stream)
+             (format stream "GEOS error: ~A"
+                     (or (geos-error-message error) "(no message)"))))
+  (:documentation "Signalled when a GEOS operation fails or reports an error."))
+
+(define-condition geos-required-for-operation (error)
+  ((operation :initarg :operation :initform nil :reader geos-required-operation))
+  (:report (lambda (error stream)
+             (format stream
+                     "Operation ~A requires the graph-db/geos add-on (libgeos_c), ~
+which is not loaded/available."
+                     (or (geos-required-operation error) "(unknown)"))))
+  (:documentation "Signalled when an exact-topology operation has no
+dependency-free fallback and GEOS is unavailable."))

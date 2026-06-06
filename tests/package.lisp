@@ -63,11 +63,17 @@
                 #:init-spatial-index
                 ;; index-backed spatial queries (spatial extension)
                 #:find-nodes-within
+                #:find-nodes-intersecting
                 #:find-nodes-near
                 #:find-nearest-k
                 #:find-within/2
+                #:find-intersects/2
                 #:find-near/4
                 #:find-nearest/4
+                ;; topology seam (exact only with graph-db/geos; fallback here)
+                #:geometry-intersects-p
+                #:geometry-contains-geometry-p
+                #:geos-available-p
                 ;; subset replication
                 #:replication-filter
                 #:make-spatial-replication-filter

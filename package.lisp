@@ -208,6 +208,20 @@
            #:geometry-contains-point-p
            #:bbox-overlap-p
            #:geometry-distance
+           ;; topology refine seam (exact with the optional graph-db/geos add-on,
+           ;; dependency-free fallbacks otherwise)
+           #:geometry-intersects-p
+           #:geometry-contains-geometry-p
+           #:geometry-make-valid
+           #:geometry-valid-p
+           #:geometry-distance-exact
+           #:geos-available-p
+           #:geos-shutdown
+           #:*geos-available-p*
+           #:*geos-version*
+           #:*geos-makevalid-available-p*
+           #:geos-error
+           #:geos-required-for-operation
            ;; geohash
            #:geohash-encode
            #:geohash-decode
@@ -236,9 +250,11 @@
            #:make-spatial-replication-filter
            ;; index-backed queries + Prolog functors
            #:find-nodes-within
+           #:find-nodes-intersecting
            #:find-nodes-near
            #:find-nearest-k
            #:find-within/2
+           #:find-intersects/2
            #:find-near/4
            #:find-nearest/4
            #:geo-distance/5

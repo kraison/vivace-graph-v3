@@ -26,9 +26,23 @@ otherwise the centre of its bounding box."
       (multiple-value-bind (min-lon min-lat max-lon max-lat) (geometry-bbox geom)
         (values (/ (+ min-lat max-lat) 2) (/ (+ min-lon max-lon) 2)))))
 
+(defun %node-within-area-p (area geom)
+  "True if node geometry GEOM lies within AREA.  Exact for a :POINT (always) and
+-- with the graph-db/geos add-on -- for extended geometries too.  Without GEOS,
+extended geometries fall back to the representative-point approximation (the
+historical behaviour), so results are unchanged when the add-on is absent."
+  (if (eq (geometry-kind geom) :point)
+      (geometry-contains-point-p area (geometry-lon geom) (geometry-lat geom))
+      (if *geos-available-p*
+          (geometry-contains-geometry-p area geom)
+          (multiple-value-bind (lat lon) (%geometry-rep-point geom)
+            (geometry-contains-point-p area lon lat)))))
+
 (defun find-nodes-within (area &key (graph *graph*))
-  "List of live nodes whose geometry's representative point lies within AREA
-(a :POLYGON or :MULTIPOLYGON geometry)."
+  "List of live nodes whose geometry lies within AREA (a :POLYGON or
+:MULTIPOLYGON geometry).  A :POINT node is judged exactly; an extended-geometry
+node is judged exactly when graph-db/geos is loaded, otherwise by its
+representative point (bbox centre)."
   (let ((idx (spatial-index graph)) (result '()))
     (when (and idx (geometryp area))
       (multiple-value-bind (min-lon min-lat max-lon max-lat) (geometry-bbox area)
@@ -36,10 +50,23 @@ otherwise the centre of its bounding box."
           (let ((node (%node-by-id id graph)))
             (when (and node (not (deleted-p node)))
               (let ((geom (node-geometry node)))
-                (when geom
-                  (multiple-value-bind (lat lon) (%geometry-rep-point geom)
-                    (when (geometry-contains-point-p area lon lat)
-                      (push node result))))))))))
+                (when (and geom (%node-within-area-p area geom))
+                  (push node result))))))))
+    (nreverse result)))
+
+(defun find-nodes-intersecting (area &key (graph *graph*))
+  "List of live nodes whose geometry INTERSECTS AREA (any geometry kind).  Exact
+with the graph-db/geos add-on; without it, extended-geometry candidates use a
+COARSE bounding-box overlap test (point candidates are always exact)."
+  (let ((idx (spatial-index graph)) (result '()))
+    (when (and idx (geometryp area))
+      (multiple-value-bind (min-lon min-lat max-lon max-lat) (geometry-bbox area)
+        (dolist (id (spatial-index-query-bbox idx min-lon min-lat max-lon max-lat))
+          (let ((node (%node-by-id id graph)))
+            (when (and node (not (deleted-p node)))
+              (let ((geom (node-geometry node)))
+                (when (and geom (geometry-intersects-p area geom))
+                  (push node result))))))))
     (nreverse result)))
 
 (defun find-nodes-near (lat lon radius &key (graph *graph*))
@@ -65,6 +92,17 @@ nearest first."
         (area (var-deref ?area)))
     (when (geometryp area)
       (dolist (node (find-nodes-within area :graph *graph*))
+        (let ((old-trail (fill-pointer *trail*)))
+          (when (unify node-var node)
+            (funcall cont))
+          (undo-bindings old-trail))))))
+
+(def-global-prolog-functor find-intersects/2 (?node ?area cont)
+  "Yield each indexed node whose geometry intersects the bound ?AREA geometry."
+  (let ((node-var (var-deref ?node))
+        (area (var-deref ?area)))
+    (when (geometryp area)
+      (dolist (node (find-nodes-intersecting area :graph *graph*))
         (let ((old-trail (fill-pointer *trail*)))
           (when (unify node-var node)
             (funcall cont))

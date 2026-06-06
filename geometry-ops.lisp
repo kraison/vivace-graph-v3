@@ -74,3 +74,73 @@ point is inside the exterior ring and outside every hole."
   "Great-circle distance in metres between two :POINT geometries."
   (geodesic-distance (geometry-lat g1) (geometry-lon g1)
                      (geometry-lat g2) (geometry-lon g2)))
+
+;;; -------------------------------------------------------------------------
+;;; Topology refine SEAM
+;;;
+;;; These generic functions are the indirection through which the spatial query
+;;; layer asks for exact topology.  Their DEFAULT methods here are
+;;; dependency-free fallbacks (exact where a hand-rolled algorithm exists, coarse
+;;; or signalling otherwise).  The OPTIONAL graph-db/geos add-on defines :AROUND
+;;; methods that route through GEOS when *geos-available-p* is true and fall back
+;;; via CALL-NEXT-METHOD otherwise.  Core graph-db carries no GEOS dependency.
+;;; -------------------------------------------------------------------------
+
+(defun geos-available-p ()
+  "True when the graph-db/geos add-on has loaded libgeos_c, so the seam below
+uses exact GEOS topology rather than the dependency-free fallbacks."
+  *geos-available-p*)
+
+(defgeneric geometry-intersects-p (a b)
+  (:documentation
+   "True if geometries A and B intersect.  Default (no GEOS): exact for the
+point/area and point/point cases, otherwise a COARSE bounding-box overlap test
+(an over-approximation).  With graph-db/geos it is exact for all kinds.")
+  (:method ((a geometry) (b geometry))
+    (let ((ka (geometry-kind a)) (kb (geometry-kind b)))
+      (cond
+        ((and (eq ka :point) (member kb '(:polygon :multipolygon)))
+         (geometry-contains-point-p b (geometry-lon a) (geometry-lat a)))
+        ((and (eq kb :point) (member ka '(:polygon :multipolygon)))
+         (geometry-contains-point-p a (geometry-lon b) (geometry-lat b)))
+        ((and (eq ka :point) (eq kb :point))
+         (and (= (geometry-lon a) (geometry-lon b))
+              (= (geometry-lat a) (geometry-lat b))))
+        (t
+         (multiple-value-bind (anx any axx axy) (geometry-bbox a)
+           (multiple-value-bind (bnx bny bxx bxy) (geometry-bbox b)
+             (bbox-overlap-p anx any axx axy bnx bny bxx bxy))))))))
+
+(defgeneric geometry-contains-geometry-p (a b)
+  (:documentation
+   "True if geometry A contains geometry B.  Default (no GEOS): exact when B is a
+:POINT (and A is a polygon/multipolygon, or A=B as points); otherwise signals
+GEOS-REQUIRED-FOR-OPERATION (no dependency-free algorithm for extended-in-extended
+containment).  With graph-db/geos it is exact for all kinds.")
+  (:method ((a geometry) (b geometry))
+    (if (eq (geometry-kind b) :point)
+        (case (geometry-kind a)
+          ((:polygon :multipolygon)
+           (geometry-contains-point-p a (geometry-lon b) (geometry-lat b)))
+          (:point (and (= (geometry-lon a) (geometry-lon b))
+                       (= (geometry-lat a) (geometry-lat b))))
+          (t (error 'geos-required-for-operation
+                    :operation 'geometry-contains-geometry-p)))
+        (error 'geos-required-for-operation
+               :operation 'geometry-contains-geometry-p))))
+
+(defgeneric geometry-make-valid (g)
+  (:documentation
+   "Return a valid geometry equivalent to G (repairing self-intersections etc.).
+Requires graph-db/geos; the default signals GEOS-REQUIRED-FOR-OPERATION.")
+  (:method ((g geometry))
+    (error 'geos-required-for-operation :operation 'geometry-make-valid)))
+
+(defgeneric geometry-distance-exact (a b)
+  (:documentation
+   "Exact PLANAR distance between geometries A and B in coordinate units (for
+lon/lat, degrees -- NOT metres; use GEODESIC-DISTANCE/GEOMETRY-DISTANCE for
+metric distance between points).  Requires graph-db/geos; the default signals
+GEOS-REQUIRED-FOR-OPERATION.")
+  (:method ((a geometry) (b geometry))
+    (error 'geos-required-for-operation :operation 'geometry-distance-exact)))

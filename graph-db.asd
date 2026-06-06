@@ -169,6 +169,40 @@
   :perform (test-op (op c)
                     (uiop:symbol-call :graph-db/perf-test :run-perf)))
 
+;; OPTIONAL GEOS add-on: a thin in-house CFFI binding to libgeos_c giving the
+;; spatial layer exact polygon topology, validity repair, and distance.  Core
+;; graph-db does NOT depend on this; loading it is what flips *geos-available-p*.
+;; Loads gracefully (no crash) when libgeos_c is absent.
+(defsystem graph-db/geos
+  :name "VivaceGraph GEOS integration"
+  :description "Optional libgeos_c binding: exact spatial topology + validity repair."
+  :depends-on (:graph-db :cffi :bordeaux-threads)
+  :pathname "geos/"
+  :serial t
+  :components ((:file "geos-ffi")
+               (:file "geos-context")
+               (:file "geos-bridge")
+               (:file "geos-ops")))
+
+(defsystem graph-db/geos-test
+  :name "VivaceGraph GEOS test suite"
+  :description "FiveAM tests for the optional GEOS integration."
+  :depends-on (:graph-db/geos :fiveam :bordeaux-threads)
+  :pathname "tests/geos/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "load-tests")
+               (:file "bridge-tests")
+               (:file "ops-tests")
+               (:file "query-tests")
+               (:file "makevalid-tests")
+               (:file "storm-tests")
+               (:file "oracle-tests"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call :graph-db/geos-test :run-geos-tests)
+                      (error "graph-db GEOS tests failed."))))
+
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
@@ -191,6 +225,7 @@
                (:file "graph-spatial-tests")
                (:file "spatial-hook-tests")
                (:file "spatial-query-tests")
+               (:file "spatial-intersect-tests")
                (:file "subset-replication-tests")
                (:file "view-tests")
                (:file "query-tests")
