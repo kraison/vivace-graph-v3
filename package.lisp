@@ -188,4 +188,52 @@
            #:make-node-table
            #:node-equal
 
+           ;; --- spatial extension (public API) ---
+           ;; geometry values
+           #:geometry
+           #:geometryp
+           #:make-point
+           #:make-linestring
+           #:make-polygon
+           #:make-multipolygon
+           #:geometry-kind
+           #:geometry-coordinates
+           #:geometry-lon
+           #:geometry-lat
+           #:geometry-bbox
+           ;; geometry operations
+           #:geodesic-distance
+           #:point-in-ring-p
+           #:point-in-polygon-rings-p
+           #:geometry-contains-point-p
+           #:bbox-overlap-p
+           #:geometry-distance
+           ;; geohash
+           #:geohash-encode
+           #:geohash-decode
+           #:geohash-bbox
+           #:geohash-cell-size
+           #:geohash-covering
+           ;; spatial index
+           #:spatial-index
+           #:spatial-index-p
+           #:make-spatial-index
+           #:open-spatial-index
+           #:spatial-index-precision
+           #:spatial-index-address
+           #:spatial-index-insert
+           #:spatial-index-remove
+           #:spatial-index-query-bbox
+           #:spatial-index-query-radius
+           #:delete-spatial-index
+           ;; write-path protocol (applications specialize this)
+           #:node-geometry
+           ;; index-backed queries + Prolog functors
+           #:find-nodes-within
+           #:find-nodes-near
+           #:find-within/2
+           #:find-near/4
+           #:geo-distance/5
+           #:geo-near/5
+           #:geo-within/3
            ))

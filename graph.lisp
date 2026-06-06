@@ -1,5 +1,28 @@
 (in-package :graph-db)
 
+(defun spatial-index-root-file (location)
+  (format nil "~A/spatial-index.root" location))
+
+(defun init-spatial-index (graph)
+  "Create GRAPH's spatial index in its indexes heap and persist the skip-list
+root pointer to a sidecar file (mirrors how views persist their pointer)."
+  (let ((idx (make-spatial-index (indexes graph))))
+    (setf (spatial-index graph) idx)
+    (cl-store:store (list :address (spatial-index-address idx)
+                          :precision (spatial-index-precision idx))
+                    (spatial-index-root-file (location graph)))
+    idx))
+
+(defun restore-spatial-index (graph)
+  "Reopen GRAPH's spatial index from its root sidecar, or create a fresh one if
+the graph predates the spatial index (backward compatible)."
+  (let ((file (spatial-index-root-file (location graph))))
+    (if (probe-file file)
+        (destructuring-bind (&key address precision) (cl-store:restore file)
+          (setf (spatial-index graph)
+                (open-spatial-index (indexes graph) address :precision precision)))
+        (init-spatial-index graph))))
+
 (defun make-graph (name location &key master-p slave-p master-host
                                    replication-port replication-key package
                                    replay-txn-dir (buffer-pool-p t)
@@ -93,6 +116,7 @@ to disk and remove it."
         ;; def-vertex/def-edge :keep-revisions).  Set before update-schema persists.
         (setf (schema-keep-revisions (schema graph)) keep-revisions)
         (update-schema graph)
+        (init-spatial-index graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph))
@@ -190,6 +214,7 @@ CLOSE-GRAPH when finished."
           (setf (schema-keep-revisions (schema graph)) keep-revisions))
         (update-schema graph)
         (restore-views graph)
+        (restore-spatial-index graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph)

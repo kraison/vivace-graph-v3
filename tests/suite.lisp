@@ -11,6 +11,11 @@ Invoked by (asdf:test-system :graph-db)."
   ;; The storage layers log prolifically at :debug/:info; keep test output
   ;; to genuine problems.
   (log:config :error)
+  ;; ECL caps its GC heap conservatively; running the whole suite in one image
+  ;; (many graphs + MVCC version retention + buffer pools) exceeds the default
+  ;; and aborts with EXT:STORAGE-EXHAUSTED.  Raise the ceiling (a limit, not a
+  ;; reservation) so the suite fits.  SBCL/CCL grow their heaps automatically.
+  #+ecl (ext:set-limit 'ext:heap-size (* 6 1024 1024 1024))
   (let ((results (run 'graph-db-suite)))
     (explain! results)
     (results-status results)))

@@ -18,6 +18,49 @@
                 #:serialize
                 #:deserialize
                 #:serialized-equal
+                ;; geometry (spatial extension)
+                #:make-point
+                #:make-linestring
+                #:make-polygon
+                #:make-multipolygon
+                #:geometryp
+                #:geometry-kind
+                #:geometry-coordinates
+                #:geometry-lon
+                #:geometry-lat
+                #:geometry-bbox
+                ;; geometry refine ops (spatial extension)
+                #:geodesic-distance
+                #:point-in-ring-p
+                #:point-in-polygon-rings-p
+                #:geometry-contains-point-p
+                #:bbox-overlap-p
+                #:geometry-distance
+                ;; geohash (spatial extension)
+                #:geohash-encode
+                #:geohash-decode
+                #:geohash-bbox
+                #:geohash-cell-size
+                #:geohash-prefix-range
+                #:geohash-covering
+                ;; spatial index (spatial extension)
+                #:spatial-index            ; graph slot accessor
+                #:node-geometry            ; write-path indexing protocol
+                #:make-spatial-index
+                #:open-spatial-index
+                #:spatial-index-p
+                #:spatial-index-address
+                #:spatial-index-precision
+                #:spatial-index-insert
+                #:spatial-index-remove
+                #:spatial-index-query-bbox
+                #:spatial-index-query-radius
+                #:delete-spatial-index
+                ;; index-backed spatial queries (spatial extension)
+                #:find-nodes-within
+                #:find-nodes-near
+                #:find-within/2
+                #:find-near/4
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory
@@ -157,6 +200,10 @@
                 #:if/2
                 #:if/3
                 #:unique/1
+                ;; spatial predicates (spatial extension)
+                #:geo-distance/5
+                #:geo-near/5
+                #:geo-within/3
                 ;; rule definition + functor-table access (for stress tests).
                 ;; (! is shadowing-imported above.)
                 #:<-

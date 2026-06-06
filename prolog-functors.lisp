@@ -608,3 +608,44 @@ query."
                 :reason
                 (format nil "retract/3: cowardly refusing to retract(~A ~A ~A)"
                         edge-type from to)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Spatial predicates (part of the public spatial extension).
+;;;
+;;; These are pure geometric building blocks over bound coordinate/geometry
+;;; values -- they carry no domain knowledge and need no spatial index.  Compose
+;;; them with slot accessors to filter graph nodes by location, e.g.:
+;;;   (select-flat (?n)
+;;;     (is-a ?n eo-find)
+;;;     (node-slot-value ?n lon ?lon) (node-slot-value ?n lat ?lat)
+;;;     (geo-near ?lat ?lon 49.2 37.17 500.0))
+;;; Index-backed, node-yielding spatial functors come once the write-path hook
+;;; populates the spatial index (deferred with the MVCC apply-path work).
+;;; ---------------------------------------------------------------------------
+
+(def-global-prolog-functor geo-distance/5 (?lat1 ?lon1 ?lat2 ?lon2 ?dist cont)
+  "Unify ?DIST with the geodesic distance (metres) between (?LAT1,?LON1) and
+(?LAT2,?LON2).  The four coordinates must be bound numbers."
+  (let ((lat1 (var-deref ?lat1)) (lon1 (var-deref ?lon1))
+        (lat2 (var-deref ?lat2)) (lon2 (var-deref ?lon2)))
+    (when (and (numberp lat1) (numberp lon1) (numberp lat2) (numberp lon2))
+      (when (unify ?dist (geodesic-distance lat1 lon1 lat2 lon2))
+        (funcall cont)))))
+
+(def-global-prolog-functor geo-near/5 (?lat1 ?lon1 ?lat2 ?lon2 ?radius cont)
+  "Succeed when (?LAT1,?LON1) and (?LAT2,?LON2) are within ?RADIUS metres of one
+another.  All five arguments must be bound numbers."
+  (let ((lat1 (var-deref ?lat1)) (lon1 (var-deref ?lon1))
+        (lat2 (var-deref ?lat2)) (lon2 (var-deref ?lon2)) (radius (var-deref ?radius)))
+    (when (and (numberp lat1) (numberp lon1) (numberp lat2) (numberp lon2)
+               (numberp radius))
+      (when (<= (geodesic-distance lat1 lon1 lat2 lon2) radius)
+        (funcall cont)))))
+
+(def-global-prolog-functor geo-within/3 (?lon ?lat ?area cont)
+  "Succeed when point (?LON, ?LAT) lies within the :POLYGON or :MULTIPOLYGON
+geometry ?AREA.  ?LON/?LAT must be bound numbers and ?AREA a bound geometry."
+  (let ((lon (var-deref ?lon)) (lat (var-deref ?lat)) (area (var-deref ?area)))
+    (when (and (numberp lon) (numberp lat) (geometryp area))
+      (when (geometry-contains-point-p area lon lat)
+        (funcall cont)))))
