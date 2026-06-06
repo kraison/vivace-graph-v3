@@ -129,11 +129,11 @@ nearest -- anything outside the radius is farther than everything inside it.  We
 start from one grid cell's size and double the radius until K are enclosed (or
 MAX-RADIUS is reached), then keep the K closest.
 
-MAX-RADIUS is a deliberate bound (default 25 km): the geohash index answers a
-window by enumerating every grid cell it covers, so an unbounded search would
-enumerate astronomically many cells.  kNN is therefore \"K nearest within
-MAX-RADIUS\"; widen it only if you accept the per-query cell-enumeration cost
-(it grows with the square of the radius at the index's fixed precision)."
+MAX-RADIUS is a deliberate bound (default 25 km): kNN is \"K nearest within
+MAX-RADIUS\".  Each widening re-runs the window query, whose cost grows with the
+number of indexed nodes the window encloses (the bbox query covers a window with
+a bounded set of coarse cells and range-scans them, so empty space is free);
+widen MAX-RADIUS only if you accept scanning the larger candidate set."
   (let ((idx (spatial-index graph)))
     (when (and idx (numberp lat) (numberp lon) (integerp k) (plusp k))
       (let* ((prec (spatial-index-precision idx))

@@ -65,6 +65,31 @@
       (is (has-id-p idb nodes))
       (is (not (has-id-p idfar nodes))))))
 
+(test find-nodes-within-continent-scale
+  "REGRESSION: find-nodes-within with a country-sized AREA must complete (not OOM
+in the index's bbox covering) and still return the nodes inside the polygon.  All
+three places are inside Ukraine, so a Ukraine-scale polygon returns all of them."
+  (with-three-places (g ida idb idfar)
+    (let* ((ukraine (make-polygon '(((22.0d0 44.0d0) (41.0d0 44.0d0)
+                                     (41.0d0 53.0d0) (22.0d0 53.0d0)
+                                     (22.0d0 44.0d0)))))
+           (nodes (find-nodes-within ukraine :graph g)))
+      (is (has-id-p ida nodes))
+      (is (has-id-p idb nodes))
+      (is (has-id-p idfar nodes) "Lviv is inside Ukraine too"))))
+
+(test find-nodes-intersecting-continent-scale
+  "REGRESSION: the find-nodes-intersecting path shares the same bbox covering and
+must likewise survive a continent-sized window."
+  (with-three-places (g ida idb idfar)
+    (let* ((ukraine (make-polygon '(((22.0d0 44.0d0) (41.0d0 44.0d0)
+                                     (41.0d0 53.0d0) (22.0d0 53.0d0)
+                                     (22.0d0 44.0d0)))))
+           (nodes (find-nodes-intersecting ukraine :graph g)))
+      (is (has-id-p ida nodes))
+      (is (has-id-p idb nodes))
+      (is (has-id-p idfar nodes)))))
+
 (test deleted-nodes-excluded
   "A deleted node is not returned by spatial queries."
   (with-three-places (g ida idb idfar)

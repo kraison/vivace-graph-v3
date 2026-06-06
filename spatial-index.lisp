@@ -27,6 +27,13 @@
 (alexandria:define-constant +spatial-min-key+ "" :test 'string=)
 (alexandria:define-constant +spatial-max-key+ "{" :test 'string=)
 
+;; A bbox query covers its window with at most this many (coarse) cells, each of
+;; which becomes ONE prefix range scan.  Bounding the covering set is what keeps a
+;; continent-sized window cheap; the constant trades scan count against per-scan
+;; over-coverage (a coarser cell pulls in a slightly wider candidate margin, which
+;; the caller's exact predicate then refines away).
+(alexandria:define-constant +spatial-query-max-cells+ 256 :test '=)
+
 ;; Values are node ids -- 16-byte (unsigned-byte 8) uuid arrays.  The generic
 ;; SERIALIZE passes ub8 vectors through raw and untagged, which DESERIALIZE
 ;; cannot reverse, so we store ids as opaque bytes: the skip-node records each
@@ -103,16 +110,36 @@ identifier (e.g. a node's uuid)."
 
 (defun spatial-index-query-bbox (idx min-lon min-lat max-lon max-lat)
   "Candidate node-ids whose indexed cells meet the query bounding box.  A
-cell-granular FILTER -- refine with exact geometry predicates."
-  (let ((sl (spatial-index-skip-list idx))
-        (seen (make-hash-table :test 'equalp))
-        (result '()))
+cell-granular FILTER -- refine with exact geometry predicates.
+
+The window is covered with as FEW cells as possible: the covering precision is
+chosen adaptively to stay under +SPATIAL-QUERY-MAX-CELLS+, and never exceeds the
+index's storage precision.  Each covering cell drives ONE ordered PREFIX RANGE
+SCAN of the skip list (geohash keys are prefix-nested, so every stored cell inside
+a coarse cell sorts within its prefix range).  A continent-sized window is thus a
+handful of range scans rather than the millions of fixed-precision cell probes
+that used to enumerate -- and cons -- an empty grid until the heap was exhausted.
+A coarse covering cell can extend past the bbox, so the candidate set may include
+a thin margin of nearby nodes; that is fine for a filter (the caller refines with
+the exact predicate) and matches the index's existing filter/refine contract."
+  (let* ((sl (spatial-index-skip-list idx))
+         (cover-prec (min (spatial-index-precision idx)
+                          (%covering-precision (max 0d0 (- max-lon min-lon))
+                                               (max 0d0 (- max-lat min-lat))
+                                               +spatial-query-max-cells+)))
+         (seen (make-hash-table :test 'equalp))
+         (result '()))
     (dolist (cell (geohash-covering min-lon min-lat max-lon max-lat
-                                    :precision (spatial-index-precision idx)))
-      (dolist (nid (skip-list-fetch-all sl cell))
-        (unless (gethash nid seen)
-          (setf (gethash nid seen) t)
-          (push nid result))))
+                                    :precision cover-prec))
+      (multiple-value-bind (start end) (geohash-prefix-range cell)
+        (let ((cursor (make-range-cursor sl start end)))
+          (when cursor
+            (do ((node (cursor-next cursor) (cursor-next cursor)))
+                ((null node))
+              (let ((nid (%sn-value node)))
+                (unless (gethash nid seen)
+                  (setf (gethash nid seen) t)
+                  (push nid result))))))))
     result))
 
 (defun spatial-index-query-radius (idx lat lon radius-m)

@@ -79,6 +79,41 @@
       (is (has-p (bid 7) (spatial-index-query-bbox idx 37.50d0 49.50d0 37.51d0 49.51d0)))   ; part B
       (is (not (has-p (bid 7) (spatial-index-query-bbox idx 37.30d0 49.30d0 37.31d0 49.31d0))))))) ; gap
 
+(test large-bbox-does-not-blow-up
+  "REGRESSION: a continent-sized query window must not enumerate (and cons) the
+fixed-precision grid until the heap is exhausted.  Before the prefix-range-scan
+fix, querying a precision-7 index with a whole-country bbox (~19 x 9 degrees) made
+GEOHASH-COVERING emit ~10^8 cells and killed the process.  The window is covered
+with a bounded set of coarse cells now, so this returns promptly with the right
+candidates: points inside the window present, a point well outside absent."
+  (with-temp-memory (heap)
+    (let ((idx (make-spatial-index heap :precision 7))
+          (kharkiv '(37.1724312d0 49.2020584d0))   ; lon lat, in UA
+          (lviv    '(23.7182919d0 50.0263233d0))   ; in UA
+          (london  '(-0.1276d0 51.5072d0)))         ; well outside UA
+      (spatial-index-insert idx (bid 1) (pt kharkiv))
+      (spatial-index-insert idx (bid 2) (pt lviv))
+      (spatial-index-insert idx (bid 3) (pt london))
+      ;; whole-of-Ukraine window -- the exact shape that used to OOM
+      (let ((cands (spatial-index-query-bbox idx 22d0 44d0 41d0 53d0)))
+        (is (has-p (bid 1) cands) "Kharkiv point inside the window")
+        (is (has-p (bid 2) cands) "Lviv point inside the window")
+        (is (not (has-p (bid 3) cands)) "London is outside the window")))))
+
+(test large-bbox-covering-precision-is-bounded
+  "The covering chosen for a huge window stays coarse (so the cell count is
+bounded), while a tiny window still resolves to the index's full precision."
+  ;; +spatial-query-max-cells+ and %covering-precision are internal tuning knobs
+  ;; (not part of the public spatial API), so reach them with graph-db:: here.
+  (let ((max-cells graph-db::+spatial-query-max-cells+))
+    ;; huge window -> coarse covering, bounded cell count
+    (is (<= (length (geohash-covering 22d0 44d0 41d0 53d0 :max-cells max-cells))
+            max-cells))
+    ;; the adaptive precision for a continent is far below storage precision 7
+    (is (< (graph-db::%covering-precision 19d0 9d0 max-cells) 7))
+    ;; a metre-scale window wants precision >= storage precision (clamped to 7)
+    (is (>= (graph-db::%covering-precision 0.0001d0 0.0001d0 max-cells) 7))))
+
 (test remove-clears-entries
   (with-temp-memory (heap)
     (let ((idx (make-spatial-index heap :precision 7))
