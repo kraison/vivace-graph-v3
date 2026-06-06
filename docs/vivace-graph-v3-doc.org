@@ -10,9 +10,12 @@ It is the first comprehensive documentation the project has had, and it is
 excellent work — huge thanks to him for it.
 
 It has been adopted into the upstream repository and is maintained here, with
-small corrections and updates as the code evolves (changes are kept faithful to
-the original; see the repository history for specifics). Any remaining errors
-introduced during adaptation are ours, not the original author's.
+corrections and updates as the code evolves. The original chapters are kept
+faithful to Gwang-Jin Kim's work; material added after adoption — for example
+Chapter 12 on MVCC — is the maintainers', written in his style so the manual
+reads as a coherent whole. The foundation, structure, and the great majority of
+this manual are his, and the project is deeply grateful for them. Any errors
+introduced during adaptation or in the newer chapters are ours, not his.
 #+END_QUOTE
 
 * Part I: Getting Started
@@ -390,7 +393,13 @@ A linear hash table is designed for graceful, incremental growth, which is essen
 - *Splitting:* When a bucket overflows with too many entries, the table does not resize all at once. Instead, it maintains a `next-split` pointer. It "splits" the single bucket at this pointer into two, re-distributing its contents. The pointer then advances to the next bucket. This ensures that the work of growing the hash table is spread out over time.
 - *Overflow:* If a bucket overflows before it is scheduled to be split, any additional items are placed in a separate ~overflow.dat~ file and chained together.
 
-For these primary node tables, the *key* is the node's 16-byte UUID, and the *value* is a compact, serialized representation of the node's core metadata, including the all-important pointer to its data in the heap file.
+For these primary node tables, the *key* is the node's 16-byte UUID, and the *value* is a compact, serialized representation of the node's core metadata — its *head*. As of storage format *v2* (the MVCC release) the head is 31 bytes for a vertex (71 for an edge, which appends its ~from~/~to~/~weight~) and is laid out append-only as:
+
+#+BEGIN_EXAMPLE
+  flags(1)  type-id(2)  revision(4)  data-pointer(8)  commit-epoch(8)  prev-pointer(8)
+#+END_EXAMPLE
+
+The first 15 bytes are byte-for-byte identical to the original (v1) head; ~commit-epoch~ and ~prev-pointer~ were *appended*, which is what makes the v1→v2 migration a simple matter (see Chapter 12, "MVCC: Immutable Versioned Nodes"). ~data-pointer~ is the all-important offset to the node's data in the heap file; ~commit-epoch~ and ~prev-pointer~ drive the versioning machinery described in that chapter. The on-disk storage version is recorded in each memory-mapped region; opening a v1 graph with a v2 build signals an error directing you to ~migrate-graph~.
 
 *** Durability and the Dirty File (~graph.lisp~)
 
@@ -457,7 +466,7 @@ When you define a class with ~def-vertex~ or ~def-edge~, VivaceGraph makes a dis
     #+END_SRC
     The values of these slots are serialized and written to the heap file (`heap.dat`) when a node is saved. They are durable and will be present when the database is reopened in a later session. The metaclass machinery described above is primarily concerned with managing these persistent slots.
 
-2.  *Ephemeral Slots (Internal/Meta):* These are the slots that manage the node's state within the database engine, such as ~id~, ~revision~, ~%deleted-p~, and ~%data-pointer~. Their values are part of the core node metadata stored in the primary vertex/edge tables, not in the general-purpose heap. They are managed internally by VivaceGraph and are not typically meant for direct modification by application code (with the exception of reading `id` or `revision`).
+2.  *Ephemeral Slots (Internal/Meta):* These are the slots that manage the node's state within the database engine, such as ~id~, ~revision~, ~%deleted-p~, ~%data-pointer~, and — as of the MVCC release — ~commit-epoch~ and ~prev-pointer~ (the version-chain fields described in Chapter 12). Their values are part of the core node metadata (the head) stored in the primary vertex/edge tables, not in the general-purpose heap. They are managed internally by VivaceGraph and are not typically meant for direct modification by application code (with the exception of reading `id` or `revision`).
 
 In the current implementation of VivaceGraph, the distinction is made for you. All slots you define in a ~def-vertex~ call are treated as persistent. All the built-in slots of the base `node`, `vertex`, and `edge` classes are treated as internal meta-slots. This design simplifies schema definition while providing the necessary separation for the database engine to function correctly.
 
@@ -1426,6 +1435,96 @@ Here is a complete, end-to-end example.
       (close-graph restored-graph)))
 #+END_SRC
 
+*** Migrating a pre-MVCC graph (~migrate-graph~)
+
+Graphs created before the MVCC release use storage format *v1* (a 15-byte node head). A v2 build cannot open them directly — ~open-graph~ will signal an error telling you to migrate. The ~migrate-graph~ function does this for you; it is a logical snapshot-and-replay and is described in Chapter 12, "MVCC: Immutable Versioned Nodes."
+
+** Chapter 12: MVCC — Immutable Versioned Nodes
+
+VivaceGraph took early design inspiration from CouchDB, including its idea of keeping previous revisions of a document around rather than overwriting them in place. The MVCC release makes good on that idea: every update or delete now writes a *new* version of a node and *retains* the old one, chained together, until a background reaper decides it is safe to reclaim. This chapter explains how that works and the knobs you have for controlling it.
+
+The benefits are threefold:
+
+1. *The node-data read-after-free race is dissolved at its source.* Because an updated node's old data block is no longer freed at commit time, a concurrent reader that is mid-way through dereferencing it can never have the ground pulled out from under it. (Earlier versions guarded this with a per-read byte-copy under a bucket lock; that machinery is gone, replaced by lightweight read-epoch pins.)
+2. *Transactional reads get snapshot isolation* (for lookups — see the note below).
+3. *History is preserved* (bounded by your retention policy), laying the groundwork for future time-travel and audit features.
+
+*** The version chain
+
+Recall from Chapter 3 that a node's *head* gained two fields in storage format v2:
+
+- ~commit-epoch~ :: the id of the transaction that committed this version. Transaction ids are globally monotonic, so this acts as a logical timestamp.
+- ~prev-pointer~ :: a heap address pointing at the *previous* version's archived head (0 if there is none).
+
+When you update or delete a node, the engine:
+
+1. Writes the new version's data to the heap as usual.
+2. *Archives the prior version's head* into its own small heap block (its ~data-pointer~ still references the now-retained old data block).
+3. Sets the new live head's ~prev-pointer~ to that archived block and stamps its ~commit-epoch~ with the committing transaction id.
+
+The result is a singly-linked chain, newest-first: the live head (in the primary lhash table) points back through ~prev-pointer~ to each older version in the heap. The garbage collector (~gc-heap~) is version-aware — it roots these chains — so reopening a graph never reclaims a retained version out from under you.
+
+A crucial property for replication: ~prev-pointer~ is a *local heap address*. It is therefore **never** sent on the replication wire. The shared apply path re-derives it (and ~commit-epoch~) from the slave's own current node, so master and slave each build their own correct local chains. (See Chapter 10.)
+
+*** Controlling retention with ~:keep-revisions~
+
+By default a node keeps *no* extra history: the reaper reclaims a prior version as soon as it is safe to do so (see below), so in steady state you pay only for the single in-flight prior version. You can ask the engine to retain a deeper window with ~:keep-revisions~, available at two levels:
+
+- *Per node-type*, on ~def-vertex~ / ~def-edge~:
+
+#+BEGIN_SRC lisp
+  ;; Keep the 5 most recent prior versions of every audited-record.
+  (def-vertex audited-record ()
+    ((payload :type string))
+    :my-app
+    :keep-revisions 5)
+#+END_SRC
+
+- *Graph-wide default*, on ~make-graph~ (persisted with the schema) and overridable on ~open-graph~:
+
+#+BEGIN_SRC lisp
+  (make-graph :my-app "/var/db/my-app/" :keep-revisions 3)
+  ;; ... later, open with a different retention policy for this session:
+  (open-graph :my-app "/var/db/my-app/" :keep-revisions 10)
+#+END_SRC
+
+A node-type's own ~:keep-revisions~ overrides the graph default; ~nil~ on the type means "inherit the graph default." A value of ~0~ means "retain only what active readers require."
+
+*** The reaper: lazy and epoch-gated
+
+Reclamation is *lazy* (it runs as part of each commit) and *epoch-gated* so it can never free a version that an in-progress reader or transaction might still observe. The rule is conservative and simple: a prior version is reclaimable only once its *stop epoch* — the ~commit-epoch~ of the version that superseded it — is strictly older than the oldest epoch any active transaction or pinned reader could be reading at. Concretely, the reaper retains ~max(keep-revisions, what active readers still need)~ for each chain it visits, frees the safe oldest suffix, and repairs exactly one ~prev-pointer~ to close the gap.
+
+You do not call the reaper directly; it is automatic. Its only tunable is the retention window described above.
+
+*** Snapshot-isolation reads
+
+Inside a transaction, a point ~lookup~ (e.g. ~lookup-vertex~, ~lookup-edge~, or a generated ~lookup-<type>~) now returns the version that was live *as of the transaction's start* — the newest version whose ~commit-epoch~ precedes the transaction's start epoch. An update committed by a *later* transaction is therefore invisible to an in-progress one, and re-reading a node within a transaction is repeatable. The relevant older version is guaranteed to still exist because an open transaction holds the reaper's floor down.
+
+#+BEGIN_SRC lisp
+  ;; Transaction A reads X, sees its value as of A's start, and keeps seeing
+  ;; that value even if a concurrent transaction B commits an update to X.
+#+END_SRC
+
+*A note on scans.* This isolation applies to *lookups* (and to *typed* scans such as ~(map-vertices fn g :vertex-type 'user)~, which resolve each node through the lookup path). An *untyped*, whole-graph scan — ~(map-vertices fn g)~ with no ~:vertex-type~ — still reads each node's *live* version. This is a deliberate, documented limitation: making whole-graph scans snapshot-consistent would require versioning the indexes themselves (membership history), which is out of scope. In practice untyped scans are used for read-only maintenance and analytics, where this is harmless; when you need a consistent view, use a point lookup or a typed scan. Crucially, none of this affects *data integrity*: writes remain serializable via the engine's optimistic concurrency control regardless of how reads are resolved.
+
+*** Migrating a v1 graph to v2 (~migrate-graph~)
+
+The MVCC head grew from 15 to 31 bytes, so a v2 build cannot open a v1 graph directly. ~migrate-graph~ brings one across without touching the original:
+
+#+BEGIN_SRC lisp
+  ;; Load the schema (def-vertex / def-edge forms) for the graph first, then:
+  (let ((g (migrate-graph :my-app
+                          "/var/db/my-app-v1/"    ; existing v1 graph (untouched)
+                          "/var/db/my-app-v2/"    ; fresh v2 graph to create
+                          :package :my-app)))
+    ;; g is the new, open v2 graph.
+    ...)
+#+END_SRC
+
+Internally it is a *logical* snapshot-and-replay, the same format-independent mechanism used for backups: the v1 graph is opened read-only through a 15-byte-head shim, every live node is written to a pointer-free snapshot, and a fresh v2 graph is created and the snapshot replayed through the normal ~make-vertex~ / ~make-edge~ path. The original directory is left byte-for-byte untouched. (This mirrors the migration advice given for the 2016 hashing change — snapshot and replay — now packaged as a single call.)
+
+Note that, because the on-disk format uses ~cl-store~ for some structures, graph *directories* are not portable across Lisp implementations; migrate (and snapshot/replay) on the same implementation that wrote the graph.
+
 ** API Reference
 
 This chapter provides a categorized reference for the most important exported symbols from the ~graph-db~ package. It is not an exhaustive list of every internal function but focuses on the public API you will use most often when building applications.
@@ -1557,6 +1656,17 @@ This chapter provides a categorized reference for the most important exported sy
 
 - ~replay (graph snapshot-dir &key package-name)~ ::
   Restores a graph from snapshot files located in ~snapshot-dir~ into a new, empty graph. Automatically finds the latest snapshot and rebuilds all views.
+
+- ~migrate-graph (name old-location new-location &key package include-deleted-p)~ ::
+  Migrates a pre-MVCC (storage v1) graph at ~old-location~ to the current (v2) format at ~new-location~, returning the new open graph. A logical snapshot-and-replay; the original is left untouched. See Chapter 12.
+
+**** MVCC / Versioning
+
+- ~def-vertex~ / ~def-edge ( ... :keep-revisions N)~ ::
+  Per node-type override for how many prior versions the reaper retains (~nil~ = inherit the graph default). See Chapter 12.
+
+- ~make-graph ( ... :keep-revisions N)~ / ~open-graph ( ... :keep-revisions N)~ ::
+  Graph-wide default retained-version count (persisted by ~make-graph~; an optional session override on ~open-graph~).
 
 **** REST API
 - ~start-rest ( &optional port)~ ::
