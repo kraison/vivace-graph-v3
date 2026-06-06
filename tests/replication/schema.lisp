@@ -14,3 +14,14 @@
 (def-edge r-knows ()
   ((since))
   :repl-test-app)
+
+;; A geometry-bearing vertex for the replicated spatial-index / subset checks.
+;; The NODE-GEOMETRY method must be defined on BOTH processes (here) so the
+;; slave maintains its spatial index as it applies replicated writes.
+(def-vertex r-place ()
+  ((label    :type string)
+   (location :type geometry))
+  :repl-test-app)
+
+(defmethod node-geometry ((p r-place))
+  (slot-value p 'location))

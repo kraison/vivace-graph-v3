@@ -64,12 +64,19 @@
         (format t "~&SLAVE: master never became ready~%") (sexit 1))
       (let* ((dir  (uiop:getenv "REPL_SLAVE_DIR"))
              (port (parse-integer (uiop:getenv "REPL_PORT")))
+             ;; Subset replication: this slave's area of operations is a box over
+             ;; Kharkiv Oblast.  Non-spatial nodes (r-person, edges) still
+             ;; replicate in full; spatial nodes are filtered to the AO -- so the
+             ;; Kharkiv places arrive and are indexed, the Lviv place does not.
+             (ao (make-polygon '(((37.16 49.19) (37.19 49.19)
+                                  (37.19 49.21) (37.16 49.21) (37.16 49.19)))))
              ;; :keep-revisions 2 (slave-local reaper config, independent of the
              ;; master) so replicated updates leave a retained version chain we
              ;; can walk to prove the slave built it from LOCAL heap addresses.
              (g (make-graph :repl-test-app dir :slave-p t :master-host "localhost"
                             :replication-port port :replication-key "test-secret"
-                            :buffer-pool-size 1000 :keep-revisions 2)))
+                            :buffer-pool-size 1000 :keep-revisions 2
+                            :replication-filter (make-spatial-replication-filter ao))))
         (let ((*graph* g))
           (flet ((live ()  (map-vertices #'identity g :collect-p t :vertex-type 'r-person))
                  (edges () (map-edges #'identity g :collect-p t)))
@@ -86,6 +93,17 @@
                 (check (= 1 (length (outgoing-edges alice)))
                        "catch-up: Alice has 1 outgoing edge (got ~D)"
                        (length (outgoing-edges alice)))))
+            ;; --- Subset replication + replicated spatial index (catch-up) ---
+            ;; The in-AO Kharkiv place replicated and is in the slave's spatial
+            ;; index; the out-of-AO Lviv place was filtered out entirely.
+            (let ((kh (find-nodes-near 49.2020d0 37.1724d0 2000d0 :graph g))
+                  (lv (find-nodes-near 50.0263d0 23.7183d0 2000d0 :graph g)))
+              (check (= 1 (length kh))
+                     "catch-up subset: in-AO Kharkiv place replicated + indexed (got ~D)"
+                     (length kh))
+              (check (= 0 (length lv))
+                     "catch-up subset: out-of-AO Lviv place filtered out (got ~D)"
+                     (length lv)))
             ;; signal master to send the live update + delete
             (write-flag "connected")
             (unless (wait-flag "phase2done")
@@ -126,6 +144,13 @@
                   (check ok "live: slave version chain is local + well-formed (depth ~D)" n))))
             (check (= 0 (length (edges)))
                    "live: edge gone after deleting Bob (got ~D)" (length (edges)))
+            ;; --- Replicated spatial index (live) ---
+            ;; The live in-AO place streamed through and was indexed too, so the
+            ;; Kharkiv area now holds both the catch-up and the live place.
+            (let ((kh (find-nodes-near 49.2020d0 37.1724d0 2000d0 :graph g)))
+              (check (= 2 (length kh))
+                     "live: 2 in-AO places indexed after live replication (got ~D)"
+                     (length kh)))
             ;; Exercise version-aware GC over the replicated chains; must not error.
             (check (handler-case (progn (graph-db::gc-heap g) t)
                      (error (c) (format t "~&  gc-heap error: ~A~%" c) nil))

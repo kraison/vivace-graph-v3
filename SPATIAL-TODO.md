@@ -45,9 +45,10 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       `apply-transaction` runs `filter-writes` on a slave so it applies only its
       subset (txn id still advances). `make-spatial-replication-filter` builds an
       area-of-operations predicate (accepts non-spatial nodes + spatial nodes in
-      the area). Unit-tested. **Remaining:** end-to-end master/slave streaming
-      validation in the `tests/replication/` harness; AO-boundary-crossing
-      *updates* (node moving in/out of the AO) are not yet handled.
+      the area). Unit-tested, and validated end-to-end in the `tests/replication/`
+      harness (in-AO replicated/indexed, out-of-AO filtered). **Remaining:**
+      AO-boundary-crossing *updates* (a node moving in/out of the AO) are not yet
+      reconciled.
 - [ ] **`find-intersects` query** — nodes whose geometry *intersects* an area
       (needs polygon ops → GEOS).
 - [x] **`rebuild-spatial-index`** — DONE (`spatial-query.lisp`): drop + recreate the
@@ -62,10 +63,13 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       finalizers under VG concurrency).
 - [ ] **Geohash neighbors/adjacent** — enables true kNN and cell-boundary-spanning
       proximity.
-- [ ] **Snapshot → restore → spatial-query test** — confirm the index rebuilds via
-      replay + the write-path hook (untested).
-- [ ] **Replicated-index test** — confirm a slave's index populates via the hook
-      on apply.
+- [x] **Snapshot → restore → spatial-query test** — DONE (backup-suite): replay
+      into a fresh graph re-applies nodes through the write-path hook, repopulating
+      the spatial index (verified queryable; empty before replay).
+- [x] **Replicated-index test** — DONE (tests/replication harness): the slave
+      maintains its spatial index on replicated apply (catch-up + live).  The same
+      run also covers end-to-end subset filtering (in-AO places replicated/indexed,
+      out-of-AO filtered).
 - [ ] Point-in-polygon **boundary semantics** — currently consistent but not
       flagged; document/standardize.
 

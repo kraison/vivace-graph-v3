@@ -52,12 +52,17 @@
                           :replication-port port :replication-key "test-secret"
                           :buffer-pool-size 1000)))
       (let ((*graph* g))
-        ;; TX1: catch-up payload (committed before the slave exists)
+        ;; TX1: catch-up payload (committed before the slave exists).  Includes
+        ;; two geometry places -- one in the slave's AO (Kharkiv), one outside it
+        ;; (Lviv) -- so the slave's subset filter + replicated spatial index can
+        ;; be checked on the catch-up path.
         (with-transaction ()
           (let ((a (make-r-person :name "Alice" :age 30))
                 (b (make-r-person :name "Bob"   :age 25)))
-            (make-r-knows :from a :to b :since "2020")))
-        (format t "~&MASTER: TX1 committed (2 vertices + 1 edge)~%") (finish-output)
+            (make-r-knows :from a :to b :since "2020"))
+          (make-r-place :label "Kharkiv site" :location (make-point 37.1724d0 49.2020d0))
+          (make-r-place :label "Lviv site"    :location (make-point 23.7183d0 50.0263d0)))
+        (format t "~&MASTER: TX1 committed (2 persons + 1 edge + 2 places)~%") (finish-output)
         (write-flag "ready")
         ;; wait for the slave to connect + verify catch-up
         (unless (wait-flag "connected")
@@ -74,6 +79,11 @@
               (setf (slot-value v 'name) "Alice2")
               (save v)))
           (format t "~&MASTER: TX2 committed (Alice -> Alice2)~%") (finish-output)
+          ;; A LIVE in-AO place (ordered before the age bumps, so once the slave
+          ;; observes the final age=33 state it has also applied this place).
+          (with-transaction ()
+            (make-r-place :label "Kharkiv live" :location (make-point 37.1730d0 49.2030d0)))
+          (format t "~&MASTER: live place committed (Kharkiv live)~%") (finish-output)
           ;; MVCC: update Alice2 repeatedly so the slave builds a real multi-
           ;; version prev-pointer chain (the 2nd+ update's old-node carries a
           ;; non-zero prev-pointer -- a MASTER heap address that must NOT be

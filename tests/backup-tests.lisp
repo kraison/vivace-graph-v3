@@ -64,6 +64,41 @@ survive the round trip."
             (close-graph g2 :snapshot-p nil)
             (collect-garbage)))))))
 
+(test snapshot-replay-restores-spatial-index
+  "After snapshot + replay into a fresh graph, geometry-bearing nodes are
+spatially queryable: replay re-applies them through the transaction path, so the
+write-path hook repopulates the spatial index.  (GEO-PLACE / NODE-GEOMETRY come
+from spatial-hook-tests.)"
+  (with-temp-directory (dir1)
+    (with-temp-directory (dir2)
+      (let ((p1 (namestring dir1)) (p2 (namestring dir2)) kh-id lv-id)
+        ;; populate the source graph with a Kharkiv and a Lviv place, then snapshot
+        (let ((g (make-graph *integration-graph-name* p1 :buffer-pool-size 1000)))
+          (let ((*graph* g))
+            (with-transaction ()
+              (setq kh-id (id (make-geo-place :loc (make-point 37.1724d0 49.2020d0)))
+                    lv-id (id (make-geo-place :loc (make-point 23.7183d0 50.0263d0)))))
+            (graph-db:snapshot g))
+          (close-graph g :snapshot-p nil))
+        ;; replay into a brand-new empty graph
+        (let ((g2 (make-graph *integration-graph-name* p2 :buffer-pool-size 1000)))
+          (unwind-protect
+               (let ((*graph* g2))
+                 ;; the fresh graph's index is empty before replay
+                 (is (null (spatial-index-query-bbox (spatial-index g2)
+                                                     37.16d0 49.19d0 37.19d0 49.21d0))
+                     "fresh graph has an empty spatial index")
+                 (graph-db:replay g2 (merge-pathnames "txn-log/" dir1) :graph-db/test)
+                 ;; after replay the Kharkiv place is spatially indexed; Lviv is elsewhere
+                 (let ((cands (spatial-index-query-bbox (spatial-index g2)
+                                                        37.16d0 49.19d0 37.19d0 49.21d0)))
+                   (is (member kh-id cands :test 'equalp) "Kharkiv place re-indexed by replay")
+                   (is (not (member lv-id cands :test 'equalp)) "Lviv place outside the window"))
+                 ;; and through the high-level query
+                 (is (= 1 (length (find-nodes-near 49.2020d0 37.1724d0 500d0 :graph g2)))))
+            (close-graph g2 :snapshot-p nil)
+            (collect-garbage)))))))
+
 (test recovery-from-dirty-marker
   "A leftover .dirty marker (unclean prior shutdown) blocks open-graph; the
 recovery procedure -- clear the marker, then reopen -- lets open-graph run
