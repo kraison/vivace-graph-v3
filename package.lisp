@@ -226,6 +226,7 @@
            #:spatial-index-query-bbox
            #:spatial-index-query-radius
            #:delete-spatial-index
+           #:rebuild-spatial-index
            ;; write-path protocol (applications specialize this)
            #:node-geometry
            ;; index-backed queries + Prolog functors

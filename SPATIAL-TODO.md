@@ -45,8 +45,9 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       snapshot-isolation reads.
 - [ ] **`find-intersects` query** — nodes whose geometry *intersects* an area
       (needs polygon ops → GEOS).
-- [ ] **`rebuild-spatial-index`** — regenerate from all nodes (recovery, precision
-      change, adopting the index on a pre-existing graph). Mirror `regenerate-view`.
+- [x] **`rebuild-spatial-index`** — DONE (`spatial-query.lisp`): drop + recreate the
+      index, re-index every live node with a `node-geometry`; optional `:precision`
+      change; returns the count. Mirrors `regenerate-view`.
 - [ ] **Exact extended-geometry containment** — replace the centroid approximation
       in `find-within` (depends on GEOS).
 

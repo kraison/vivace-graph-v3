@@ -80,3 +80,31 @@ nearest first."
           (when (unify node-var (car nd))
             (funcall cont))
           (undo-bindings old-trail))))))
+
+(defun rebuild-spatial-index (graph &key precision)
+  "Rebuild GRAPH's spatial index from scratch: drop the current index, create a
+fresh one, and re-index every live node that has a NODE-GEOMETRY.  Returns the
+number of nodes indexed.
+
+Use this to change the grid PRECISION (otherwise the current precision is kept),
+to adopt the index on a graph that predates the spatial extension, or to repair
+it.  It mutates the index directly (outside the transaction write path), so run
+it when the graph is quiescent -- analogous to REGENERATE-VIEW."
+  (let ((prec (or precision
+                  (and (spatial-index-p (spatial-index graph))
+                       (spatial-index-precision (spatial-index graph)))
+                  7)))
+    (with-recursive-lock-held ((txn-lock graph))
+      (when (spatial-index-p (spatial-index graph))
+        (delete-spatial-index (spatial-index graph)))
+      (init-spatial-index graph :precision prec)   ; fresh index + persisted sidecar
+      (let ((idx (spatial-index graph)) (count 0))
+        (flet ((reindex (node)
+                 (unless (deleted-p node)
+                   (let ((geom (node-geometry node)))
+                     (when geom
+                       (spatial-index-insert idx (id node) geom)
+                       (incf count))))))
+          (map-vertices (lambda (v) (reindex v)) graph)
+          (map-edges (lambda (e) (reindex e)) graph))
+        count))))

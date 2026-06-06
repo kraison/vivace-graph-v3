@@ -1762,6 +1762,12 @@ This chapter provides a categorized reference for the most important exported sy
 - ~(find-near ?node lat lon radius)~ / ~(find-within ?node area)~ ::
   Prolog functors that yield matching nodes, composable with the rest of a query.
 
+- ~rebuild-spatial-index (graph &key precision)~ ::
+  Rebuild the index from scratch by scanning every live node with a
+  ~node-geometry~. Use to change the grid ~precision~, adopt the index on a
+  graph that predates the spatial extension, or repair it. Run when the graph is
+  quiescent (like ~regenerate-view~). Returns the number of nodes indexed.
+
 **** REST API
 - ~start-rest ( &optional port)~ ::
   Starts the REST API server on the given ~port~ (defaults to 8080).

@@ -56,6 +56,9 @@
                 #:spatial-index-query-bbox
                 #:spatial-index-query-radius
                 #:delete-spatial-index
+                #:rebuild-spatial-index
+                ;; index lifecycle helpers (graph.lisp) for rebuild tests
+                #:init-spatial-index
                 ;; index-backed spatial queries (spatial extension)
                 #:find-nodes-within
                 #:find-nodes-near
