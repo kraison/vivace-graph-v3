@@ -94,7 +94,13 @@
    (slave-socket :accessor slave-socket :initarg :slave-socket)
    (stop-replication-p :accessor stop-replication-p :initarg :stop-replication-p :initform nil)
    (slave-thread :accessor slave-thread :initarg :slave-thread :initform nil)
-   (master-txn-id :accessor master-txn-id :initarg :master-txn-id)))
+   (master-txn-id :accessor master-txn-id :initarg :master-txn-id)
+   ;; Subset replication: when non-nil, a predicate (NODE) -> generalized boolean.
+   ;; Each replicated transaction's writes are filtered through it on apply, so
+   ;; the slave holds only the subset it accepts (e.g. its area of operations).
+   ;; See MAKE-SPATIAL-REPLICATION-FILTER for the spatial case.
+   (replication-filter :accessor replication-filter :initarg :replication-filter
+                       :initform nil)))
 
 (defgeneric graph-p (thing)
   (:method ((graph graph)) graph)

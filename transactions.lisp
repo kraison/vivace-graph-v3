@@ -844,12 +844,25 @@ before apply-tx-writes-to-views.  The hook fires once and self-clears.
 Intended for durability tests that need to simulate a crash between the
 lhash write and the view update, leaving a pending .txn file for recovery.")
 
+(defun filter-writes (writes filter)
+  "Keep only the WRITES whose node FILTER accepts; with no FILTER, keep all.
+Used for subset replication: a slave applies just the writes its filter accepts."
+  (if filter
+      (remove-if-not (lambda (w) (funcall filter (node w))) writes)
+      writes))
+
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
       (let ((writes (writes transaction))
             ;; MVCC: every write in this transaction is stamped with this id.
             (*commit-epoch* (transaction-id transaction)))
+        ;; Subset replication: on a slave with a replication-filter, drop the
+        ;; writes outside its subset BEFORE applying, so the lhash, views and
+        ;; spatial index all stay consistent.  The highest-transaction-id is
+        ;; still advanced below, so filtered transactions are not re-requested.
+        (when (slave-graph-p graph)
+          (setq writes (filter-writes writes (replication-filter graph))))
         (apply-tx-writes writes graph)
         (when *after-apply-tx-writes-hook*
           (let ((hook *after-apply-tx-writes-hook*))

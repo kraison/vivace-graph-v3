@@ -190,6 +190,7 @@
                (:file "graph-spatial-tests")
                (:file "spatial-hook-tests")
                (:file "spatial-query-tests")
+               (:file "subset-replication-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")

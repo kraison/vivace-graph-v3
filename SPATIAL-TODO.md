@@ -40,9 +40,14 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
 ## TODO
 
 ### P1 — Functional gaps for the platform
-- [ ] **Subset-replication filter** — `apply-tx-write` on `slave-graph` filtered by
-      area-of-operations, so a field device replicates only its AO. Does not need
-      snapshot-isolation reads.
+- [x] **Subset-replication filter** — DONE (prototype): a `replication-filter`
+      predicate slot on `slave-graph` (set via `make-graph :replication-filter`);
+      `apply-transaction` runs `filter-writes` on a slave so it applies only its
+      subset (txn id still advances). `make-spatial-replication-filter` builds an
+      area-of-operations predicate (accepts non-spatial nodes + spatial nodes in
+      the area). Unit-tested. **Remaining:** end-to-end master/slave streaming
+      validation in the `tests/replication/` harness; AO-boundary-crossing
+      *updates* (node moving in/out of the AO) are not yet handled.
 - [ ] **`find-intersects` query** — nodes whose geometry *intersects* an area
       (needs polygon ops → GEOS).
 - [x] **`rebuild-spatial-index`** — DONE (`spatial-query.lisp`): drop + recreate the

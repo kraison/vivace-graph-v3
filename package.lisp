@@ -229,6 +229,9 @@
            #:rebuild-spatial-index
            ;; write-path protocol (applications specialize this)
            #:node-geometry
+           ;; subset replication (field devices)
+           #:replication-filter
+           #:make-spatial-replication-filter
            ;; index-backed queries + Prolog functors
            #:find-nodes-within
            #:find-nodes-near

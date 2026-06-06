@@ -64,6 +64,10 @@
                 #:find-nodes-near
                 #:find-within/2
                 #:find-near/4
+                ;; subset replication
+                #:replication-filter
+                #:make-spatial-replication-filter
+                #:filter-writes
                 ;; allocator / memory
                 #:create-memory
                 #:open-memory

@@ -33,7 +33,8 @@ the graph predates the spatial index (backward compatible)."
                                    (heap-size *default-heap-size*)
                                    (index-size *default-index-size*)
                                    (keep-revisions 0)
-                                   (spatial-precision 7))
+                                   (spatial-precision 7)
+                                   replication-filter)
   "Create a brand-new graph named NAME with its on-disk files under the
 directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
 return it.  The directory is created if necessary and must not already contain
@@ -56,6 +57,10 @@ Keyword arguments:
   :SPATIAL-PRECISION      geohash precision of the spatial index grid (default 7,
                           ~150 m cells; 9 ~ 5 m).  Persisted with the index and
                           read back on OPEN-GRAPH.  See Chapter 13.
+  :REPLICATION-FILTER     (slaves only) a predicate (NODE) -> boolean; the slave
+                          applies only replicated writes whose node it accepts,
+                          so it holds just a subset (e.g. its area of operations).
+                          See MAKE-SPATIAL-REPLICATION-FILTER.
 
 A .dirty marker file is written on creation; always CLOSE-GRAPH to flush data
 to disk and remove it."
@@ -127,6 +132,10 @@ to disk and remove it."
         (setf (gethash name *graphs*) graph))
       (when slave-p
         (setf (master-host graph) master-host)
+        ;; Set the subset filter before replay/replication so the slave applies
+        ;; only its subset from the very first transaction.
+        (when replication-filter
+          (setf (replication-filter graph) replication-filter))
         (when replay-txn-dir
           (let ((*graph* graph))
             (replay graph replay-txn-dir package))))

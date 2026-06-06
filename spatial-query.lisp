@@ -81,6 +81,19 @@ nearest first."
             (funcall cont))
           (undo-bindings old-trail))))))
 
+(defun make-spatial-replication-filter (area)
+  "Return a predicate (NODE) -> generalized boolean for use as a slave graph's
+REPLICATION-FILTER (see MAKE-GRAPH :replication-filter).  It accepts a node when
+it has no geometry (so non-spatial data -- schema, reference data -- replicates
+in full) or when its geometry's representative point lies within AREA (a
+:polygon / :multipolygon).  A field slave then receives only the nodes for its
+area of operations, plus all non-spatial nodes."
+  (lambda (node)
+    (let ((geom (node-geometry node)))
+      (or (null geom)
+          (multiple-value-bind (lat lon) (%geometry-rep-point geom)
+            (geometry-contains-point-p area lon lat))))))
+
 (defun rebuild-spatial-index (graph &key precision)
   "Rebuild GRAPH's spatial index from scratch: drop the current index, create a
 fresh one, and re-index every live node that has a NODE-GEOMETRY.  Returns the
