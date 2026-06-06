@@ -99,6 +99,7 @@
                (:file "transaction-tests")
                (:file "data-structure-tests")
                (:file "graph-ops-tests")
+               (:file "spatial-tests")
                (:file "view-tests")
                (:file "prolog-tests")
                (:file "acid-regression-tests"))

@@ -38,6 +38,44 @@
 (test point-in-ring-degenerate
   (is (not (point-in-ring-p 0d0 0d0 '((0 0) (1 1))))))
 
+;;; ---- boundary semantics ------------------------------------------------
+;;;
+;;; point-in-ring-p uses the PNPOLY even-odd rule with strict `>` vertex
+;;; comparisons.  This gives a "half-open" boundary: a point lying exactly on a
+;;; shared edge is classified into EXACTLY ONE of two polygons that share that
+;;; edge -- never both, never neither.  That tiling property (no double-count,
+;;; no gap) is the guarantee callers can rely on; which specific side "wins" is
+;;; an implementation detail and is NOT part of the contract.
+
+(test boundary-edge-tiles-without-double-count
+  "A point on the edge shared by two adjacent squares belongs to exactly one of
+them (XOR) -- so a partition of space neither double-counts nor drops boundary
+points."
+  (let ((left  '((0 0) (4 0) (4 4) (0 4) (0 0)))     ; x in [0,4]
+        (right '((4 0) (8 0) (8 4) (4 4) (4 0))))    ; x in [4,8], shares x=4
+    ;; midpoints of the shared vertical edge x=4 (avoid the corner vertices)
+    (dolist (lat '(1d0 2d0 3d0))
+      (let ((in-left  (point-in-ring-p 4d0 lat left))
+            (in-right (point-in-ring-p 4d0 lat right)))
+        (is (or (and in-left (not in-right))
+                (and in-right (not in-left)))
+            "edge point (4,~A) must be in exactly one square (left=~A right=~A)"
+            lat in-left in-right)))))
+
+(test boundary-is-deterministic
+  "Boundary classification is stable: the same edge point yields the same answer
+on repeated calls (no randomness / order dependence)."
+  (let ((sq '((0 0) (4 0) (4 4) (0 4) (0 0))))
+    (is (eq (point-in-ring-p 4d0 2d0 sq) (point-in-ring-p 4d0 2d0 sq)))
+    (is (eq (point-in-ring-p 2d0 0d0 sq) (point-in-ring-p 2d0 0d0 sq)))))
+
+(test interior-and-exterior-unambiguous
+  "Points clearly inside/outside are never affected by the boundary rule."
+  (let ((sq '((0 0) (4 0) (4 4) (0 4) (0 0))))
+    (is (point-in-ring-p 2d0 2d0 sq))              ; centre: in
+    (is (not (point-in-ring-p 4.0001d0 2d0 sq)))   ; just outside the right edge
+    (is (point-in-ring-p 3.9999d0 2d0 sq))))       ; just inside the right edge
+
 (test polygon-with-hole
   "A point inside the hole is not contained; one in the solid annulus is."
   (let ((rings '(((0 0) (10 0) (10 10) (0 10) (0 0))      ; exterior

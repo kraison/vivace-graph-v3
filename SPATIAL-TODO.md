@@ -33,9 +33,8 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
 - **Distance is haversine** (~0.5% vs ellipsoid).
 - **Single grid precision per graph** — set with `make-graph :spatial-precision`
   (default 7, ~150 m cells); geohash (Z-order), not Hilbert.
-- **`node-geometry` must be hand-specialized** per type (the `:index` slot flag
-  is not wired to auto-register a geometry slot).
-- **No regenerate/rebuild** of the index (views have `regenerate-view`).
+- **No regenerate/rebuild** of the index (views have `regenerate-view`). *(Done —
+  see `rebuild-spatial-index`.)*
 
 ## TODO
 
@@ -61,8 +60,16 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
 - [ ] **Evaluate/harden `cl-geos`** for intersects/union/`buffer(0)` repair, with
       the hand-rolled predicates as fallback (watch per-thread GEOS contexts +
       finalizers under VG concurrency).
-- [ ] **Geohash neighbors/adjacent** — enables true kNN and cell-boundary-spanning
-      proximity.
+- [x] **Geohash neighbors/adjacent** — DONE (`geohash.lisp`): `geohash-neighbor`
+      (step one cell in lon/lat, wraps the antimeridian, NIL off a pole) and
+      `geohash-neighbors` (the 8 surrounding same-precision cells). Covered by
+      `geohash-suite`.
+- [x] **kNN (`find-nearest-k`)** — DONE (`spatial-query.lisp`): the K nearest
+      nodes to a point, nearest-first, via radius-doubling over `find-nodes-near`
+      (correct because everything inside radius r is nearer than anything outside
+      it). Bounded by `:max-radius` (default 25 km) since the fixed-precision
+      geohash index enumerates cells per window — unbounded kNN is not supported.
+      Prolog `find-nearest/4`. Covered by `spatial-query-suite`.
 - [x] **Snapshot → restore → spatial-query test** — DONE (backup-suite): replay
       into a fresh graph re-applies nodes through the write-path hook, repopulating
       the spatial index (verified queryable; empty before replay).
@@ -70,8 +77,11 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       maintains its spatial index on replicated apply (catch-up + live).  The same
       run also covers end-to-end subset filtering (in-AO places replicated/indexed,
       out-of-AO filtered).
-- [ ] Point-in-polygon **boundary semantics** — currently consistent but not
-      flagged; document/standardize.
+- [x] Point-in-polygon **boundary semantics** — DONE: documented the half-open
+      PNPOLY rule (a point on an edge shared by two polygons lands in exactly one
+      of them — no double-count, no gap; which side wins is not part of the
+      contract) in `geometry-ops.lisp`, and pinned it with `geometry-ops-suite`
+      tests (edge tiling XOR, determinism, interior/exterior unambiguous).
 
 ### P3 — Performance & scale
 - [ ] **Load the real ~458k-image / 440-find dataset** onto a spatial graph;
@@ -80,15 +90,26 @@ maintenance, queries). Merged into `experiment`; full suite green on SBCL
       struct, and API stay stable.
 - [ ] **Hilbert-curve migration** behind the same query API if geohash range
       fragmentation hurts at scale.
-- [ ] Concurrency/stress coverage for the index (the storm suites don't touch it).
+- [x] Concurrency/stress coverage for the index — DONE
+      (`tests/concurrency/spatial-tests.lisp`, `concurrent-spatial-suite`): N-thread
+      concurrent inserts, interleaved insert+query, cell-moving updates, and
+      concurrent deletes, all asserting index consistency. Green on SBCL + ECL.
 
 ### P4 — Polish, docs, cross-impl
 - [ ] **CCL** verification on Linux (only SBCL + ECL run so far).
 - [ ] **H3 density helper + aggregation view** (contamination-heatmap building
       block); geohash was used for the index instead.
-- [ ] Wire the **`:index` slot flag** so a geometry slot opts into indexing
-      declaratively (vs hand-written `node-geometry`).
-- [ ] **`example.lisp`** — add a spatial walkthrough.
+- [x] Wire the **`:index` slot flag** so a geometry slot opts into indexing
+      declaratively (vs hand-written `node-geometry`) — DONE: `node-geometry`'s
+      default scans the node's `:index`-marked slots and returns the first whose
+      *value* is a geometry (robust to the app package of the `:type geometry`
+      symbol; `(slot :type geometry :index t)` is now enough). An explicit
+      `node-geometry` method still takes precedence. Covered by
+      `index-slot-flag-auto-wires-node-geometry`.
+- [x] **`example.lisp`** — DONE: MERCHANT gains a `(location :type geometry
+      :index t)` slot (auto-indexed), and the script ends with a spatial
+      walkthrough — `find-nodes-near`, `find-nearest-k`, `find-nodes-within`, and
+      a Prolog `find-near` composed with `is-a`. Runs clean end-to-end.
 - [ ] Cleanup — delete the merged `spatial-index` branch + `spatial-index-prerebase`
       tag.
 

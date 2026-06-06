@@ -797,12 +797,49 @@ APPLY-TRANSACTION)."
 ;;; MVCC version chains and the reaper (reaping an old version of a node never
 ;;; changes its index entry).
 
+(defvar *node-geometry-slot-cache*
+  #+sbcl (make-hash-table :test 'eq :synchronized t)
+  #+ccl (make-hash-table :test 'eq :shared t)
+  #+lispworks (make-hash-table :test 'eq :single-thread nil)
+  #+ecl (make-hash-table :test 'eq)
+  "Cache CLASS -> list of its :INDEX-marked slot names (candidate geometry slots).")
+
+(defun node-geometry-index-slots (class)
+  "Names of CLASS's :INDEX-marked slots -- the candidate geometry slots.  A
+geometry slot opts into spatial indexing declaratively, e.g.
+  (def-vertex observation () ((location :type geometry :index t)) :app)
+We deliberately do NOT match on the declared slot type here: the `:type geometry'
+symbol is read in the *application's* package, which is not necessarily EQ to
+GRAPH-DB:GEOMETRY (and a user need not even declare a type).  Instead we return
+every indexed slot, and NODE-GEOMETRY picks the one whose runtime value is an
+actual GEOMETRY (via GEOMETRYP) -- robust across packages and to mixed
+geometry/non-geometry indexed slots on the same type.  Cached per class (runtime
+schema redefinition is not expected)."
+  (multiple-value-bind (val present) (gethash class *node-geometry-slot-cache*)
+    (if present
+        val
+        (setf (gethash class *node-geometry-slot-cache*)
+              (when (class-finalized-p class)
+                (loop for slot in (class-slots class)
+                      when (indexed-p slot)
+                        collect (slot-definition-name slot)))))))
+
 (defgeneric node-geometry (node)
   (:documentation
-   "The GEOMETRY a node occupies, or NIL if it has none.  Applications
-specialize this for their geometry-bearing node types so those nodes are
-maintained automatically in the graph's spatial index.")
-  (:method (node) (declare (ignore node)) nil))
+   "The GEOMETRY a node occupies, or NIL if it has none.  By default this is the
+value of the node's :INDEX-marked geometry slot (see NODE-GEOMETRY-INDEX-SLOTS);
+declaring (slot :type geometry :index t) is enough to make a node type spatially
+indexed.  Applications may instead specialize this method (e.g. for a computed
+geometry); an explicit method takes precedence over the default.")
+  (:method (node) (declare (ignore node)) nil)
+  (:method ((node node))
+    ;; NB: do NOT gate on SLOT-BOUNDP -- node-class persistent slots are read
+    ;; through SLOT-VALUE-USING-CLASS from the serialized buffer, and
+    ;; SLOT-BOUNDP reports the (always-unbound) backing CLOS slot, so it would
+    ;; skip every persistent slot.  Read the value and test it directly.
+    (loop for slot in (node-geometry-index-slots (class-of node))
+          for v = (ignore-errors (slot-value node slot))
+          when (geometryp v) return v)))
 
 (defgeneric apply-tx-write-to-spatial-index (write graph)
   (:method (write graph) (declare (ignore write graph)) nil))

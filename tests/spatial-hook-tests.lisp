@@ -14,6 +14,12 @@
 (defmethod node-geometry ((p geo-place))
   (slot-value p 'loc))
 
+;; Declarative variant: a geometry slot marked :index t makes the type spatial
+;; with NO hand-written node-geometry method (the default finds the slot).
+(def-vertex geo-auto ()
+  ((loc :type geometry :index t))
+  :graph-db-integration-test)
+
 (def-suite spatial-hook-suite
   :description "Transactions auto-maintain the spatial index (create/update/delete)."
   :in graph-db-suite)
@@ -86,3 +92,21 @@ fine."
                (is (in-box-p g2 id *kharkiv-box*)))
           (close-graph g2 :snapshot-p nil)
           (collect-garbage))))))
+
+(test index-slot-flag-auto-wires-node-geometry
+  "A geometry slot declared :index t makes the type spatially indexed with no
+hand-written node-geometry method -- node-geometry's default finds the slot."
+  (with-test-graph (g)
+    (let (id)
+      (with-transaction ()
+        (setq id (id (make-geo-auto :loc (make-point 37.1724d0 49.2020d0)))))
+      ;; auto-indexed on create
+      (is (in-box-p g id *kharkiv-box*))
+      (is (not (in-box-p g id *lviv-box*)))
+      ;; and reindexed on update through the same default
+      (with-transaction ()
+        (let ((v (copy (lookup-vertex id))))
+          (setf (slot-value v 'loc) (make-point 23.7183d0 50.0263d0))
+          (save v)))
+      (is (not (in-box-p g id *kharkiv-box*)))
+      (is (in-box-p g id *lviv-box*)))))

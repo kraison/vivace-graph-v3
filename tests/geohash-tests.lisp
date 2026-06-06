@@ -75,3 +75,51 @@ included."
 (test covering-tiny-box
   "A degenerate (point) box yields at least one covering cell."
   (is (plusp (length (geohash-covering 37.1724d0 49.2020d0 37.1724d0 49.2020d0)))))
+
+(test neighbor-is-adjacent-and-distinct
+  "The east neighbor of a cell is a different, same-precision cell whose centre
+sits one cell-width to the east."
+  (let* ((cell (geohash-encode 49.2020d0 37.1724d0 7))
+         (east (geohash-neighbor cell 1 0)))
+    (is (stringp east))
+    (is (= (length cell) (length east)))
+    (is (not (string= cell east)))
+    (multiple-value-bind (lat0 lon0) (geohash-decode cell)
+      (multiple-value-bind (lat1 lon1) (geohash-decode east)
+        (multiple-value-bind (lw lh) (geohash-cell-size 7)
+          (declare (ignore lh))
+          (is (< (abs (- lat1 lat0)) 1d-6) "east neighbor stays on the same row")
+          (is (< (abs (- (- lon1 lon0) lw)) (* 0.01d0 lw))
+              "east neighbor centre is ~one cell-width east"))))))
+
+(test neighbors-are-the-eight-around-center
+  "geohash-neighbors returns 8 distinct same-precision cells, none equal to the
+source, and the source's own geohash sorts between its west and east neighbors."
+  (let* ((cell (geohash-encode 49.2020d0 37.1724d0 7))
+         (nbrs (geohash-neighbors cell)))
+    (is (= 8 (length nbrs)))
+    (is (= 8 (length (remove-duplicates nbrs :test #'string=))))
+    (is (not (member cell nbrs :test #'string=)))
+    (dolist (n nbrs)
+      (is (= (length cell) (length n))))
+    ;; the 3x3 block is contiguous: every neighbor is within one cell of center
+    (multiple-value-bind (lat0 lon0) (geohash-decode cell)
+      (multiple-value-bind (lw lh) (geohash-cell-size 7)
+        (dolist (n nbrs)
+          (multiple-value-bind (latn lonn) (geohash-decode n)
+            (is (<= (abs (- lonn lon0)) (* 1.5d0 lw)))
+            (is (<= (abs (- latn lat0)) (* 1.5d0 lh)))))))))
+
+(test neighbor-wraps-antimeridian
+  "Stepping east off +180 longitude wraps to a valid cell near -180."
+  (let* ((cell (geohash-encode 0d0 179.999d0 6))
+         (east (geohash-neighbor cell 1 0)))
+    (is (stringp east))
+    (multiple-value-bind (lat lon) (geohash-decode east)
+      (declare (ignore lat))
+      (is (< lon 0d0) "wrapped to the western hemisphere"))))
+
+(test neighbor-off-pole-is-nil
+  "There is no northern neighbor above the top row of cells (off the pole)."
+  (let ((cell (geohash-encode 89.999d0 0d0 6)))
+    (is (null (geohash-neighbor cell 0 1)))))

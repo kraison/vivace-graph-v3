@@ -81,6 +81,45 @@ nearest first."
             (funcall cont))
           (undo-bindings old-trail))))))
 
+(defun find-nearest-k (lat lon k &key (graph *graph*) (max-radius 2.5d4))
+  "List of (NODE . DISTANCE-METRES) for the K nodes nearest (LAT, LON), nearest
+first (fewer than K if the graph holds fewer indexed nodes within MAX-RADIUS).
+
+Correctness: FIND-NODES-NEAR returns every node within a given radius sorted by
+distance, so once a radius encloses at least K nodes, those K are the global K
+nearest -- anything outside the radius is farther than everything inside it.  We
+start from one grid cell's size and double the radius until K are enclosed (or
+MAX-RADIUS is reached), then keep the K closest.
+
+MAX-RADIUS is a deliberate bound (default 25 km): the geohash index answers a
+window by enumerating every grid cell it covers, so an unbounded search would
+enumerate astronomically many cells.  kNN is therefore \"K nearest within
+MAX-RADIUS\"; widen it only if you accept the per-query cell-enumeration cost
+(it grows with the square of the radius at the index's fixed precision)."
+  (let ((idx (spatial-index graph)))
+    (when (and idx (numberp lat) (numberp lon) (integerp k) (plusp k))
+      (let* ((prec (spatial-index-precision idx))
+             ;; seed radius: the index cell's latitude extent in metres
+             (r (max 1d0 (* (nth-value 1 (geohash-cell-size prec)) 111320d0)))
+             (found '()))
+        (loop
+          (setf found (find-nodes-near lat lon r :graph graph))
+          (when (or (>= (length found) k) (>= r max-radius))
+            (return))
+          (setf r (min max-radius (* r 2d0))))
+        (subseq found 0 (min k (length found)))))))
+
+(def-global-prolog-functor find-nearest/4 (?node ?lat ?lon ?k cont)
+  "Yield each of the ?K nodes nearest (?LAT, ?LON), nearest first."
+  (let ((node-var (var-deref ?node))
+        (lat (var-deref ?lat)) (lon (var-deref ?lon)) (k (var-deref ?k)))
+    (when (and (numberp lat) (numberp lon) (integerp k))
+      (dolist (nd (find-nearest-k lat lon k :graph *graph*))
+        (let ((old-trail (fill-pointer *trail*)))
+          (when (unify node-var (car nd))
+            (funcall cont))
+          (undo-bindings old-trail))))))
+
 (defun make-spatial-replication-filter (area)
   "Return a predicate (NODE) -> generalized boolean for use as a slave graph's
 REPLICATION-FILTER (see MAKE-GRAPH :replication-filter).  It accepts a node when

@@ -43,6 +43,8 @@
                 #:geohash-cell-size
                 #:geohash-prefix-range
                 #:geohash-covering
+                #:geohash-neighbor
+                #:geohash-neighbors
                 ;; spatial index (spatial extension)
                 #:spatial-index            ; graph slot accessor
                 #:node-geometry            ; write-path indexing protocol
@@ -62,8 +64,10 @@
                 ;; index-backed spatial queries (spatial extension)
                 #:find-nodes-within
                 #:find-nodes-near
+                #:find-nearest-k
                 #:find-within/2
                 #:find-near/4
+                #:find-nearest/4
                 ;; subset replication
                 #:replication-filter
                 #:make-spatial-replication-filter

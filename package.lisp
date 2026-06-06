@@ -214,6 +214,8 @@
            #:geohash-bbox
            #:geohash-cell-size
            #:geohash-covering
+           #:geohash-neighbor
+           #:geohash-neighbors
            ;; spatial index
            #:spatial-index
            #:spatial-index-p
@@ -235,8 +237,10 @@
            ;; index-backed queries + Prolog functors
            #:find-nodes-within
            #:find-nodes-near
+           #:find-nearest-k
            #:find-within/2
            #:find-near/4
+           #:find-nearest/4
            #:geo-distance/5
            #:geo-near/5
            #:geo-within/3

@@ -124,3 +124,74 @@
     (rebuild-spatial-index g :precision 9)
     (is (= 9 (spatial-index-precision (spatial-index g))))
     (is (has-id-p ida (mapcar #'car (find-nodes-near (second *q-a*) (first *q-a*) 600d0 :graph g))))))
+
+;;; ---- kNN (find-nearest-k) ----------------------------------------------
+
+(test find-nearest-k-orders-by-distance
+  "find-nearest-k from A returns the K closest, nearest first: A then B (the
+~400 m neighbour) before FAR (Lviv) ever appears."
+  (with-three-places (g ida idb idfar)
+    ;; k=1 -> just A (itself, distance ~0)
+    (let ((one (find-nearest-k (second *q-a*) (first *q-a*) 1 :graph g)))
+      (is (= 1 (length one)))
+      (is (equalp ida (id (car (first one))))))
+    ;; k=2 -> A then B, FAR excluded
+    (let* ((two (find-nearest-k (second *q-a*) (first *q-a*) 2 :graph g))
+           (ids (mapcar (lambda (nd) (id (car nd))) two)))
+      (is (= 2 (length two)))
+      (is (equalp ida (first ids)))
+      (is (equalp idb (second ids)))
+      (is (not (member idfar ids :test 'equalp)))
+      ;; distances are non-decreasing
+      (is (<= (cdr (first two)) (cdr (second two)))))))
+
+(test find-nearest-k-caps-at-node-count
+  "Asking for more neighbours than exist within MAX-RADIUS returns all of them
+(here a 3-node cluster, all within ~1 km), sorted nearest-first.  Uses a local
+cluster -- find-nearest-k is bounded by MAX-RADIUS (25 km default), so the far
+Lviv node of with-three-places would not be reached."
+  (with-test-graph (g)
+    (let (ida idb idc)
+      (with-transaction ()
+        (setq ida (id (make-geo-place :loc (make-point 37.1724d0 49.2020d0)))
+              idb (id (make-geo-place :loc (make-point 37.1773d0 49.2036d0)))   ; ~400 m
+              idc (id (make-geo-place :loc (make-point 37.1850d0 49.2080d0))))) ; ~1 km
+      (let* ((hits (find-nearest-k 49.2020d0 37.1724d0 10 :graph g))
+             (ids (mapcar (lambda (nd) (id (car nd))) hits)))
+        (is (= 3 (length hits)) "all 3 nodes returned (k exceeds node count)")
+        (is (member ida ids :test 'equalp))
+        (is (member idb ids :test 'equalp))
+        (is (member idc ids :test 'equalp))
+        (is (equalp ida (first ids)) "nearest is the query point itself")
+        (is (equalp idc (car (last ids))) "farthest of the cluster is last")
+        (is (apply #'<= (mapcar #'cdr hits)) "distances non-decreasing")))))
+
+(test find-nearest-k-bounded-by-max-radius
+  "find-nearest-k does not chase nodes past MAX-RADIUS: the Lviv node (~1000 km
+from Kharkiv) is excluded even when K is large, and the call returns promptly
+without enumerating a continent of grid cells."
+  (with-three-places (g ida idb idfar)
+    (let* ((hits (find-nearest-k (second *q-a*) (first *q-a*) 10 :graph g))
+           (ids (mapcar (lambda (nd) (id (car nd))) hits)))
+      (is (= 2 (length hits)) "only the two in-range Kharkiv nodes")
+      (is (member ida ids :test 'equalp))
+      (is (member idb ids :test 'equalp))
+      (is (not (member idfar ids :test 'equalp)) "Lviv is beyond MAX-RADIUS"))))
+
+(test find-nearest-functor
+  "find-nearest/4 yields the k nearest nodes in a query, composing with is-a."
+  (with-three-places (g ida idb idfar)
+    (declare (ignore g idfar))
+    (let ((ids (id-set (select-flat (?n)
+                         (is-a ?n geo-place)
+                         (find-nearest ?n 49.2020584d0 37.1724312d0 2)))))
+      (is (= 2 (length ids)))
+      (is (member ida ids :test 'equalp))
+      (is (member idb ids :test 'equalp)))))
+
+(test find-nearest-k-degenerate-args
+  "Non-positive K (or no index) yields NIL rather than erroring."
+  (with-three-places (g ida idb idfar)
+    (declare (ignore ida idb idfar))
+    (is (null (find-nearest-k (second *q-a*) (first *q-a*) 0 :graph g)))
+    (is (null (find-nearest-k (second *q-a*) (first *q-a*) -3 :graph g)))))

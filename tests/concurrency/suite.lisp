@@ -72,6 +72,13 @@ Called by (asdf:test-system :graph-db/concurrency-test)."
   ()
   :graph-db-concurrency-test)
 
+;; Spatial vertex for the spatial concurrency suite.  A geometry slot marked
+;; :index t makes the type spatially indexed via the write-path hook (no
+;; hand-written node-geometry method needed).
+(def-vertex c-place ()
+  ((loc :type geometry :index t))
+  :graph-db-concurrency-test)
+
 ;;; ---------------------------------------------------------------------------
 ;;; Graph fixture
 ;;; ---------------------------------------------------------------------------

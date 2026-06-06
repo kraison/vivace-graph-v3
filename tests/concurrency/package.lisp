@@ -91,5 +91,18 @@
                 #:written-p
                 ;; edge traversal
                 #:outgoing-edges)
+  ;; Spatial extension: geometry constructors, the index, and the index-backed
+  ;; queries exercised by the spatial concurrency tests.
+  (:import-from #:graph-db
+                #:geometry
+                #:make-point
+                #:make-polygon
+                #:geometryp
+                #:spatial-index
+                #:spatial-index-query-bbox
+                #:spatial-index-query-radius
+                #:find-nodes-near
+                #:find-nodes-within
+                #:node-geometry)
   (:export #:run-concurrency-tests
            #:concurrency-suite))
