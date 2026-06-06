@@ -3,10 +3,11 @@
 (defun spatial-index-root-file (location)
   (format nil "~A/spatial-index.root" location))
 
-(defun init-spatial-index (graph)
-  "Create GRAPH's spatial index in its indexes heap and persist the skip-list
-root pointer to a sidecar file (mirrors how views persist their pointer)."
-  (let ((idx (make-spatial-index (indexes graph))))
+(defun init-spatial-index (graph &key (precision 7))
+  "Create GRAPH's spatial index (at geohash PRECISION) in its indexes heap and
+persist the skip-list root pointer + precision to a sidecar file (mirrors how
+views persist their pointer).  PRECISION is read back by RESTORE-SPATIAL-INDEX."
+  (let ((idx (make-spatial-index (indexes graph) :precision precision)))
     (setf (spatial-index graph) idx)
     (cl-store:store (list :address (spatial-index-address idx)
                           :precision (spatial-index-precision idx))
@@ -31,7 +32,8 @@ the graph predates the spatial index (backward compatible)."
                                    (edge-buckets 8)
                                    (heap-size *default-heap-size*)
                                    (index-size *default-index-size*)
-                                   (keep-revisions 0))
+                                   (keep-revisions 0)
+                                   (spatial-precision 7))
   "Create a brand-new graph named NAME with its on-disk files under the
 directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
 return it.  The directory is created if necessary and must not already contain
@@ -51,6 +53,9 @@ Keyword arguments:
                           initial sizes (bytes) of the heap and indexes regions
                           (default *DEFAULT-HEAP-SIZE* / *DEFAULT-INDEX-SIZE*).
                           Both grow on demand, so these are only starting sizes.
+  :SPATIAL-PRECISION      geohash precision of the spatial index grid (default 7,
+                          ~150 m cells; 9 ~ 5 m).  Persisted with the index and
+                          read back on OPEN-GRAPH.  See Chapter 13.
 
 A .dirty marker file is written on creation; always CLOSE-GRAPH to flush data
 to disk and remove it."
@@ -116,7 +121,7 @@ to disk and remove it."
         ;; def-vertex/def-edge :keep-revisions).  Set before update-schema persists.
         (setf (schema-keep-revisions (schema graph)) keep-revisions)
         (update-schema graph)
-        (init-spatial-index graph)
+        (init-spatial-index graph :precision spatial-precision)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph))

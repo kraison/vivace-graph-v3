@@ -1597,7 +1597,7 @@ Two read styles are provided, both refining the index's candidates with exact ge
 
 *** Under the hood, and a few caveats
 
-- *The index* is a skip list (in the graph's heap) keyed by fixed-precision *geohash* strings; each node id is stored under every cell its geometry occupies (duplicates allowed). Because a geohash prefix is a nested bounding cell, window and proximity queries become ordered prefix range scans. Precision is configurable (default 7, ≈150 m cells; 9 ≈ 5 m) when the index is created.
+- *The index* is a skip list (in the graph's index region, ~indexes.dat~) keyed by fixed-precision *geohash* strings; each node id is stored under every grid cell its geometry occupies (duplicates allowed). A query computes the set of same-precision cells its window covers and looks each one up directly, so it touches only the cells in view. The grid precision is set with ~make-graph~'s ~:spatial-precision~ keyword (default 7, ≈150 m cells; 9 ≈ 5 m); it is persisted with the index and read back by ~open-graph~.
 - *Matching uses a representative point*: a ~:point~ matches exactly; an extended geometry (line, polygon) is matched by the centre of its bounding box, so radius/containment results for extended geometries are approximate. Point-in-polygon refinement honours holes.
 - *Distance* is the haversine great-circle distance — accurate to roughly half a percent, ample for most uses; a more precise geodesic can replace it later without changing the API.
 - *Heavier topology* (intersection, union, validity repair) is intentionally out of this dependency-free core and is left to an optional GEOS-backed module.
