@@ -1525,6 +1525,83 @@ Internally it is a *logical* snapshot-and-replay, the same format-independent me
 
 Note that, because the on-disk format uses ~cl-store~ for some structures, graph *directories* are not portable across Lisp implementations; migrate (and snapshot/replay) on the same implementation that wrote the graph.
 
+** Chapter 13: Spatial Queries
+
+VivaceGraph ships a general-purpose *spatial extension*: a geohash-backed index that answers "what's near here?" and "what's inside this area?" over nodes that carry a geometry. It is domain-agnostic — it stores only ids and geometry — and it is maintained automatically as part of normal transactions. This chapter shows how to make a node type spatial and how to query it.
+
+The design is the classic *filter then refine*: the geohash index quickly narrows the whole graph down to a small candidate set whose grid cells meet your query window, and exact predicates (great-circle distance, point-in-polygon) then refine that set to the true answer.
+
+*** Geometry values
+
+Locations are represented by the ~geometry~ value type. Coordinates are WGS84 and, following the GIS / GeoJSON convention, are written *(lon lat)* order, stored internally as ~double-float~. Four kinds are supported, built with these constructors:
+
+#+BEGIN_SRC lisp
+  (make-point lon lat)                 ; a single position
+  (make-linestring '((lon lat) ...))   ; a path
+  (make-polygon '(exterior-ring hole-ring ...))   ; ring = ((lon lat) ...)
+  (make-multipolygon '(polygon ...))   ; polygon = (ring ...)
+#+END_SRC
+
+A ~geometry~ is a normal serializable value, so you store one in a node slot just like a string or number. Useful accessors include ~geometry-kind~, ~geometry-coordinates~, ~geometry-lon~ / ~geometry-lat~ (for points), and ~geometry-bbox~ (axis-aligned bounding box as ~(values min-lon min-lat max-lon max-lat)~).
+
+*** Making a node type spatial
+
+To put a node type on the map, give it a geometry and specialize the ~node-geometry~ generic function to return it. ~node-geometry~ defaults to ~nil~ (a node has no location); when you specialize it for your type, every create/update/delete of such a node automatically maintains the graph's spatial index — there is no separate "add to index" call.
+
+#+BEGIN_SRC lisp
+  (def-vertex observation ()
+    ((location :type geometry)
+     (note     :type string))
+    :survey-app)
+
+  ;; This one method is all it takes to make observations spatially indexed.
+  (defmethod node-geometry ((o observation))
+    (slot-value o 'location))
+
+  (with-transaction ()
+    (make-observation :location (make-point 37.17d0 49.20d0)
+                      :note "sighting near the river"))
+#+END_SRC
+
+The index itself lives inside the graph's index region (~indexes.dat~), is created by ~make-graph~, and is reopened automatically by ~open-graph~ — you do not manage it directly.
+
+*** Querying
+
+Two read styles are provided, both refining the index's candidates with exact geometry math.
+
+*Lisp API:*
+
+#+BEGIN_SRC lisp
+  ;; Nodes within RADIUS metres of a point, nearest first, as (node . distance):
+  (find-nodes-near 49.20 37.17 500.0)
+
+  ;; Nodes whose location falls inside a :POLYGON / :MULTIPOLYGON area:
+  (find-nodes-within my-task-area)
+#+END_SRC
+
+*Prolog functors* (these /yield/ matching nodes, so they compose with the rest of a query):
+
+#+BEGIN_SRC lisp
+  ;; All observations within 500 m of (49.20, 37.17):
+  (select-flat (?o)
+    (is-a ?o observation)
+    (find-near ?o 49.20 37.17 500.0))
+
+  ;; All observations inside a task-area geometry bound to ?area:
+  (select-flat (?o)
+    (is-a ?o observation)
+    (find-within ?o ?area))
+#+END_SRC
+
+~find-near/4~ takes ~?node lat lon radius-metres~; ~find-within/2~ takes ~?node area~.
+
+*** Under the hood, and a few caveats
+
+- *The index* is a skip list (in the graph's heap) keyed by fixed-precision *geohash* strings; each node id is stored under every cell its geometry occupies (duplicates allowed). Because a geohash prefix is a nested bounding cell, window and proximity queries become ordered prefix range scans. Precision is configurable (default 7, ≈150 m cells; 9 ≈ 5 m) when the index is created.
+- *Matching uses a representative point*: a ~:point~ matches exactly; an extended geometry (line, polygon) is matched by the centre of its bounding box, so radius/containment results for extended geometries are approximate. Point-in-polygon refinement honours holes.
+- *Distance* is the haversine great-circle distance — accurate to roughly half a percent, ample for most uses; a more precise geodesic can replace it later without changing the API.
+- *Heavier topology* (intersection, union, validity repair) is intentionally out of this dependency-free core and is left to an optional GEOS-backed module.
+
 ** API Reference
 
 This chapter provides a categorized reference for the most important exported symbols from the ~graph-db~ package. It is not an exhaustive list of every internal function but focuses on the public API you will use most often when building applications.
@@ -1667,6 +1744,23 @@ This chapter provides a categorized reference for the most important exported sy
 
 - ~make-graph ( ... :keep-revisions N)~ / ~open-graph ( ... :keep-revisions N)~ ::
   Graph-wide default retained-version count (persisted by ~make-graph~; an optional session override on ~open-graph~).
+
+**** Spatial (see Chapter 13)
+
+- ~make-point (lon lat)~ / ~make-linestring (coords)~ / ~make-polygon (rings)~ / ~make-multipolygon (polygons)~ ::
+  Construct WGS84 ~geometry~ values ((lon lat) order). Accessors: ~geometry-kind~, ~geometry-coordinates~, ~geometry-lon~, ~geometry-lat~, ~geometry-bbox~.
+
+- ~node-geometry (node)~ ::
+  Generic function (default ~nil~); specialize it for your geometry-bearing node types so they are maintained automatically in the spatial index.
+
+- ~find-nodes-near (lat lon radius &key graph)~ ::
+  Live nodes within ~radius~ metres of ~(lat lon)~, nearest first, as ~(node . distance)~.
+
+- ~find-nodes-within (area &key graph)~ ::
+  Live nodes whose location lies inside the ~:polygon~ / ~:multipolygon~ ~area~ geometry.
+
+- ~(find-near ?node lat lon radius)~ / ~(find-within ?node area)~ ::
+  Prolog functors that yield matching nodes, composable with the rest of a query.
 
 **** REST API
 - ~start-rest ( &optional port)~ ::
