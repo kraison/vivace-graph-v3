@@ -325,6 +325,16 @@ replaced the lhash value-finalizer (which copied under the bucket lock)."
                   (error "Cannot set slot value when data slot is of type ~A"
                          (type-of (data ,node)))))))))
 
+(defun node-slot-boundp (node key &key (graph *graph*))
+  "True if NODE's persistent slot KEY has a stored value -- i.e. an entry is
+present in the data alist.  This is presence, NOT non-NIL: a slot explicitly set
+to NIL is bound.  Materializes the data first (mirrors NODE-SLOT-VALUE)."
+  (maybe-init-node-data node :graph graph)
+  (let ((keyword (if (keywordp key) key (intern (symbol-name key) :keyword))))
+    (and (consp (data node))
+         (assoc keyword (data node))
+         t)))
+
 (defmethod slot-value-using-class :around ((class node-class) instance slot)
   "Around method that is alternate-version aware and will show values for the current,
    working private version of instance."
@@ -357,6 +367,41 @@ replaced the lhash value-finalizer (which copied under the bucket lock)."
            (setf (node-slot-value instance slot-keyword-name) new-value))
           ((member slot-name (ephemeral-slot-names class))
            ;; FIXME: Check for txn and handle
+           (call-next-method))
+          ((member slot-name (meta-slot-names class))
+           (call-next-method))
+          (t
+           (call-next-method)))))
+
+(defmethod slot-boundp-using-class :around ((class node-class) instance slot)
+  "Persistent slot VALUES live in the node's DATA alist, not in the real CLOS
+slot (which is always unbound), so SLOT-BOUNDP must consult the alist for them.
+Ephemeral and meta slots ARE real CLOS slots -- defer to the standard method."
+  (let* (#+lispworks(slot (closer-mop::find-slot slot class))
+         (slot-name (slot-definition-name slot))
+         (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
+    (cond ((member slot-name (persistent-slot-names class))
+           (node-slot-boundp instance slot-keyword-name))
+          ((member slot-name (ephemeral-slot-names class))
+           (call-next-method))
+          ((member slot-name (meta-slot-names class))
+           (call-next-method))
+          (t
+           (call-next-method)))))
+
+(defmethod slot-makunbound-using-class :around ((class node-class) instance slot)
+  "Unbind a persistent slot by dropping its DATA-alist entry (the real CLOS slot
+is already unbound, so the standard method would be a no-op on the value).
+Ephemeral and meta slots -> standard method."
+  (let* (#+lispworks(slot (closer-mop::find-slot slot class))
+         (slot-name (slot-definition-name slot))
+         (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
+    (cond ((member slot-name (persistent-slot-names class))
+           (maybe-init-node-data instance)
+           (setf (data instance)
+                 (delete slot-keyword-name (data instance) :key #'car))
+           instance)
+          ((member slot-name (ephemeral-slot-names class))
            (call-next-method))
           ((member slot-name (meta-slot-names class))
            (call-next-method))

@@ -182,3 +182,97 @@ bound to the graph being closed (snapshot walks the graph via map-vertices)."
       ;; *graph* is NOT bound to g here; default snapshot must not crash.
       (finishes (close-graph g))
       (collect-garbage))))
+
+;;; ---------------------------------------------------------------------------
+;;; slot-boundp / slot-makunbound on persistent slots (issue #41)
+;;;
+;;; Persistent slot values live in the node's DATA alist, not in real CLOS
+;;; slots, so SLOT-BOUNDP / SLOT-MAKUNBOUND must consult the alist.
+;;; ---------------------------------------------------------------------------
+
+(test slot-boundp-on-persistent-slots
+  "slot-boundp on a persistent slot reflects whether it has a stored value: a
+set slot is bound, an unset one is not."
+  (with-test-graph (g)
+    (let (v)
+      (with-transaction () (setq v (make-g-person :name "A")))  ; no :age
+      (is (slot-boundp v 'name) "a set persistent slot is bound")
+      (is (not (slot-boundp v 'age)) "an unset persistent slot is unbound"))))
+
+(test slot-boundp-distinguishes-nil-value
+  "A persistent slot explicitly set to NIL is bound -- slot-boundp tests
+presence, not non-NIL value."
+  (with-test-graph (g)
+    (let (v)
+      (with-transaction ()
+        (setq v (make-g-person :name "A"))
+        (setf (slot-value v 'age) nil))    ; explicit NIL
+      (is (slot-boundp v 'age) "a slot explicitly set to NIL is bound")
+      (is (null (slot-value v 'age)) "...and its value is NIL"))))
+
+(test slot-boundp-survives-reopen
+  "slot-boundp reflects the stored data after a close + reopen from disk
+(exercises the maybe-init-node-data materialization path)."
+  (with-temp-directory (dir)
+    (let (id)
+      (let ((g (make-graph *integration-graph-name* (namestring dir)
+                           :buffer-pool-size 1000)))
+        (unwind-protect
+             (let ((*graph* g))
+               (with-transaction () (setq id (id (make-g-person :name "A")))))  ; no age
+          (close-graph g :snapshot-p nil)))
+      (let ((g (open-graph *integration-graph-name* (namestring dir))))
+        (unwind-protect
+             (let* ((*graph* g) (v (lookup-vertex id)))
+               (is (slot-boundp v 'name) "set slot still bound after reopen")
+               (is (not (slot-boundp v 'age)) "unset slot still unbound after reopen")
+               (is (string= "A" (slot-value v 'name))))
+          (close-graph g :snapshot-p nil)
+          (collect-garbage))))))
+
+(test slot-makunbound-clears-persistent-slot
+  "slot-makunbound on a persistent slot removes its stored value (and stays
+removed across a reopen)."
+  (with-temp-directory (dir)
+    (let (id)
+      (let ((g (make-graph *integration-graph-name* (namestring dir)
+                           :buffer-pool-size 1000)))
+        (unwind-protect
+             (let ((*graph* g))
+               (with-transaction () (setq id (id (make-g-person :name "A" :age 30))))
+               (with-transaction ()
+                 (let ((c (copy (lookup-vertex id))))
+                   (slot-makunbound c 'age)
+                   (save c)))
+               (let ((v (lookup-vertex id)))
+                 (is (not (slot-boundp v 'age)) "makunbound -> slot is unbound")
+                 (is (null (node-slot-value v :age)) "...and the value is gone")
+                 (is (slot-boundp v 'name) "the other slot is untouched")))
+          (close-graph g :snapshot-p nil)))
+      (let ((g (open-graph *integration-graph-name* (namestring dir))))
+        (unwind-protect
+             (let ((*graph* g))
+               (is (not (slot-boundp (lookup-vertex id) 'age))
+                   "still unbound after reopen")
+               (is (slot-boundp (lookup-vertex id) 'name)))
+          (close-graph g :snapshot-p nil)
+          (collect-garbage))))))
+
+(test slot-boundp-meta-slot-regression
+  "slot-boundp on a meta slot (e.g. DATA) still uses the standard method
+(mirrors backup.lisp's (slot-boundp v 'data))."
+  (with-test-graph (g)
+    (let (v)
+      (with-transaction () (setq v (make-g-person :name "A")))
+      ;; The meta slot is GRAPH-DB::DATA (the base node class is in graph-db);
+      ;; this mirrors backup.lisp's own (slot-boundp v 'data) inside that package.
+      (is (slot-boundp v 'graph-db::data) "the meta DATA slot is bound"))))
+
+(test slot-boundp-inherited-persistent-slot
+  "slot-boundp works on a persistent slot inherited from a parent type."
+  (with-test-graph (g)
+    (let (v)
+      (with-transaction () (setq v (make-g-employee :name "A" :title "Boss")))
+      (is (slot-boundp v 'name)  "inherited slot, set -> bound")
+      (is (slot-boundp v 'title) "own slot, set -> bound")
+      (is (not (slot-boundp v 'age)) "inherited slot, unset -> unbound"))))
