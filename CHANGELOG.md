@@ -2,6 +2,17 @@
 
 All notable changes to VivaceGraph are recorded here.
 
+## Unreleased
+
+### Fixed
+- **ECL spatial-index concurrency (issue #42).** The skip list guarded every
+  operation -- reads included -- with one recursive lock on ECL, so concurrent
+  spatial queries ran sequentially and timed out under high parallelism.  Replaced
+  it with a per-skip-list reader/writer lock: shared read lock for readers (find,
+  cursor scans, map, count), exclusive write lock for mutators.  Writers never run
+  concurrently with readers (torn-read safety preserved); concurrent readers now
+  run in parallel.  No-op on non-ECL (those keep the lock-free design).
+
 ## 2.0.0
 
 A major release: MVCC versioned nodes, a geohash spatial extension, a full
