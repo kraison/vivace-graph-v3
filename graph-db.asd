@@ -7,7 +7,7 @@
   :name "VivaceGraph"
   :maintainer "Kevin Raison"
   :author "Kevin Raison <last name @ chatsubo dot net>"
-  :version "1.0"
+  :version "2.0"
   :depends-on (:bordeaux-threads
                :alexandria
                :trivial-shell

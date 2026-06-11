@@ -5,7 +5,9 @@ VivaceGraph is an open source graph database written in pure Common Lisp.
 
 VG takes design inspiration from CouchDB, neo4j and AllegroGraph.  It implements an ACID-compliant object graph model with user-defined indexes and map-reduce views.  As of the MVCC release it also keeps immutable, versioned nodes CouchDB-style — each update retains the prior version, with configurable retention and snapshot-isolation reads (see Chapter 12 of the manual).  A geohash-backed spatial extension answers proximity and area queries over nodes that carry a geometry (Chapter 13).  It also implements a master / slave replication scheme for redundancy and horizontal read scaling.  Querying the graph is accomplished via a number of Lisp methods or via a Prolog-like query language.
 
-VivaceGraph runs on SBCL (>= 1.045), ECL (>= 21.2.1), Clozure CL (CCL), and LispWorks. The full test suite passes on SBCL (macOS arm64 and Linux x86_64) and on ECL (macOS arm64 with ECL 26.5.5 and Linux with ECL 21.2.1).
+VivaceGraph runs on SBCL (>= 1.045), ECL (>= 26.5.5), and Clozure CL (CCL, Linux x86_64). The full test suite passes on SBCL (macOS arm64 and Linux x86_64), CCL (Linux x86_64), and ECL 26.5.5 (macOS arm64 and Linux x86_64). Two ECL-only concurrency tests can time out under the high thread-count parallelism of many-core Linux hosts (issues #42, #43); every other suite is green on all three implementations. (Earlier ECL releases such as 21.2.1 are no longer supported — 26.5.5 is required.)
+
+LispWorks support is currently **untested** for lack of access to a license; the free Personal Edition's heap limit is too small to compile VivaceGraph. The codebase still carries `#+lispworks` conditionalization, but its status is unknown until it can be exercised on a current LispWorks.
 
 A note on CCL: it works on Linux x86_64, but **not on Apple-Silicon macOS** — the Clozure ARM64 port has been stalled for several years and macOS support for Intel (x86_64) binaries is nearly gone, so there is no usable CCL on M-series Macs. On Apple Silicon, use SBCL or ECL.
 
