@@ -373,6 +373,28 @@ to NIL is bound.  Materializes the data first (mirrors NODE-SLOT-VALUE)."
           (t
            (call-next-method)))))
 
+(defvar *initializing-node* nil
+  "Bound true around CHANGE-CLASS of a node under construction (see
+CHANGE-NODE-CLASS).  A node's user-defined slot VALUES live in the DATA alist,
+not in real CLOS slots; CHANGE-CLASS re-runs slot initialization and, on some
+implementations (notably ECL), invokes SLOT-MAKUNBOUND-USING-CLASS on those
+persistent slots.  That must NOT destroy the DATA we just populated, so while
+this is bound the persistent branch of SLOT-MAKUNBOUND-USING-CLASS defers to the
+standard (no-op-on-the-alist) method.  Explicit user SLOT-MAKUNBOUND -- this
+unbound -- still drops the alist entry.
+
+Why it matters under concurrency: clearing a freshly-created node's DATA leaves
+the cached node with DATA = NIL but BYTES intact, so the first concurrent readers
+all race to lazily re-materialize DATA from BYTES (MAYBE-INIT-NODE-DATA mutating
+the shared cached node) -- on ECL that surfaced as transient NIL slot reads.")
+
+(defmacro change-node-class (node subclass)
+  "CHANGE-CLASS NODE to SUBCLASS with *INITIALIZING-NODE* bound, so the
+re-initialization CLOS performs does not destroy NODE's alist-backed persistent
+slot values (see *INITIALIZING-NODE*)."
+  `(let ((*initializing-node* t))
+     (change-class ,node ,subclass)))
+
 (defmethod slot-boundp-using-class :around ((class node-class) instance slot)
   "Persistent slot VALUES live in the node's DATA alist, not in the real CLOS
 slot (which is always unbound), so SLOT-BOUNDP must consult the alist for them.
@@ -392,11 +414,15 @@ Ephemeral and meta slots ARE real CLOS slots -- defer to the standard method."
 (defmethod slot-makunbound-using-class :around ((class node-class) instance slot)
   "Unbind a persistent slot by dropping its DATA-alist entry (the real CLOS slot
 is already unbound, so the standard method would be a no-op on the value).
-Ephemeral and meta slots -> standard method."
+Ephemeral and meta slots -> standard method.  While *INITIALIZING-NODE* is bound
+(CHANGE-NODE-CLASS), the persistent branch defers to the standard method so the
+re-initialization CHANGE-CLASS performs does not clear the alist-backed slot
+values we just set."
   (let* (#+lispworks(slot (closer-mop::find-slot slot class))
          (slot-name (slot-definition-name slot))
          (slot-keyword-name (intern (symbol-name slot-name) :keyword)))
-    (cond ((member slot-name (persistent-slot-names class))
+    (cond ((and (member slot-name (persistent-slot-names class))
+                (not *initializing-node*))
            (maybe-init-node-data instance)
            (setf (data instance)
                  (delete slot-keyword-name (data instance) :key #'car))

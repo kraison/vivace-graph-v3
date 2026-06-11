@@ -65,7 +65,7 @@
                             :data-pointer pointer
                             :commit-epoch commit-epoch
                             :prev-pointer prev-pointer)))
-      (change-class v subclass))))
+      (change-node-class v subclass))))
 
 (defun make-vertex-table (location &key (key-test 'uuid-array-equal)
                                      (base-buckets (expt 2 17)))
@@ -130,7 +130,7 @@ the id on a duplicate-key collision."
                                 :written-p nil
                                 :bytes bytes
                                 :data data)))
-          (change-class v subclass)
+          (change-node-class v subclass)
           (setf (bytes v) bytes)
           (handler-case
               (create-node v graph)

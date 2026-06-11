@@ -104,7 +104,7 @@
                            (setq int (dpb (get-byte mf (incf offset))
                                           (byte 8 (* i 8)) int)))
                          (ieee-floats:decode-float64 int)))))
-      (change-class e subclass))))
+      (change-node-class e subclass))))
 
 (defun make-edge-table (location &key (key-test 'uuid-array-equal)
                                    (base-buckets (expt 2 18)))
@@ -228,7 +228,7 @@ regenerates the id on a duplicate-key collision."
                    :weight weight
                    :bytes bytes
                    :data data)))
-          (change-class e subclass)
+          (change-node-class e subclass)
           (setf (bytes e) bytes)
           (handler-case
               (create-node e graph)
