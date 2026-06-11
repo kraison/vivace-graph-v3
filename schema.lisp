@@ -5,13 +5,35 @@
   (type-table
    #+sbcl (make-hash-table :test 'eql :synchronized t)
    #+ccl (make-hash-table :test 'eql :shared t)
-   #+lispworks (make-hash-table :test 'eql :single-thread nil))
+   #+lispworks (make-hash-table :test 'eql :single-thread nil)
+   #+ecl (make-hash-table :test 'eql))
   (class-locks
    #+sbcl (make-hash-table :test 'eql :synchronized t)
    #+ccl (make-hash-table :test 'eql :shared t)
-   #+lispworks (make-hash-table :test 'eql :single-thread nil))
+   #+lispworks (make-hash-table :test 'eql :single-thread nil)
+   #+ecl (make-hash-table :test 'eql))
   (next-edge-id 1 :type (unsigned-byte 16))
-  (next-vertex-id 1 :type (unsigned-byte 16)))
+  (next-vertex-id 1 :type (unsigned-byte 16))
+  ;; MVCC: graph-wide default number of prior node versions the reaper retains
+  ;; regardless of epoch safety (0 = keep none beyond what active readers need).
+  ;; Appended last so cl-store can still restore pre-MVCC schema.dat.
+  (keep-revisions 0 :type (unsigned-byte 32)))
+
+;; ECL's DEFSTRUCT defines a SETF *expander* for each accessor but no callable
+;; (SETF SCHEMA-LOCK) function.  OPEN-GRAPH (graph.lisp) is compiled before
+;; this struct and emits a call to the function form (setf (schema-lock ...)),
+;; so on ECL we must provide that function.  The inner SETF here expands via
+;; the defstruct setf-expander (a direct slot store), so there is no recursion.
+#+ecl
+(defun (setf schema-lock) (new-value schema)
+  (setf (schema-lock schema) new-value))
+
+;; Same ECL workaround for SCHEMA-KEEP-REVISIONS: MAKE-GRAPH / OPEN-GRAPH
+;; (graph.lisp, compiled before this struct) emit (setf (schema-keep-revisions ...))
+;; as a function call, which ECL's defstruct does not provide.
+#+ecl
+(defun (setf schema-keep-revisions) (new-value schema)
+  (setf (schema-keep-revisions schema) new-value))
 
 (defstruct node-type
   name
@@ -20,7 +42,11 @@
   graph-name
   slots
   package
-  constructor)
+  constructor
+  ;; MVCC: per-type override for how many prior versions the reaper retains.
+  ;; NIL = inherit the graph-level schema default.  Appended last for cl-store
+  ;; restore compatibility with pre-MVCC schema.dat.
+  (keep-revisions nil))
 
 (defgeneric instantiate-node-type (node-type-def graph))
 
@@ -56,11 +82,13 @@
     (setf (gethash :edge (schema-type-table (schema graph)))
           #+sbcl (make-hash-table :test 'eql :synchronized t)
           #+ccl (make-hash-table :test 'eql :shared t)
-          #+lispworks (make-hash-table :test 'eql :single-thread nil))
+          #+lispworks (make-hash-table :test 'eql :single-thread nil)
+          #+ecl (make-hash-table :test 'eql))
     (setf (gethash :vertex (schema-type-table (schema graph)))
           #+sbcl (make-hash-table :test 'eql :synchronized t)
           #+ccl (make-hash-table :test 'eql :shared t)
-          #+lispworks (make-hash-table :test 'eql :single-thread nil))
+          #+lispworks (make-hash-table :test 'eql :single-thread nil)
+          #+ecl (make-hash-table :test 'eql))
     (setf (gethash 'edge (schema-class-locks schema))
           (make-rw-lock))
     (setf (gethash 'vertex (schema-class-locks schema))
@@ -78,6 +106,35 @@
         (setf (schema-lock schema) schema-lock)
         (setf (schema-class-locks schema) locks)
         schema))))
+
+(defmethod restore-schema-locks ((schema schema))
+  "Recreate the runtime per-class rw-locks for a schema just restored from disk.
+Locks are never persisted (SAVE-SCHEMA nils CLASS-LOCKS before cl-store, since
+the lock objects are runtime-only), so a restored schema's CLASS-LOCKS slot is
+nil.  Rebuild it with the base VERTEX / EDGE locks plus one rw-lock per
+already-registered node type, keyed by the type NAME -- the same key
+WITH-WRITE-LOCKED-CLASS / INSTANTIATE-NODE-TYPE use.  This preserves the
+persisted type-ids (unlike re-running INIT-SCHEMA from scratch)."
+  (let ((locks #+sbcl (make-hash-table :test 'eql :synchronized t)
+               #+ccl (make-hash-table :test 'eql :shared t)
+               #+lispworks (make-hash-table :test 'eql :single-thread nil)
+               #+ecl (make-hash-table :test 'eql)))
+    (setf (gethash 'vertex locks) (make-rw-lock)
+          (gethash 'edge locks) (make-rw-lock))
+    ;; The type-table nests sub-tables (by parent type) whose VALUES include the
+    ;; node-type metas; make a lock for each registered type by name.
+    (maphash (lambda (parent sub)
+               (declare (ignore parent))
+               (when (hash-table-p sub)
+                 (maphash (lambda (k v)
+                            (declare (ignore k))
+                            (when (node-type-p v)
+                              (setf (gethash (node-type-name v) locks)
+                                    (make-rw-lock))))
+                          sub)))
+             (schema-type-table schema))
+    (setf (schema-class-locks schema) locks)
+    schema))
 
 (defmethod get-next-type-id ((schema schema) parent)
   (with-recursive-lock-held ((schema-lock schema))
@@ -120,8 +177,10 @@ replication for a quick schema compatibility check."
     (map nil
          (lambda (octet)
            (format stream "~(~2,'0X~)" octet))
+         ;; :utf-8 (canonical) not :utf8 -- CCL's external-format normalizer
+         ;; rejects :utf8.  Same octets on every impl, so the digest is stable.
          (md5:md5sum-string (schema-string-representation schema)
-                             :external-format :utf8))))
+                             :external-format :utf-8))))
 
 (defmethod all-node-types ((graph graph))
   (let ((types nil))
@@ -162,7 +221,20 @@ replication for a quick schema compatibility check."
   (finalize-inheritance (find-class (node-type-name meta)))
   (save-schema (schema graph) graph))
 
-(defmacro def-node-type (name parent-types slot-specs graph-name)
+(defmacro def-node-type (name parent-types slot-specs graph-name &key keep-revisions)
+  "Define a persistent node type NAME for the graph named GRAPH-NAME.  This is
+the machinery behind DEF-VERTEX and DEF-EDGE; you normally use those instead.
+
+PARENT-TYPES is a single-inheritance superclass list ending in VERTEX or EDGE.
+SLOT-SPECS are CLOS-style slot definitions (a bare symbol, or (name :type ...)
+etc.); an :accessor and :initarg are supplied automatically when omitted.
+
+Expands to a (defclass ... (:metaclass node-class)) plus generated helpers:
+MAKE-<NAME> (constructor), LOOKUP-<NAME> (id -> node, skipping deleted unless
+:include-deleted-p), and <NAME>-P (predicate).  For edges it also defines the
+Prolog functors <NAME>/2 and <NAME>/3.  The type metadata is registered under
+GRAPH-NAME and instantiated into the graph if it already exists, so a type may
+be defined before or after the graph is created."
   (with-gensyms (meta graph)
     (let* ((constructor (intern (format nil "MAKE-~A" name)))
            (predicate (intern (format nil "~A-P" name)))
@@ -191,7 +263,8 @@ replication for a quick schema compatibility check."
                   :graph-name ',graph-name
                   :slots ',slot-specs
                   :package (package-name *package*)
-                  :constructor ',constructor)))
+                  :constructor ',constructor
+                  :keep-revisions ,keep-revisions)))
            ;; FIXME: why is this necessary when inheriting from another node subclass?
            ;;(unless (class-finalized-p (find-class ',name))
            (finalize-inheritance (find-class ',name))
@@ -351,11 +424,31 @@ replication for a quick schema compatibility check."
                (instantiate-node-type ,meta ,graph)))
            )))))
 
-(defmacro def-vertex (name parent-types slot-specs graph-name)
-  `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name))
+(defmacro def-vertex (name parent-types slot-specs graph-name &key keep-revisions)
+  "Define a vertex (node) type NAME for the graph named GRAPH-NAME.
 
-(defmacro def-edge (name parent-types slot-specs graph-name)
-  `(def-node-type ,name (,@parent-types edge) ,slot-specs ,graph-name))
+PARENT-TYPES is a list of other vertex types to inherit from (often empty);
+VERTEX is appended automatically.  SLOT-SPECS are CLOS-style typed slots.
+Generates MAKE-NAME / LOOKUP-NAME / NAME-P and slot accessors.  Example:
+  (def-vertex user () ((username :type string)) :social-app)
+:KEEP-REVISIONS N overrides, for this type, how many prior MVCC versions the
+reaper retains (NIL = inherit the graph default).
+See DEF-NODE-TYPE for full details and DEF-EDGE for relationships."
+  `(def-node-type ,name (,@parent-types vertex) ,slot-specs ,graph-name
+     :keep-revisions ,keep-revisions))
+
+(defmacro def-edge (name parent-types slot-specs graph-name &key keep-revisions)
+  "Define an edge (relationship) type NAME for the graph named GRAPH-NAME.
+
+Like DEF-VERTEX but the type inherits from EDGE, so its constructor also takes
+:FROM, :TO and :WEIGHT.  Generates MAKE-NAME / LOOKUP-NAME / NAME-P, slot
+accessors, and the Prolog query functors NAME/2 and NAME/3.  :KEEP-REVISIONS N
+overrides this type's retained-version count (NIL = inherit the graph default).
+Example:
+  (def-edge follows () () :social-app)
+  ... (make-follows :from alice :to bob)"
+  `(def-node-type ,name (,@parent-types edge) ,slot-specs ,graph-name
+     :keep-revisions ,keep-revisions))
 
 (defmethod node-type-diff ((meta1 node-type) (meta2 node-type))
   (let ((new-slots (set-difference (node-type-slots meta2)
@@ -364,7 +457,11 @@ replication for a quick schema compatibility check."
         (removed-slots (set-difference (node-type-slots meta1)
                                        (node-type-slots meta2)
                                        :test 'equalp)))
-    (values (or new-slots removed-slots) new-slots removed-slots)))
+    (values (or new-slots removed-slots
+                ;; A changed :keep-revisions also counts as a redefinition.
+                (not (eql (node-type-keep-revisions meta1)
+                          (node-type-keep-revisions meta2))))
+            new-slots removed-slots)))
 
 (defmethod instantiate-node-type ((meta node-type) (graph graph))
   (with-recursive-lock-held ((schema-lock (schema graph)))

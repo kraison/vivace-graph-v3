@@ -62,7 +62,12 @@
                    :single-thread nil 
                    :weak-kind :value)
   #+sbcl
-  (make-hash-table :test 've-key-equal :synchronized t :weakness :value))
+  (make-hash-table :test 've-key-equal :synchronized t :weakness :value)
+  ;; %VE-KEY-EQUAL is exactly EQUALP on the VE-KEY struct (= type-id + equalp
+  ;; id), so ECL's native EQUALP tables are an exact substitute (no custom
+  ;; hash-table test support on ECL).
+  #+ecl
+  (make-hash-table :test 'equalp :weakness :value))
 
 (defstruct (ve-index
              (:constructor %make-ve-index))

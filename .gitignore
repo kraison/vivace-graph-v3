@@ -1,0 +1,14 @@
+.DS_Store
+
+# Emacs temp / lock / backup / session files
+.\#*
+\#*\#
+*~
+.emacs.desktop
+.emacs.desktop.lock
+
+# Common Lisp compiled output
+*.fasl
+
+# Claude
+.claude

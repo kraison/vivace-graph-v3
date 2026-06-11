@@ -6,6 +6,7 @@
         #:local-time
         #+ccl #:closer-mop
         #+lispworks #:clos
+        #+ecl #:clos
         #+sbcl #:sb-mop
         #+sbcl #:sb-pcl)
   #+sbcl (:shadowing-import-from "SB-EXT" "WORD")
@@ -21,6 +22,8 @@
   #+ccl (:shadowing-import-from "CLOSER-MOP" "METHOD-FUNCTION")
   #+ccl (:shadowing-import-from "CLOSER-MOP" "MAKE-METHOD-LAMBDA")
   (:export #:make-graph
+           #:*default-heap-size*
+           #:*default-index-size*
            #:open-graph
            #:close-graph
            #:lookup-graph
@@ -74,14 +77,14 @@
            #:with-write-locked-class
            #:with-read-locked-class
            #:schema-class-locks
-           #+sbcl #:make-rw-lock
-           #+sbcl #:with-read-lock
-           #+sbcl #:with-write-lock
-           #+sbcl #:acquire-read-lock
-           #+sbcl #:release-read-lock
-           #+sbcl #:acquire-write-lock
-           #+sbcl #:release-write-lock
-           #+sbcl #:rw-lock-p
+           #+(or sbcl ecl) #:make-rw-lock
+           #+(or sbcl ecl) #:with-read-lock
+           #+(or sbcl ecl) #:with-write-lock
+           #+(or sbcl ecl) #:acquire-read-lock
+           #+(or sbcl ecl) #:release-read-lock
+           #+(or sbcl ecl) #:acquire-write-lock
+           #+(or sbcl ecl) #:release-write-lock
+           #+(or sbcl ecl) #:rw-lock-p
 
            #:vertex
            #:edge
@@ -185,4 +188,82 @@
            #:make-node-table
            #:node-equal
 
+           ;; --- spatial extension (public API) ---
+           ;; geometry values
+           #:geometry
+           #:geometryp
+           #:make-point
+           #:make-linestring
+           #:make-polygon
+           #:make-multipolygon
+           #:geometry-kind
+           #:geometry-coordinates
+           #:geometry-lon
+           #:geometry-lat
+           #:geometry-bbox
+           ;; geometry operations
+           #:geodesic-distance
+           #:point-in-ring-p
+           #:point-in-polygon-rings-p
+           #:geometry-contains-point-p
+           #:bbox-overlap-p
+           #:geometry-distance
+           ;; topology refine seam (exact with the optional graph-db/geos add-on,
+           ;; dependency-free fallbacks otherwise)
+           #:geometry-intersects-p
+           #:geometry-contains-geometry-p
+           #:geometry-make-valid
+           #:geometry-valid-p
+           #:geometry-distance-exact
+           #:geometry-geodesic-distance
+           #:geometry-union
+           #:geometry-intersection
+           #:geometry-difference
+           #:geometry-buffer
+           #:geometry-area
+           #:geos-available-p
+           #:geos-shutdown
+           #:*geos-available-p*
+           #:*geos-version*
+           #:*geos-makevalid-available-p*
+           #:geos-error
+           #:geos-required-for-operation
+           ;; geohash
+           #:geohash-encode
+           #:geohash-decode
+           #:geohash-bbox
+           #:geohash-cell-size
+           #:geohash-covering
+           #:geohash-neighbor
+           #:geohash-neighbors
+           ;; spatial index
+           #:spatial-index
+           #:spatial-index-p
+           #:make-spatial-index
+           #:open-spatial-index
+           #:spatial-index-precision
+           #:spatial-index-address
+           #:spatial-index-insert
+           #:spatial-index-remove
+           #:spatial-index-query-bbox
+           #:spatial-index-query-radius
+           #:delete-spatial-index
+           #:rebuild-spatial-index
+           ;; write-path protocol (applications specialize this)
+           #:node-geometry
+           ;; subset replication (field devices)
+           #:replication-filter
+           #:make-spatial-replication-filter
+           ;; index-backed queries + Prolog functors
+           #:find-nodes-within
+           #:find-nodes-intersecting
+           #:find-nodes-near
+           #:find-nearest-k
+           #:find-within/2
+           #:find-intersects/2
+           #:find-near/4
+           #:find-nearest/4
+           #:geo-distance/5
+           #:geo-near/5
+           #:geo-within/3
            ))

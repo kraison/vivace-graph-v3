@@ -14,7 +14,8 @@
   (:method (thing) nil))
 
 (defun %make-vertex (&key id type-id revision deleted-p data-pointer data bytes
-                     written-p heap-written-p type-idx-written-p views-written-p)
+                     written-p heap-written-p type-idx-written-p views-written-p
+                     commit-epoch prev-pointer)
   (let ((vertex (get-vertex-buffer)))
     (cond (id
            (setf (id vertex) id))
@@ -22,6 +23,8 @@
            (setf (id vertex) (gen-vertex-id))))
     (when type-id (setf (type-id vertex) type-id))
     (when revision (setf (revision vertex) revision))
+    (when commit-epoch (setf (commit-epoch vertex) commit-epoch))
+    (when prev-pointer (setf (prev-pointer vertex) prev-pointer))
 
     (when deleted-p (setf (deleted-p vertex) deleted-p))
     (when written-p (setf (written-p vertex) written-p))
@@ -43,8 +46,9 @@
 (defun deserialize-vertex-head (mf offset)
   (multiple-value-bind
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
-                   ve-written-p vev-written-p type-id revision pointer)
-      (deserialize-node-head mf offset)
+                   ve-written-p vev-written-p type-id revision pointer
+                   commit-epoch prev-pointer)
+      (funcall *node-head-reader* mf offset)
     (declare (ignore ve-written-p vev-written-p))
     (let* ((subclass (if (eq type-id 0)
                          'vertex
@@ -58,8 +62,10 @@
                             :views-written-p views-written-p
                             :type-id type-id
                             :revision revision
-                            :data-pointer pointer)))
-      (change-class v subclass))))
+                            :data-pointer pointer
+                            :commit-epoch commit-epoch
+                            :prev-pointer prev-pointer)))
+      (change-node-class v subclass))))
 
 (defun make-vertex-table (location &key (key-test 'uuid-array-equal)
                                      (base-buckets (expt 2 17)))
@@ -79,6 +85,9 @@
   (lookup-vertex (read-id-array-from-string id) :graph graph))
 
 (defmethod lookup-vertex ((id array) &key (graph *graph*))
+  "Return the vertex with the given ID (a 16-byte id array or its string form)
+in GRAPH, or NIL if none.  Returns the vertex regardless of its deleted flag;
+the generated LOOKUP-<type> functions filter deleted nodes for you."
   (lookup-object id (vertex-table graph) *transaction* graph))
 
 (defmethod add-to-type-index ((vertex vertex) (graph graph)
@@ -94,6 +103,12 @@
   (type-index-remove (id vertex) (type-id vertex) (vertex-index graph)))
 
 (defun make-vertex (type-id data &key id deleted-p revision retry-p (graph *graph*))
+  "Create and persist a vertex of the type named/identified by TYPE-ID (a node
+type name, its integer id, or :GENERIC) in GRAPH, returning it.  DATA is the
+slot data stored on the node.  Must run inside a transaction.  You normally
+call the generated MAKE-<type> constructor (e.g. MAKE-USER) rather than this
+directly.  :ID supplies an id (one is generated otherwise); :RETRY-P regenerates
+the id on a duplicate-key collision."
   (let ((type-meta (or (and (eq type-id :generic) :generic)
                        (and (eq 0 type-id) :generic)
                        (and (integerp type-id)
@@ -115,7 +130,7 @@
                                 :written-p nil
                                 :bytes bytes
                                 :data data)))
-          (change-class v subclass)
+          (change-node-class v subclass)
           (setf (bytes v) bytes)
           (handler-case
               (create-node v graph)
@@ -140,7 +155,24 @@
   (delete-node vertex graph))
 
 (defun map-vertices (fn graph &key collect-p vertex-type include-deleted-p (include-subclasses-p t))
-  (let ((result nil))
+  "Call FN on vertices of GRAPH.  With :VERTEX-TYPE, restrict to that type
+(and, unless :INCLUDE-SUBCLASSES-P is nil, its subtypes); otherwise visit all
+vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
+:COLLECT-P, collect and return FN's values as a list; otherwise return NIL."
+  ;; Bind *GRAPH* to the GRAPH argument: the lhash value-deserializer
+  ;; (deserialize-vertex-head) resolves a node's type-id -> class via *GRAPH*'s
+  ;; schema, so mapping a graph that isn't the current *GRAPH* would otherwise
+  ;; fail (NO-APPLICABLE-METHOD on SCHEMA/VERTEX-TABLE with NIL).
+  (let* ((result nil)
+         (*graph* graph)
+         ;; When collecting, each node ESCAPES the scan pin, so materialize its
+         ;; bytes before FN sees it.  For a side-effect scan FN runs inside the
+         ;; pin, so its lazy reads are already safe and we don't pre-read bytes.
+         (fn (if collect-p
+                 (let ((user-fn fn))
+                   (lambda (node) (ensure-node-bytes node graph) (funcall user-fn node)))
+                 fn)))
+    (with-read-pin (graph)        ; retain whatever versions this scan observes
     (flet ((map-it (vertex-type)
              (let* ((type-meta (or (and (integerp vertex-type)
                                         (lookup-node-type-by-id vertex-type :vertex))
@@ -150,7 +182,10 @@
                  (let ((index-list (get-type-index-list (vertex-index graph) vertex-type-id)))
                    (map-index-list (lambda (id)
                                      (let ((vertex (lookup-vertex id :graph graph)))
-                                       (when (and (written-p vertex)
+                                       ;; vertex can be nil if it appears in the type-index
+                                       ;; before lhash-insert completes (commit race); skip it.
+                                       (when (and vertex
+                                                  (written-p vertex)
                                                   (or include-deleted-p
                                                       (not (deleted-p vertex))))
                                          (if collect-p
@@ -183,12 +218,12 @@
                                 (if collect-p
                                     (push (funcall fn vertex) result)
                                     (funcall fn vertex)))))
-                        (vertex-table *graph*)))))
+                        (vertex-table graph))))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))
   (map-edges (lambda (vertex)
                (when (deleted-p vertex)
                  (remove-from-type-index vertex graph)))
-             *graph*
+             graph
              :include-deleted-p t))

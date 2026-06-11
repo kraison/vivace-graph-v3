@@ -248,14 +248,15 @@
                                     (intern (symbol-name slot) :keyword))
                                   (data-slots class)))
                    (constructor (node-type-constructor type))
-                   (slot-args (flatten
-                               (mapcar (lambda (slot)
-                                         (list slot
-                                               (cdr (assoc (json:lisp-to-camel-case
-                                                            (symbol-name slot))
-                                                           params
-                                                           :test 'string-equal))))
-                                       slots)))
+                   ;; MAPCAN (not FLATTEN): FLATTEN drops nil slot values,
+                   ;; leaving an odd-length plist -> "odd number of &KEY args".
+                   (slot-args (mapcan (lambda (slot)
+                                        (list slot
+                                              (cdr (assoc (json:lisp-to-camel-case
+                                                           (symbol-name slot))
+                                                          params
+                                                          :test 'string-equal))))
+                                      slots))
                    (node (apply constructor slot-args)))
               (json-encode node))
             (json:encode-json-to-string
@@ -308,14 +309,15 @@
                    (constructor (node-type-constructor type))
                    (from (lookup-vertex (cdr (assoc "from" params :test 'string-equal))))
                    (to (lookup-vertex (cdr (assoc "to" params :test 'string-equal))))
-                   (slot-args (flatten
-                               (mapcar (lambda (slot)
-                                         (list slot
-                                               (cdr (assoc (json:lisp-to-camel-case
-                                                            (symbol-name slot))
-                                                           params
-                                                           :test 'string-equal))))
-                                       slots))))
+                   ;; MAPCAN (not FLATTEN): FLATTEN drops nil slot values,
+                   ;; leaving an odd-length plist -> "odd number of &KEY args".
+                   (slot-args (mapcan (lambda (slot)
+                                        (list slot
+                                              (cdr (assoc (json:lisp-to-camel-case
+                                                           (symbol-name slot))
+                                                          params
+                                                          :test 'string-equal))))
+                                      slots)))
               (if (and from to)
                   (let ((node (apply constructor :from from :to to slot-args)))
                     (json-encode node))

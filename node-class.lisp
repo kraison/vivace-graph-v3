@@ -125,11 +125,16 @@
   (find-ancestor-classes (find-class class-name)))
 
 (defmethod find-ancestor-classes ((class node-class))
-  (delete-if (lambda (class)
+  ;; remove-if (non-destructive): on CCL the list returned by
+  ;; compute-class-precedence-list shares structure with the class's stored
+  ;; CPL slot, so a destructive delete-if mutates the class's own CPL --
+  ;; breaking method dispatch on any superclass for multi-level subclasses.
+  (remove-if (lambda (class)
                (find (class-name class)
                      #+sbcl '(edge vertex node STANDARD-OBJECT SB-PCL::SLOT-OBJECT T)
                      #+lispworks '(edge vertex node standard-object T)
-                     #+ccl '(edge vertex node STANDARD-OBJECT T)))
+                     #+ccl '(edge vertex node STANDARD-OBJECT T)
+                     #+ecl '(edge vertex node standard-object T)))
              (compute-class-precedence-list class)))
 
 (defmethod find-graph-parent-classes ((class node-class))
@@ -166,6 +171,14 @@
    (written-p :accessor written-p :initform nil :initarg :written-p :type boolean
               :meta t :persistent nil)
    (data-pointer :accessor data-pointer :initform 0 :initarg :data-pointer
+                 :type (unsigned-byte 64) :meta t :persistent nil)
+   ;; MVCC (v2 head): commit-epoch = the committing transaction-id when this
+   ;; version was written (global monotonic; for snapshot reads + the reaper).
+   ;; prev-pointer = LOCAL heap address of the previous version's archived head
+   ;; (0 = none).  Both are serialized in the node head; see serialize-node-head.
+   (commit-epoch :accessor commit-epoch :initform 0 :initarg :commit-epoch
+                 :type (unsigned-byte 64) :meta t :persistent nil)
+   (prev-pointer :accessor prev-pointer :initform 0 :initarg :prev-pointer
                  :type (unsigned-byte 64) :meta t :persistent nil)
    (deleted-p :accessor deleted-p :initform nil :initarg :deleted-p :type boolean
               :meta t :persistent nil)

@@ -1,9 +1,20 @@
 (in-package #:graph-db)
 
 (defvar *prolog-global-functors*
-  (make-hash-table :synchronized t :test 'equalp))
+  #+sbcl (make-hash-table :synchronized t :test 'equalp)
+  #+ccl (make-hash-table :shared t :test 'equalp)
+  #+lispworks (make-hash-table :single-thread nil :test 'equalp)
+  #+ecl (make-hash-table :test 'equalp))
 
 (defmacro def-global-prolog-functor (name lambda-list &body body)
+  "Define a global Prolog functor (query predicate) NAME, which must be of the
+form PREDICATE/ARITY (e.g. divisible-by/2).  LAMBDA-LIST is the predicate's
+arguments followed by a final CONT continuation argument.  In BODY, VAR-DEREF
+each argument to get its value, and FUNCALL CONT once for each solution to
+signal success (not calling CONT means the goal fails).  To bind an unbound
+argument, UNIFY it and undo with UNDO-BINDINGS on backtracking.  In a query you
+write the predicate WITHOUT the /arity suffix; the compiler appends it from the
+goal's argument count."
   `(prog1
        (defun ,name ,lambda-list ,@body)
      (export ',name)
@@ -132,7 +143,11 @@
   "Call a prolog form."
   (var-deref goal)
   (let* ((functor (make-functor-symbol (first goal) (length (args goal)))))
-    (let ((fn (or (gethash functor *user-functors*)
+    ;; *user-functors* holds FUNCTOR structs, not functions, so we must pull
+    ;; out the compiled fn (via get-functor-fn).  Reading the struct directly
+    ;; made (functionp ...) false, so call/1 -- and thus not/bagof/setof/if --
+    ;; could never invoke a user-defined (<-) predicate.
+    (let ((fn (or (get-functor-fn functor)
 		  (gethash functor *prolog-global-functors*))))
       (if (functionp fn)
 	  (apply fn (append (args goal) (list cont)))
@@ -501,11 +516,17 @@ query."
                      (setf (gethash var-name *seen-table*)
                            (make-node-table)))))
       (setq node (var-deref node))
-      (when (or (not (node-p node))
-                (null (gethash node table)))
-        (when (node-p node)
-          (setf (gethash node table) node))
-        (funcall cont)))))
+      ;; On ECL MAKE-NODE-TABLE is an EQUALP table keyed by node-id (ECL has no
+      ;; custom hash-table tests); elsewhere it is a NODE-EQUAL table keyed by
+      ;; the node object.  NODE-EQUAL is (equalp (id x) (id y)), so keying by
+      ;; (id node) under EQUALP is equivalent.
+      (let ((key #+ecl (and (node-p node) (id node))
+                 #-ecl node))
+        (when (or (not (node-p node))
+                  (null (gethash key table)))
+          (when (node-p node)
+            (setf (gethash key table) node))
+          (funcall cont))))))
 
 (def-global-prolog-functor is-a/2 (node type cont)
   (setq node (var-deref node)
@@ -587,3 +608,44 @@ query."
                 :reason
                 (format nil "retract/3: cowardly refusing to retract(~A ~A ~A)"
                         edge-type from to)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Spatial predicates (part of the public spatial extension).
+;;;
+;;; These are pure geometric building blocks over bound coordinate/geometry
+;;; values -- they carry no domain knowledge and need no spatial index.  Compose
+;;; them with slot accessors to filter graph nodes by location, e.g.:
+;;;   (select-flat (?n)
+;;;     (is-a ?n eo-find)
+;;;     (node-slot-value ?n lon ?lon) (node-slot-value ?n lat ?lat)
+;;;     (geo-near ?lat ?lon 49.2 37.17 500.0))
+;;; Index-backed, node-yielding spatial functors come once the write-path hook
+;;; populates the spatial index (deferred with the MVCC apply-path work).
+;;; ---------------------------------------------------------------------------
+
+(def-global-prolog-functor geo-distance/5 (?lat1 ?lon1 ?lat2 ?lon2 ?dist cont)
+  "Unify ?DIST with the geodesic distance (metres) between (?LAT1,?LON1) and
+(?LAT2,?LON2).  The four coordinates must be bound numbers."
+  (let ((lat1 (var-deref ?lat1)) (lon1 (var-deref ?lon1))
+        (lat2 (var-deref ?lat2)) (lon2 (var-deref ?lon2)))
+    (when (and (numberp lat1) (numberp lon1) (numberp lat2) (numberp lon2))
+      (when (unify ?dist (geodesic-distance lat1 lon1 lat2 lon2))
+        (funcall cont)))))
+
+(def-global-prolog-functor geo-near/5 (?lat1 ?lon1 ?lat2 ?lon2 ?radius cont)
+  "Succeed when (?LAT1,?LON1) and (?LAT2,?LON2) are within ?RADIUS metres of one
+another.  All five arguments must be bound numbers."
+  (let ((lat1 (var-deref ?lat1)) (lon1 (var-deref ?lon1))
+        (lat2 (var-deref ?lat2)) (lon2 (var-deref ?lon2)) (radius (var-deref ?radius)))
+    (when (and (numberp lat1) (numberp lon1) (numberp lat2) (numberp lon2)
+               (numberp radius))
+      (when (<= (geodesic-distance lat1 lon1 lat2 lon2) radius)
+        (funcall cont)))))
+
+(def-global-prolog-functor geo-within/3 (?lon ?lat ?area cont)
+  "Succeed when point (?LON, ?LAT) lies within the :POLYGON or :MULTIPOLYGON
+geometry ?AREA.  ?LON/?LAT must be bound numbers and ?AREA a bound geometry."
+  (let ((lon (var-deref ?lon)) (lat (var-deref ?lat)) (area (var-deref ?area)))
+    (when (and (numberp lon) (numberp lat) (geometryp area))
+      (when (geometry-contains-point-p area lon lat)
+        (funcall cont)))))

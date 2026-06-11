@@ -1,0 +1,1860 @@
+#+TITLE: VivaceGraph V3: The Developer's Manual
+#+AUTHOR: Gwang-Jin Kim
+#+OPTIONS: toc:3 num:t
+
+#+BEGIN_QUOTE
+*Credits & provenance.* This manual was written by *Gwang-Jin Kim*
+([[https://github.com/gwangjinkim][@gwangjinkim]]) in his fork of VivaceGraph
+([[https://github.com/gwangjinkim/vivace-graph-v3][gwangjinkim/vivace-graph-v3]]).
+It is the first comprehensive documentation the project has had, and it is
+excellent work — huge thanks to him for it.
+
+It has been adopted into the upstream repository and is maintained here, with
+corrections and updates as the code evolves. The original chapters are kept
+faithful to Gwang-Jin Kim's work; material added after adoption — for example
+Chapter 12 on MVCC — is the maintainers', written in his style so the manual
+reads as a coherent whole. The foundation, structure, and the great majority of
+this manual are his, and the project is deeply grateful for them. Any errors
+introduced during adaptation or in the newer chapters are ours, not his.
+#+END_QUOTE
+
+* Part I: Getting Started
+
+This section will guide you through the fundamental concepts of VivaceGraph. By the end of this part, you will understand what VivaceGraph is, its core design philosophy, and when to use it over other database models.
+
+** Chapter 1: Introduction to VivaceGraph
+
+Welcome to VivaceGraph, a native, high-performance graph database for Common Lisp. This chapter introduces the core features and the architectural philosophy that sets VivaceGraph apart.
+
+*** What is VivaceGraph?
+
+VivaceGraph is a persistent graph database designed from the ground up in Common Lisp. It provides a powerful and expressive environment for modeling, storing, and querying highly connected data.
+
+At its heart, VivaceGraph is built on several key architectural pillars:
+
+  - *Persistent On-Disk Storage*
+    Unlike in-memory databases, VivaceGraph stores all data directly on disk using memory-mapped files (see ~mmap.lisp~ and ~allocator.lisp~). This allows it to handle graphs that are much larger than the available system RAM and ensures that your data is durable between application restarts.
+
+  - *An Object-Oriented Lisp Environment*
+    Vertices and edges in your graph are not just abstract data containers; they are first-class CLOS (Common Lisp Object System) objects. You define your graph's structure by creating Lisp classes with standard slots, inheritance, and methods (see ~node-class.lisp~).
+
+  - *ACID Transactions*
+    All create, update, and delete operations are transactional. VivaceGraph provides a ~with-transaction~ macro that guarantees that a block of operations either completes entirely or is rolled back, ensuring the database remains in a consistent state (see ~transactions.lisp~).
+
+  - *A Declarative Prolog-based Query Language*
+    Data is retrieved from the graph using a powerful, Prolog-like query language embedded directly in Lisp. This allows you to express complex graph traversals and pattern-matching queries in a clean, declarative style (see ~prologc.lisp~ and the ~select~ macro).
+
+  - *High-Performance Indexing via Views*
+    For fast lookups on node properties, VivaceGraph uses a concept called "views". A view is a secondary index (implemented as a persistent skip-list) that you can define on any vertex or edge property, dramatically speeding up queries that don't start with a known node ID (see ~views.lisp~).
+
+  - *Built for Concurrency*
+    The database is designed for multi-threaded access, with a fine-grained locking system to manage concurrent reads and writes safely (see ~rw-lock.lisp~).
+
+*** Core Philosophy: Graphs as Lisp Objects
+
+The most important concept to grasp about VivaceGraph is that it is not simply a database with a Lisp driver. /VivaceGraph's data model *is* the Lisp object model./
+
+When you retrieve a node from the database, you are not handed a generic hash map or a list of properties. You are given a fully instantiated Lisp object of the type you defined.
+
+Consider this schema:
+#+BEGIN_SRC lisp
+  (def-vertex user ()
+    ((name :type string)
+     (signup-date :type timestamp))
+    :my-app)
+#+END_SRC
+
+When you fetch a user from the database, you get an instance of the `user` class.
+#+BEGIN_SRC lisp
+  (let ((a-user (lookup-user "some-user-id...")))
+    (type-of a-user))
+  ;;=> USER
+#+END_SRC
+
+This seamless integration has profound implications:
+1.  *No Object-Graph Mapper (OGM) is needed.* There is no "impedance mismatch" between your application's objects and the database's storage model.
+2.  *You can define methods directly on your graph nodes.* You can add behavior to your `user` or `photo` classes just like any other Lisp object.
+3.  *The full power of CLOS is available.* Multiple inheritance, method combinations, and complex class hierarchies can be used to model your domain.
+
+Your application code interacts with the database as if it were just another part of the Lisp image, while VivaceGraph handles the persistence, transaction management, and indexing behind the scenes.
+
+*** When to Use a Graph Database
+
+Graph databases excel at managing and querying data where the *relationships between entities are as important as the entities themselves*. If your application logic involves traversing connections, finding patterns, or analyzing networks, a graph database is likely the right choice.
+
+Consider using VivaceGraph for:
+  - *Social Networks:* Finding friends-of-friends, suggesting connections, analyzing community structures.
+  - *Recommendation Engines:* "Users who liked this product also liked...", "Products frequently bought together...".
+  - *Fraud Detection:* Identifying rings of fraudulent accounts or transactions that share common addresses, IP numbers, or credit cards.
+  - *Knowledge Graphs and Ontologies:* Modeling complex semantic relationships, dependencies, and hierarchies.
+  - *Network and IT Operations:* Mapping dependencies between servers, applications, and network devices to analyze the impact of outages.
+
+VivaceGraph is *not* the ideal choice for use cases where data is largely disconnected, such as storing simple lists of items, logging, or managing large binary files.
+
+*** Comparison with Relational and NoSQL Databases
+
+To understand where VivaceGraph fits, it's helpful to compare it to other database paradigms.
+
+**** Vs. Relational Databases (e.g., PostgreSQL, MySQL)
+   - *The JOIN Problem:* Relational databases are optimized for storing rows of data in tables. To connect data between tables, they use `JOIN` operations. A simple query like "find the friends of my friends" can require multiple, expensive self-joins on a `users` table. As the depth of the query increases (e.g., friends-of-friends-of-friends), the performance degrades significantly.
+
+     In a graph database, this is a simple traversal. The query starts at a given user node and just follows the `[:FOLLOWS]` edges. The performance depends only on the size of the local neighborhood being explored, not the total number of users in the database. This is called /"index-free adjacency."/
+
+   - *Schema Flexibility:* While VivaceGraph is schema-aware, its object-oriented nature makes evolving the schema much easier. Adding a new property to a `user` vertex is a simple change to the class definition, whereas in SQL it requires an `ALTER TABLE` command, which can be a slow, locking operation on large tables.
+
+**** Vs. Document Databases (e.g., MongoDB)
+   - *Focus on Relationships:* Document databases store data in rich, self-contained documents (like JSON). They are excellent for data that has a clear owner and nested structure (e.g., a blog post and its comments). However, they are very poor at representing many-to-many relationships *between* documents. Modeling a "follows" relationship in a document DB is awkward and inefficient, often requiring you to manually maintain lists of IDs.
+
+     VivaceGraph makes these relationships first-class citizens. An edge is a core, indexed entity, making traversals fast and natural.
+
+**** Vs. Key-Value Stores (e.g., Redis)
+   - *Data Structure:* Key-value stores are the simplest model, mapping a key to a value. They are incredibly fast for direct lookups but have no understanding of the data's internal structure or its connections to other data. You cannot ask a key-value store to "find all users who follow Alice." You would have to model that logic entirely in your application code.
+
+     VivaceGraph provides a rich query language precisely for answering such questions.
+
+In summary, choose VivaceGraph when the *paths, patterns, and connections* in your data are the primary focus of your application.
+
+** Chapter 2: Quick Start: Your First Graph Application
+
+This chapter is a hands-on tutorial that will walk you through the entire lifecycle of a basic VivaceGraph application. We will build a simple social network where users can write posts and follow each other. By the end, you will know how to model, create, read, update, delete, and query graph data.
+
+*** Installation (Quicklisp)
+
+VivaceGraph is a Common Lisp library that can be loaded via Quicklisp. Assuming you have Quicklisp set up, you can load the system with:
+
+#+BEGIN_SRC lisp
+  (ql:quickload :graph-db)
+#+END_SRC
+
+**** Supported Lisp implementations
+
+VivaceGraph runs on SBCL (>= 1.045), ECL (>= 21.2.1), Clozure CL (CCL), and
+LispWorks. The full test suite passes on SBCL (macOS arm64 and Linux x86_64)
+and on ECL (macOS arm64 with ECL 26.5.5 and Linux with ECL 21.2.1). You can run
+it yourself with ~(asdf:test-system :graph-db)~ (the suite uses FiveAM).
+
+CCL works on Linux x86_64 but /not/ on Apple-Silicon macOS: the Clozure ARM64
+port has been stalled for several years and macOS support for Intel (x86_64)
+binaries is nearly gone, so there is no usable CCL on M-series Macs. On Apple
+Silicon, use SBCL or ECL.
+
+It's recommended to define a package for your application and `:use` the `:graph-db` package to import its symbols.
+
+#+BEGIN_SRC lisp
+  (defpackage #:my-social-app
+    (:use #:cl #:graph-db))
+  
+  (in-package #:my-social-app)
+#+END_SRC
+
+*** Defining a Schema (~def-vertex~, ~def-edge~)
+
+Before we can store any data, we must define its structure. Our social application will have two types of nodes (*vertices*) and two types of relationships (*edges*).
+
+- *Vertices:* ~user~ and ~post~.
+- *Edges:* An ~authored~ edge from a ~user~ to a ~post~, and a ~follows~ edge from one ~user~ to another.
+
+We define these using the ~def-vertex~ and ~def-edge~ macros. Notice that each definition ends with a keyword (~:social-app~) that names the graph this schema belongs to.
+
+#+BEGIN_SRC lisp
+  ;; A 'user' vertex with a unique username.
+  (def-vertex user ()
+    ((username :type string))
+    :social-app)
+  
+  ;; A 'post' vertex with text content.
+  (def-vertex post ()
+    ((text :type string)
+     (timestamp :type integer))
+    :social-app)
+  
+  ;; A directed 'authored' edge connecting a user to a post.
+  (def-edge authored ()
+    () ; No extra properties on this edge
+    :social-app)
+  
+  ;; A directed 'follows' edge connecting two users.
+  (def-edge follows ()
+    ()
+    :social-app)
+#+END_SRC
+
+These macros automatically generate constructor functions (~make-user~, ~make-post~, etc.) and accessor methods for the slots you define.
+
+*** Connecting to the Database (~make-graph~, ~open-graph~, ~close-graph~)
+
+With our schema defined, we can connect to the database. We will store our graph's files in a directory, for example, ~"/var/tmp/social-app/"~.
+
+The global special variable ~*graph*~ must be bound to the active graph instance. A common pattern is to check if the database exists and either create a new one or open the existing one.
+
+#+BEGIN_SRC lisp
+  (defvar *my-graph-path* "/var/tmp/social-app/")
+  
+  (defun connect-to-database ()
+    "Creates a new graph or opens an existing one."
+    ;; A graph directory always contains heap.dat once created, so its
+    ;; presence is a reliable "does this graph already exist?" check.
+    (if (probe-file (merge-pathnames "heap.dat" *my-graph-path*))
+        (open-graph :social-app *my-graph-path*)
+        (make-graph :social-app *my-graph-path*)))
+  
+  ;; Bind *graph* to our active database connection.
+  (defvar *graph* (connect-to-database))
+#+END_SRC
+
+*Important:* You must always close the graph when your application is finished to ensure all data is safely written to disk and file locks are released.
+
+#+BEGIN_SRC lisp
+  ;; At the end of your application's lifecycle:
+  (close-graph *graph*)
+#+END_SRC
+
+*** Basic Operations (CRUD) within a Transaction
+
+All operations that modify the database—Create, Update, and Delete—must occur within a transaction. This is done using the ~with-transaction~ macro, which ensures that all the operations within its body succeed as a single atomic unit.
+
+**** Create
+
+We'll use the ~make-user~, ~make-post~, and ~make-follows~ functions that ~def-vertex~ and ~def-edge~ created for us.
+
+#+BEGIN_SRC lisp
+  (with-transaction ()
+    (let ((alice (make-user :username "alice"))
+          (bob (make-user :username "bob"))
+          (carol (make-user :username "carol")))
+      
+      ;; Alice follows Bob and Carol
+      (make-follows :from alice :to bob)
+      (make-follows :from alice :to carol)
+      
+      ;; Bob writes a post
+      (let ((bobs-post (make-post :text "Hello, graph world!"
+                                  :timestamp (get-universal-time))))
+        (make-authored :from bob :to bobs-post))))
+#+END_SRC
+
+**** Read
+
+Reading data does not require a transaction. However, to look up a node by one of its properties (like a username), we need an index, which VivaceGraph calls a *view*. Let's create a view to find users by their username.
+
+#+BEGIN_SRC lisp
+  ;; Define a view named 'user-by-username' on the 'username' slot of 'user' vertices.
+  (def-view user-by-username :lessp (user :social-app)
+    (:map
+      (lambda (user-node)
+        ;; The 'yield' function creates an index entry.
+        ;; It takes a key (the username) and an optional value.
+        (yield (username user-node) nil))))
+
+  ;; Now we can write a helper function to perform the lookup.
+  (defun find-user-by-username (name)
+    (let ((result (invoke-graph-view 'user 'user-by-username :key name)))
+      (when result
+        (lookup-vertex (cdr (assoc :id (first result)))))))
+
+  ;; Let's test it:
+  (let ((bob (find-user-by-username "bob")))
+    (format t "Found user: ~a~%" (username bob)))
+#+END_SRC
+
+**** Update
+
+To update a node, you must follow a three-step "copy-on-write" process inside a transaction:
+1.  *Copy* the node you want to change using the ~copy~ function.
+2.  *Modify* the slots of the new copy.
+3.  *Save* the copy back to the database using the ~save~ function.
+
+Let's say Alice wants to write her first post. We find her, create a post, and author it.
+
+#+BEGIN_SRC lisp
+  (with-transaction ()
+    (let ((alice (find-user-by-username "alice")))
+      ;; Alice has no posts yet, let's add one.
+      (let ((alices-post (make-post :text "My first post!"
+                                    :timestamp (get-universal-time))))
+        (make-authored :from alice :to alices-post))))
+#+END_SRC
+
+Now, let's say Alice wants to *edit* that post.
+
+#+BEGIN_SRC lisp
+  (with-transaction ()
+    ;; We'll assume we have a function to get Alice's first post.
+    (let* ((alices-post (first (outgoing-edges (find-user-by-username "alice") :edge-type 'authored)))
+           (post-copy (copy (lookup-vertex (to alices-post))))) ; 1. Copy the post
+      
+      (setf (text post-copy) "My first post, edited!") ; 2. Modify the copy
+      
+      (save post-copy))) ; 3. Save it
+#+END_SRC
+
+**** Delete
+
+To delete a node, you use ~mark-deleted~ within a transaction. This performs a "soft delete" by setting a flag on the node. The node is no longer returned in queries unless you explicitly ask for deleted nodes.
+
+#+BEGIN_SRC lisp
+  (with-transaction ()
+    (let ((carol (find-user-by-username "carol")))
+      (when carol
+        (mark-deleted carol))))
+#+END_SRC
+
+*** Writing Your First Query with ~select~
+
+The true power of a graph database lies in querying relationships. Let's ask a classic graph question: *"Who does Alice follow?"*
+
+We use the ~select~ macro, which takes a list of variables to return and a series of Prolog-style goals.
+
+#+BEGIN_SRC lisp
+  (let ((alice (find-user-by-username "alice")))
+    (declare (special alice)) ; Make the Lisp variable available to the query
+
+    ;; select-flat returns a simple list ("Bob", "Carol")
+    ;; instead of a list of lists (("Bob"), ("Carol"))
+    (select-flat (?friend-name)
+      ;; Goal 1: Import the Lisp variable 'alice' into the query variable '?alice'
+      (lisp ?alice alice)
+
+      ;; Goal 2: Find any node '?friend' connected from '?alice' by a 'follows' edge
+      (follows ?alice ?friend)
+
+      ;; Goal 3: Get the 'username' slot from the '?friend' node
+      (node-slot-value ?friend username ?friend-name)))
+#+END_SRC
+
+This query will backtrack through the database, finding all nodes that satisfy the chain of goals, and return a list of their usernames.
+
+You now have the fundamental tools to build a complete application with VivaceGraph!
+
+
+* Part II: Core Concepts
+
+With the basics of creating and querying a graph covered, we will now dive deeper into the architecture of VivaceGraph. Understanding these core concepts is essential for optimizing performance, managing storage, and appreciating the design decisions behind the library.
+
+** Chapter 3: The Storage Engine
+
+VivaceGraph is not a monolithic black box. It is a collection of carefully designed components that work together to provide a persistent, high-performance database. At the lowest level is the storage engine, which is responsible for how data is physically laid out on disk.
+
+The root of a VivaceGraph database is a directory you specify. Inside this directory, you will find several files and subdirectories, each with a specific purpose. For example, a graph created at ~"/var/tmp/my-app/"~ might look like this:
+
+#+BEGIN_EXAMPLE
+/var/tmp/my-app/
+├── .dirty
+├── config.dat
+├── heap.dat
+├── indexes.dat
+├── schema.dat
+├── edge/
+│   ├── config.dat
+│   ├── table.dat
+│   └── overflow.dat
+└── vertex/
+    ├── config.dat
+    ├── table.dat
+    └── overflow.dat
+#+END_EXAMPLE
+
+This chapter will explain the roles of these key files.
+
+*** On-Disk Format: Memory-Mapped Files
+
+The foundational technology for VivaceGraph's storage is the use of memory-mapped files, implemented in ~mmap.lisp~.
+
+A memory-mapped file (or 'mmap') is a feature of modern operating systems that allows a program to treat a file on disk as if it were a large array directly in the computer's memory (RAM). Instead of issuing explicit ~read()~ or ~write()~ system calls, you can simply access or modify bytes at a specific offset in this virtual memory region.
+
+This approach provides two critical advantages:
+
+1.  *Performance:* The operating system's kernel is responsible for managing the page cache, which keeps recently used parts of the file in physical RAM. Accessing data that is already in the page cache is nearly as fast as accessing main memory, eliminating much of the I/O overhead associated with traditional database architectures. When a part of the file is needed that isn't in RAM, the OS seamlessly pages it in from the disk.
+
+2.  *Large Data Sets:* Because the entire file is mapped into virtual memory, the database can be much larger than the physical RAM available. VivaceGraph can work with a 100 GB graph on a machine with only 16 GB of RAM, as the OS will efficiently move the necessary data pages between disk and memory as they are requested.
+
+The ~mmap.lisp~ file provides low-level primitives like ~get-byte~, ~set-byte~, and ~serialize-uint64~ that operate on these memory-mapped files. All higher-level data structures in VivaceGraph are built upon these primitives. The ~extend-mapped-file~ function allows these database files to grow dynamically as more data is added.
+
+*** The Heap (~allocator.lisp~): How object data is stored
+
+While a node's core metadata (like its ID and type) is stored elsewhere, the actual user-defined data—the values in the slots of your ~user~ or ~post~ objects—resides in a dedicated memory region called the *heap*, managed by the code in ~allocator.lisp~.
+
+This is not the Lisp runtime's heap; it is a separate, persistent heap implemented inside the ~heap.dat~ file. Its role is analogous to the ~malloc()~ and ~free()~ functions in C.
+
+- *Allocation:* When you save a node with data, VivaceGraph first serializes your Lisp data (e.g., the string `"alice"`) into a byte vector. It then calls the `allocate` function, which finds a block of space in ~heap.dat~ large enough to hold these bytes. The function returns a 64-bit integer representing the offset (the "pointer") to this block. This pointer is then stored as part of the node's core metadata.
+
+- *The Free List:* VivaceGraph employs an efficient memory management strategy. When a node is updated, its old data in the heap is not immediately erased. Instead, the block is marked as "free" and added to a *free list*. This is a hash table that maps block sizes to a list of available blocks of that size.
+
+- *Re-use:* The next time the `allocate` function is called for a new piece of data, it first checks the free list (in `maybe-allocate-from-free-list`) to see if an appropriately sized, reusable block is available. This recycling of space minimizes file growth and prevents fragmentation, which is critical for long-term performance. If no suitable block is found, the heap is extended.
+
+*** The Primary Tables (~linear-hash.lisp~): How nodes are indexed by ID
+
+Given a node's 16-byte UUID, how does VivaceGraph quickly find its core metadata (like its type, revision number, and the data-pointer into the heap)? The answer is a persistent, on-disk hash table. VivaceGraph uses a classic data structure called a *Linear Hash Table* for this purpose, implemented in ~linear-hash.lisp~.
+
+Separate linear hash tables are maintained for vertices and edges, each residing in their own subdirectories (~vertex/~ and ~edge/~).
+
+A linear hash table is designed for graceful, incremental growth, which is essential for a database that must expand without long pauses.
+- *Buckets:* The table is composed of on-disk "buckets." A hash function converts a node's UUID into a bucket number.
+- *Splitting:* When a bucket overflows with too many entries, the table does not resize all at once. Instead, it maintains a `next-split` pointer. It "splits" the single bucket at this pointer into two, re-distributing its contents. The pointer then advances to the next bucket. This ensures that the work of growing the hash table is spread out over time.
+- *Overflow:* If a bucket overflows before it is scheduled to be split, any additional items are placed in a separate ~overflow.dat~ file and chained together.
+
+For these primary node tables, the *key* is the node's 16-byte UUID, and the *value* is a compact, serialized representation of the node's core metadata — its *head*. As of storage format *v2* (the MVCC release) the head is 31 bytes for a vertex (71 for an edge, which appends its ~from~/~to~/~weight~) and is laid out append-only as:
+
+#+BEGIN_EXAMPLE
+  flags(1)  type-id(2)  revision(4)  data-pointer(8)  commit-epoch(8)  prev-pointer(8)
+#+END_EXAMPLE
+
+The first 15 bytes are byte-for-byte identical to the original (v1) head; ~commit-epoch~ and ~prev-pointer~ were *appended*, which is what makes the v1→v2 migration a simple matter (see Chapter 12, "MVCC: Immutable Versioned Nodes"). ~data-pointer~ is the all-important offset to the node's data in the heap file; ~commit-epoch~ and ~prev-pointer~ drive the versioning machinery described in that chapter. The on-disk storage version is recorded in each memory-mapped region; opening a v1 graph with a v2 build signals an error directing you to ~migrate-graph~.
+
+*** Durability and the Dirty File (~graph.lisp~)
+
+How can VivaceGraph ensure it wasn't terminated abruptly, leaving the database in an inconsistent state? It uses a simple but effective mechanism: the "dirty file."
+
+- *On Startup:* When you call ~make-graph~ or ~open-graph~, a hidden file named ~.dirty~ is created in the root of your database directory.
+- *On Shutdown:* When you call ~close-graph~, all files are safely synced to disk, and only then is the ~.dirty~ file deleted.
+- *On Next Startup:* When you next call ~open-graph~, it first checks for the existence of the ~.dirty~ file.
+  - If the file is *not* present, it means the last session was closed cleanly. The graph opens normally.
+  - If the file *is* present, it means the application crashed or was killed before ~close-graph~ could complete. The database is potentially in an inconsistent state, and ~open-graph~ will signal an error, refusing to open and instructing the user to run recovery procedures.
+
+This mechanism prevents the use of a potentially corrupted database, safeguarding your data integrity.
+
+
+** Chapter 4: The Object Model
+
+VivaceGraph's most distinctive feature is its deep integration with the Common Lisp Object System (CLOS). Unlike databases that treat data as simple property bags, VivaceGraph models data as a rich hierarchy of Lisp objects. This chapter explores how this object model is structured and how you can leverage it to build powerful, domain-specific applications.
+
+*** The ~node~, ~vertex~, and ~edge~ class hierarchy
+
+At the top of the hierarchy is the ~node~ class, defined in ~clos.lisp~ and ~node-class.lisp~. It is the abstract superclass for anything that can exist in the graph. Every ~node~ instance has a set of core, built-in properties that are essential for the database's internal management:
+
+- ~id~ :: A 16-byte UUID that uniquely identifies the node across the entire database.
+- ~revision~ :: An integer that increments with every update, used for optimistic concurrency control.
+- ~%deleted-p~ :: A boolean flag indicating whether the node has been marked for deletion.
+- ~%data-pointer~ :: A 64-bit integer pointing to the location of the node's serialized data in the heap file.
+- ~%type-id~ :: An internal integer representing the node's specific class (e.g., the ID for a `user` vertex).
+
+From ~node~, two fundamental classes inherit: ~vertex~ and ~edge~.
+
+- *~vertex~* (defined in ~vertex.lisp~): Represents the entities or objects in your graph. This is the class you will typically inherit from when defining your own node types like `user`, `product`, or `album`.
+
+- *~edge~* (defined in ~edge.lisp~): Represents the relationships between vertices. In addition to the standard ~node~ slots, an ~edge~ has three more essential properties:
+  - ~from~ :: The ID of the vertex where the edge originates.
+  - ~to~ :: The ID of the vertex where the edge terminates.
+  - ~weight~ :: A floating-point number (defaulting to 1.0) that can be used to assign a cost, strength, or rank to the relationship.
+
+This class structure is the foundation of your graph's schema. When you define a `(def-vertex user (person) ...)` you are creating a new Lisp class named `user` that inherits from `person`, which in turn inherits from `vertex`, and ultimately from `node`.
+
+*** CLOS Metaclass Integration (~node-class.lisp~): How ~def-vertex~ works
+
+How does VivaceGraph intercept standard slot access to read from and write to the database? The answer lies in a powerful feature of CLOS: *metaclasses*.
+
+VivaceGraph defines its own metaclass called ~graph-class~ (in ~clos.lisp~) and ~node-class~ (in ~node-class.lisp~). When you use ~def-vertex~ or ~def-edge~, you are implicitly specifying that your new class should use this custom metaclass instead of the default ~standard-class~.
+
+This special metaclass allows VivaceGraph to customize the fundamental behavior of your objects. Specifically, it overrides the low-level functions that CLOS uses for handling slot operations:
+
+- ~slot-value-using-class~ :: This method is called whenever you try to read a slot's value (e.g., `(name my-user)`). VivaceGraph's specialized version first checks if the node's data has been loaded from the heap. If not, it reads the serialized bytes from disk, deserializes them into a Lisp data structure (an alist), and caches it. It then retrieves the requested value from this data structure. For subsequent accesses, the data is already in memory.
+
+- `(setf slot-value-using-class)` :: This method is called when you try to set a slot's value (e.g., `(setf (name my-user-copy) "new name")`). The specialized version intercepts this call. Instead of just setting a value in a Lisp object in RAM, it updates the internal data alist. Crucially, if this modification happens within a transaction, it flags the node as "dirty" and adds it to the transaction's *write-set*, ensuring the change will be persisted to disk upon commit.
+
+This elegant metaclass architecture is what makes the integration between your Lisp code and the persistent database seamless. You interact with a standard Lisp object, and the metaclass handles the complex machinery of persistence, lazy loading, and transactional state management automatically.
+
+*** Persistent vs. Ephemeral Slots
+
+When you define a class with ~def-vertex~ or ~def-edge~, VivaceGraph makes a distinction between two types of slots, though this is managed implicitly by the framework.
+
+1.  *Persistent Slots:* These are the standard data slots you define in your schema.
+    #+BEGIN_SRC lisp
+      (def-vertex user ()
+        ((username :type string)   ; This is a persistent slot
+         (last-login :type integer)) ; This is also a persistent slot
+        :my-app)
+    #+END_SRC
+    The values of these slots are serialized and written to the heap file (`heap.dat`) when a node is saved. They are durable and will be present when the database is reopened in a later session. The metaclass machinery described above is primarily concerned with managing these persistent slots.
+
+2.  *Ephemeral Slots (Internal/Meta):* These are the slots that manage the node's state within the database engine, such as ~id~, ~revision~, ~%deleted-p~, ~%data-pointer~, and — as of the MVCC release — ~commit-epoch~ and ~prev-pointer~ (the version-chain fields described in Chapter 12). Their values are part of the core node metadata (the head) stored in the primary vertex/edge tables, not in the general-purpose heap. They are managed internally by VivaceGraph and are not typically meant for direct modification by application code (with the exception of reading `id` or `revision`).
+
+In the current implementation of VivaceGraph, the distinction is made for you. All slots you define in a ~def-vertex~ call are treated as persistent. All the built-in slots of the base `node`, `vertex`, and `edge` classes are treated as internal meta-slots. This design simplifies schema definition while providing the necessary separation for the database engine to function correctly.
+
+
+** Chapter 5: Transactions and Concurrency
+
+In any serious database system, it's not enough to simply store data; the system must guarantee that the data remains consistent and correct, even when multiple processes are reading and writing at the same time. This is the role of the transaction and concurrency control systems. VivaceGraph provides a robust, ACID-compliant transactional model to ensure data integrity.
+
+*** The Transaction Manager (~transactions.lisp~)
+
+At the heart of VivaceGraph's consistency model is the *Transaction Manager*. Every graph instance has a single, dedicated `transaction-manager` object, defined in ~transactions.lisp~. You do not need to create this object yourself; it is initialized automatically when you call ~make-graph~ or ~open-graph~.
+
+The transaction manager is the central orchestrator responsible for:
+
+- *Creating and Tracking Transactions:* When you start a new transaction, the manager creates a ~tx~ object to represent that unit of work and tracks its state (~:active~, ~:committing~, ~:committed~, or ~:aborted~).
+- *Assigning Transaction IDs:* Once a transaction is ready to be committed, the manager assigns it a unique, monotonically increasing transaction ID. This ID is crucial for the replication system and for validation.
+- *Managing the Commit Log:* The manager is responsible for writing committed transactions to the on-disk replication log, ensuring that changes are durable.
+
+Every operation that modifies the graph occurs within the context of the currently active transaction, which is bound to the special variable ~*transaction*~.
+
+*** The ~with-transaction~ Macro
+
+For application developers, the primary interface to the transaction system is the ~with-transaction~ macro. This macro provides the essential guarantee of **atomicity**: all the database operations within its body are treated as a single, indivisible unit. They will either all succeed and be permanently saved, or they will all be discarded as if they never happened.
+
+#+BEGIN_EXAMPLE
+  All database writes MUST happen inside a ~with-transaction~ block.
+#+END_EXAMPLE
+
+Here is the canonical example of updating a node, which demonstrates the use of the macro:
+
+#+BEGIN_SRC lisp
+  (with-transaction ()
+    ;; 1. Fetch the original, immutable node from the database.
+    (let* ((user (find-user-by-username "alice"))
+           ;; 2. Create a mutable copy to work with.
+           (user-copy (copy user)))
+      
+      ;; 3. Modify the copy. This change is tracked by the current transaction.
+      (setf (username user-copy) "alice_in_wonderland")
+      
+      ;; 4. Save the modified copy.
+      (save user-copy)))
+  ;; <-- At this point, the transaction is automatically committed.
+  ;; The change to Alice's username is now durable and visible to all
+  ;; other processes.
+#+END_SRC
+
+If any error had occurred within the body of the ~with-transaction~ block (e.g., a failed validation, a network error, or a simple Lisp error), the transaction would be automatically *rolled back*. The changes to Alice's username would be discarded, and the database would be left in the state it was in before the transaction began.
+
+*** Read/Write Sets and Validation
+
+How does VivaceGraph handle multiple users trying to modify the database at the same time? It uses a high-concurrency strategy called *Optimistic Concurrency Control* based on read/write set validation.
+
+Every active transaction maintains three sets of objects:
+
+1.  *Read-Set:* A set of all the nodes that have been read *from the main database* during the transaction. When `(find-user-by-username "alice")` is called, the original `alice` node is added to the read-set.
+2.  *Create-Set:* A set of all brand-new nodes created within the transaction.
+3.  *Write-Set:* A set of all existing nodes that have been modified (via `copy` and `save`) or deleted (`mark-deleted`) within the transaction.
+
+When ~with-transaction~ reaches its end and is ready to commit, it performs a critical *validation* step:
+
+#+BEGIN_QUOTE
+  "Has any other transaction committed a change to a node that I read or wrote since I started?"
+#+END_QUOTE
+
+Specifically, the transaction manager checks if the current transaction's *write-set* intersects with the *read-set* or *write-set* of any other transaction that has committed since the current one began.
+
+- *Success:* If there are no intersections, the transaction is valid. It is assigned a new transaction ID, and its changes are written permanently to disk.
+- *Failure:* If there is an intersection (e.g., another process changed Alice's username right after we read it but before we committed our change), a `validation-conflict` error is signaled. The ~with-transaction~ macro catches this error, rolls back all changes, and *automatically retries the entire block of code from the beginning*.
+
+This optimistic approach avoids taking heavyweight locks during the transaction's execution, allowing for very high read performance. In the rare case of a conflict, the work is simply and safely retried.
+
+*** Locking and Concurrency (~rw-lock.lisp~)
+
+While the transactional system uses an optimistic model for application-level data, the database still relies on low-level locks to protect the integrity of its own internal data structures. VivaceGraph implements a custom, fair *Read-Write Lock*, defined in ~rw-lock.lisp~.
+
+A read-write lock enforces a simple but powerful rule:
+- Any number of "readers" can hold the lock simultaneously.
+- Only one "writer" can hold the lock exclusively. If a writer holds the lock, no readers can enter.
+
+VivaceGraph uses these locks to protect critical, shared data structures:
+- *The Transaction Manager:* A lock ensures that assigning new transaction IDs is a serialized, thread-safe process.
+- *Hash Table Buckets:* The buckets of the on-disk linear hash tables are locked during writes to prevent data corruption.
+- *View Groups:* When a view is being updated, its parent group is locked to prevent other threads from reading inconsistent index data.
+
+The public API for these locks are the ~with-read-lock~ and ~with-write-lock~ macros. As an application developer, you will rarely, if ever, need to use these locks directly. The transaction system and the view manager handle the necessary locking for you. However, their existence is key to understanding how VivaceGraph guarantees thread safety at the lowest levels of the storage engine.
+
+
+* Part III: Querying and Indexing
+
+Now that you understand how VivaceGraph stores its data, we'll explore how to retrieve it. This part covers the declarative Prolog query language and the powerful indexing system that makes queries fast and efficient.
+
+** Chapter 6: The Prolog Query Language
+
+At the core of VivaceGraph's data retrieval capabilities is a powerful, embedded Prolog engine. If you're new to Prolog, don't worry. You don't need to be an expert to write effective queries. The core idea is simple: instead of writing procedural code telling the database *how* to find your data, you write declarative rules describing *what* data you are looking for. The engine then uses its powerful pattern-matching and search capabilities to find all possible solutions that fit your description.
+
+*** Introduction to Prolog Concepts (Unification, Backtracking)
+
+To understand VivaceGraph queries, you only need to grasp two fundamental Prolog concepts: unification and backtracking.
+
+**** Variables
+In VivaceGraph's Prolog, a variable is any symbol that begins with a question mark, such as ~?user~, ~?post~, or simply ~?x~. Variables are placeholders that the engine will attempt to fill with concrete values as it searches for solutions.
+
+**** Goals
+A query is composed of one or more *goals*. A goal is a single parenthesized expression, like `(is-a ?x user)`. The engine's job is to prove that this goal can be true by finding a value for ~?x~ that is, in fact, a user.
+
+**** Unification: The Art of Making Things Equal
+The most important concept is *unification*, which is performed by the `=` predicate. Unification is like a powerful form of assignment that works in multiple directions. It's the engine's way of saying, "I will try to make these two things equal."
+
+- *Binding a variable to a value:*
+  #+BEGIN_SRC lisp
+    (= ?x 10) ; ?x is now bound to the value 10.
+  #+END_SRC
+
+- *Binding a variable to another variable:*
+  #+BEGIN_SRC lisp
+    (= ?x ?y) ; ?x and ?y are now linked. If ?x later becomes "alice",
+              ; ?y also becomes "alice".
+  #+END_SRC
+
+- *Pattern Matching:*
+  #+BEGIN_SRC lisp
+    (follows ?user ?friend) ; This is the most common use. The engine will search
+                            ; the database for a `follows` edge. If it finds one,
+                            ; it will unify ?user with the edge's source node
+                            ; and ?friend with the edge's destination node.
+  #+END_SRC
+
+**** Backtracking: The Engine's Ability to "Try Again"
+This is the magic that allows the engine to find *all* possible solutions to a query. When a goal succeeds, the engine moves to the next goal. If a goal *fails*, the engine doesn't just give up. It *backtracks* to the previous successful goal and asks, "Can you succeed in a *different way*?"
+
+Let's trace a simple query to see this in action: "Find all posts written by Alice."
+
+*Query:*
+#+BEGIN_SRC lisp
+  (is-a ?user user)
+  (node-slot-value ?user username "alice")
+  (authored ?user ?post)
+#+END_SRC
+
+*Execution Trace:*
+1.  *Goal 1:* ~(is-a ?user user)~. The engine finds the first user object in the database. Let's say it's Bob. It unifies ~?user~ with the Bob object.
+2.  *Goal 2:* ~(node-slot-value ?user username "alice")~. The engine checks if Bob's username is "alice". It is not. This goal *fails*.
+3.  *Backtrack!* The engine goes back to Goal 1 and says, "Give me the *next* user." It finds the Alice object. It unifies ~?user~ with the Alice object.
+4.  *Goal 2 again:* ~(node-slot-value ?user username "alice")~. The engine checks if Alice's username is "alice". It is! This goal *succeeds*.
+5.  *Goal 3:* ~(authored ?user ?post)~. The engine now searches for all ~authored~ edges starting from the Alice object.
+    - It finds the first one, which points to Post #1. It unifies ~?post~ with the Post #1 object. We have found a complete solution: `(?user=Alice, ?post=Post#1)`. The engine reports this solution.
+6.  *Backtrack!* The engine asks Goal 3, "Do you have another solution for an edge starting from Alice?"
+    - Let's say it finds another, pointing to Post #2. It unifies ~?post~ with the Post #2 object. We have found a second solution: `(?user=Alice, ?post=Post#2)`.
+7.  *Backtrack!* The engine asks Goal 3 again. There are no more posts by Alice. Goal 3 now fails.
+8.  *Backtrack!* The engine returns to Goal 2, but Goal 2 has no other way to succeed for Alice. It fails.
+9.  *Backtrack!* The engine returns to Goal 1. It asks for the next user. There are no more users. Goal 1 fails.
+
+The query is now complete, having found all possible solutions.
+
+*** The ~select~ Macro Family (~select-one~, ~select-flat~)
+
+The primary way you will execute these queries is with the ~select~ macro. Its general form is:
+#+BEGIN_SRC lisp
+  (select (options) (variables)
+    ... goals ...)
+#+END_SRC
+
+- ~options~ :: A property list for query options. The most common is ~:flat t~.
+- ~variables~ :: A list of the variables whose values you want to be returned in the result.
+
+Let's find the usernames of all users in the database.
+#+BEGIN_SRC lisp
+  (select () (?name)
+    (is-a ?user user)
+    (node-slot-value ?user username ?name))
+  ;;=> (("alice") ("bob"))
+#+END_SRC
+By default, ~select~ returns a list of lists, with each inner list containing the values for the variables from one solution.
+
+This is often inconvenient, so we can use the ~:flat t~ option.
+#+BEGIN_SRC lisp
+  (select (:flat t) (?name)
+    (is-a ?user user)
+    (node-slot-value ?user username ?name))
+  ;;=> ("alice" "bob")
+#+END_SRC
+
+Because this is so common, VivaceGraph provides two convenience macros:
+- ~select-flat~ is shorthand for `(select (:flat t) ...)`.
+- ~select-one~ is for when you only want the *first value* of the *first variable* from the *first solution*. It is extremely useful for lookups where you expect only one result.
+
+#+BEGIN_SRC lisp
+  ;; Find the user object for "bob"
+  (select-one (?user)
+    (is-a ?user user)
+    (node-slot-value ?user username "bob"))
+  ;;=> #<USER "bob">
+#+END_SRC
+
+*** Built-in Predicates
+
+VivaceGraph provides a rich set of built-in predicates to use as goals in your queries. Here are the most important ones.
+
+**** Node and Edge Predicates
+| Predicate                                   | Description                                                     |
+|---------------------------------------------+-----------------------------------------------------------------|
+| ~(is-a ?variable class-name)~               | Succeeds if ~?variable~ is a node of the given ~class-name~.    |
+| ~(<edge-name> ?from ?to)~                   | Succeeds if an edge of type ~<edge-name>~ exists.               |
+| ~(<edge-name> ?from ?to ?weight)~           | Also unifies ~?weight~ with the edge's weight.                  |
+| ~(outgoing-edges ?vertex ?edge-var)~        | Finds all outgoing edges from ~?vertex~.                        |
+| ~(incoming-edges ?vertex ?edge-var)~        | Finds all incoming edges.                                       |
+
+*Example:* Find all users who follow Bob.
+#+BEGIN_SRC lisp
+  (select-flat (?follower)
+    (is-a ?bob user)
+    (node-slot-value ?bob username "bob")
+    (follows ?follower ?bob))
+#+END_SRC
+
+**** Slot and Property Predicates
+| Predicate                                   | Description                                                     |
+|---------------------------------------------+-----------------------------------------------------------------|
+| ~(node-slot-value ?node slot-name ?value)~  | Unifies ~?value~ with the value of the node's slot.             |
+| ~(weight ?edge ?weight)~                    | Unifies ~?weight~ with the edge's weight (same as the 3-arg version). |
+
+*Example:* Find the text of all posts, along with their timestamp.
+#+BEGIN_SRC lisp
+  (select () (?text ?time)
+    (is-a ?post post)
+    (node-slot-value ?post text ?text)
+    (node-slot-value ?post timestamp ?time))
+#+END_SRC
+
+**** Logic, Control, and Lisp Integration
+| Predicate                               | Description                                                              |
+|-----------------------------------------+--------------------------------------------------------------------------|
+| ~(= ?x ?y)~                             | Unifies ~?x~ and ~?y~.                                                   |
+| ~(/= ?x ?y)~                            | Succeeds if ~?x~ and ~?y~ are not equal.                                 |
+| ~(> ?x ?y)~, ~(< ?x ?y)~, etc.          | Standard numeric comparisons.                                            |
+| ~(lisp ?var lisp-expression)~           | Evaluates the Lisp expression and unifies the result with ~?var~.        |
+| ~(or goal1 goal2 ... )~                 | Succeeds if /any/ of the goals succeed.                                  |
+| ~(not goal)~                            | Succeeds if the nested ~goal~ fails.                                     |
+
+*Example:* Use the powerful `lisp` predicate to find posts with more than 10 characters.
+#+BEGIN_SRC lisp
+  (select-flat (?text)
+    (is-a ?post post)
+    (node-slot-value ?post text ?text)
+    (lisp ?length (length ?text))
+    (> ?length 10))
+#+END_SRC
+/Note:/ For the query engine to see Lisp variables used inside a `(lisp ...)` form, they must be declared `special`.
+
+*** Writing Complex Queries with Multiple Goals
+
+The real power of this system comes from chaining goals together to express complex questions. Each goal in the sequence acts as a filter or a generator for the next one.
+
+*Question:* "Find the text of posts written by users that Alice follows."
+
+This is a two-hop traversal: Alice -> Follows -> User -> Authored -> Post.
+
+#+BEGIN_SRC lisp
+  ;; Assume (find-user-by-username "alice") is defined as before.
+  (let ((alice (find-user-by-username "alice")))
+    (declare (special alice))
+
+    (select-flat (?text)
+      ;; Goal 1: Start with Alice.
+      (lisp ?alice-node alice)
+
+      ;; Goal 2: Find a user that Alice follows.
+      ;; The engine finds Bob first. ?friend is unified with the Bob object.
+      (follows ?alice-node ?friend)
+
+      ;; Goal 3: Find a post authored by that friend (Bob).
+      ;; The engine finds "Hello, graph world!". ?post is unified with that post object.
+      (authored ?friend ?post)
+
+      ;; Goal 4: Get the text of that post.
+      (node-slot-value ?post text ?text)))
+    ;; The engine backtracks on Goal 2, finds Carol, but she has no posts, so Goal 3 fails.
+    ;; The final result is ("Hello, graph world!").
+#+END_SRC
+
+*** Pattern Matching Graph Structures
+
+The most iconic graph query is finding "friends of a friend." Let's find users who are followed by people Alice follows, but who are not Alice herself and are not already followed by Alice.
+
+This translates to the pattern: `(Alice) -> (friend) -> (friend-of-friend)`.
+
+#+BEGIN_SRC lisp
+  (let ((alice (find-user-by-username "alice")))
+    (declare (special alice))
+
+    (select-flat (?fof-name)
+      ;; Start with Alice
+      (lisp ?alice-node alice)
+
+      ;; Find a direct friend
+      (follows ?alice-node ?friend)
+
+      ;; Find a friend-of-a-friend (FOAF)
+      (follows ?friend ?fof)
+
+      ;; Constraint 1: The FOAF cannot be Alice herself.
+      (/= ?fof ?alice-node)
+
+      ;; Constraint 2: The FOAF cannot be someone Alice already follows.
+      (not (follows ?alice-node ?fof))
+
+      ;; Get the FOAF's name
+      (node-slot-value ?fof username ?fof-name)))
+#+END_SRC
+
+This query elegantly expresses a complex set of relationships and constraints. The Prolog engine handles the difficult work of searching, matching, and backtracking to give you exactly the results you described. This declarative power is the primary reason for choosing a graph database, and VivaceGraph provides a uniquely powerful and Lisp-integrated way to harness it.
+
+
+** Chapter 7: Writing Custom Functors
+
+In the previous chapter, you saw how the `(lisp ...)` predicate provides a powerful escape hatch to run arbitrary Lisp code within a query. While this is excellent for one-off calculations or simple filters, you will often encounter situations where you need to reuse complex logic, improve query readability, or optimize performance-critical operations.
+
+For these cases, VivaceGraph allows you to extend the query language itself by defining your own custom predicates. In Prolog terminology, these are called *functors*. This chapter will show you how to create them and why they are one of the most powerful features of the system.
+
+*** Extending the Query Language with ~def-global-prolog-functor~
+
+A custom functor is essentially a Lisp function with a special signature that the Prolog engine knows how to call. You define one using the ~def-global-prolog-functor~ macro.
+
+The key difference between a normal Lisp function and a Prolog functor is how it signals success. A normal function returns a value. A Prolog functor, when it succeeds, must call a *continuation*—a function passed as its final argument that represents "the rest of the query."
+
+**** Syntax
+
+The basic structure of a custom functor is:
+
+#+BEGIN_SRC lisp
+  (def-global-prolog-functor <functor-name>/<arity> (arg1 arg2 ... cont)
+    "This is the body of your Lisp function."
+    ;; 1. Dereference any Prolog variables to get their Lisp values.
+    (let ((val1 (var-deref arg1))
+          (val2 (var-deref arg2)))
+      ;; 2. Perform your logic.
+      (when (your-lisp-condition-is-true val1 val2)
+        ;; 3. If the condition is met, call the continuation.
+        ;;    This tells the engine the goal has succeeded.
+        (funcall cont))))
+#+END_SRC
+
+- *`<functor-name>/<arity>`*: The name must follow this convention. For a functor named `my-functor` that takes 2 arguments, you would write `my-functor/2`.
+- *`arg1, arg2, ...`*: These are the arguments to your predicate as they appear in a query. They will be Prolog `var` objects.
+- *`cont`*: This is the crucial *continuation* argument. It is a function that you *must* call to signal that your goal has succeeded and that the engine should proceed to the next goal in the query. If you do not call `cont`, the engine assumes your goal has failed and will initiate backtracking.
+- *`var-deref`*: It is essential to use `var-deref` on your arguments inside the functor to get their actual, bound Lisp values.
+
+**** A Simple Example: `divisible-by/2`
+
+Let's create a simple predicate `(divisible-by ?x ?y)` that succeeds if the number `?x` is evenly divisible by `?y`.
+
+#+BEGIN_SRC lisp
+  (def-global-prolog-functor divisible-by/2 (dividend divisor cont)
+    ;; Dereference the Prolog variables to get the actual numbers.
+    (let ((num-dividend (var-deref dividend))
+          (num-divisor (var-deref divisor)))
+      ;; Check that both are numbers before proceeding.
+      (when (and (numberp num-dividend)
+                 (numberp num-divisor))
+        ;; Perform the divisibility check.
+        (when (zerop (mod num-dividend num-divisor))
+          ;; Success! Call the continuation to proceed with the query.
+          (funcall cont)))))
+#+END_SRC
+
+Now we can use this new predicate directly in any query, just like a built-in one.
+
+*Query:* Find all posts whose timestamp is divisible by 7.
+#+BEGIN_SRC lisp
+  (select-flat (?text)
+    (is-a ?post post)
+    (node-slot-value ?post timestamp ?time)
+    (node-slot-value ?post text ?text)
+    ;; Our new functor in action!
+    (divisible-by ?time 7))
+#+END_SRC
+
+This is much cleaner and more readable than the equivalent query using the `lisp` predicate:
+#+BEGIN_SRC lisp
+  (select-flat (?text)
+    (is-a ?post post)
+    (node-slot-value ?post timestamp ?time)
+    (node-slot-value ?post text ?text)
+    ;; The less readable way:
+    (lisp ?is-divisible (zerop (mod ?time 7)))
+    (= ?is-divisible t))
+#+END_SRC
+
+*** Use Cases for Custom Functors
+
+Custom functors are the key to building high-performance, domain-specific graph applications. They allow you to encapsulate complex logic and create highly optimized query entry points.
+
+**** Use Case 1: Complex Validation and Business Logic
+
+Imagine your application needs to validate that a string is a valid Social Security Number (SSN). The logic for this is non-trivial and may be used in many different queries. Instead of cluttering your queries with a complex `lisp` call, you can encapsulate it.
+
+Let's assume you have a Lisp function `(ssn-is-valid-p ssn-string)` that returns `t` or `nil`.
+
+#+BEGIN_SRC lisp
+  (def-global-prolog-functor valid-ssn/1 (ssn-var cont)
+    (let ((ssn-string (var-deref ssn-var)))
+      (when (and (stringp ssn-string)
+                 (ssn-is-valid-p ssn-string))
+        (funcall cont))))
+
+  ;; Now your query is clean and expresses its intent perfectly.
+  (select-flat (?user)
+    (is-a ?user person)
+    (node-slot-value ?user ssn ?ssn)
+    (valid-ssn ?ssn))
+#+END_SRC
+
+**** Use Case 2: Creating Optimized Query Entry Points (Geospatial)
+
+This is one of the most powerful uses of custom functors: creating a new way to *generate* solutions instead of just filtering them.
+
+Imagine our `user` vertices have a `location` slot storing a `'(latitude longitude)` list. We want to find all users within a 10km radius of a given point. Doing this with `(is-a ?user user)` would require scanning every single user in the database and calculating the distance for each one—this is extremely inefficient.
+
+Instead, we can write a functor that *only* yields users that match the criteria. This is possible because the functor can contain its own loops and logic for finding solutions.
+
+Let's assume we have a helper Lisp function, `(haversine-distance lat1 lon1 lat2 lon2)`, that calculates the distance in kilometers.
+
+#+BEGIN_SRC lisp
+  (def-global-prolog-functor users-within-radius/4 (center-lat center-lon radius ?user-var cont)
+    ;; This functor will generate solutions rather than just testing them.
+    ;; Note that ?user-var starts as an unbound variable.
+    
+    (let ((c-lat (var-deref center-lat))
+          (c-lon (var-deref center-lon))
+          (rad (var-deref radius)))
+          
+      ;; Iterate over all user vertices in the graph.
+      ;; (In a real high-performance system, this might query a separate geospatial index
+      ;; like an R-Tree, but for this example, we'll iterate).
+      (map-vertices
+       (lambda (user-node)
+         (let ((loc (location user-node))) ; Assumes a slot accessor 'location'
+           (when (and loc (listp loc))
+             (let ((dist (haversine-distance c-lat c-lon (first loc) (second loc))))
+               ;; If the user is within the radius...
+               (when (<= dist rad)
+                 ;; ...then this is a valid solution.
+                 ;; We unify our unbound variable with the user node...
+                 (let ((old-trail (fill-pointer *trail*)))
+                   (when (unify ?user-var user-node)
+                     ;; ...and call the continuation to proceed with this solution.
+                     (funcall cont))
+                   ;; The engine will backtrack here, so we must undo our binding.
+                   (undo-bindings old-trail)))))))
+       *graph* :vertex-type 'user)))
+
+  ;; Now, the query to find all users near the Eiffel Tower is trivial and efficient.
+  ;; NB: in a query goal you write the predicate name WITHOUT the /arity suffix
+  ;; (the compiler appends it from the goal's argument count), just as with the
+  ;; built-in predicates above.
+  (select-flat (?name)
+    (users-within-radius 48.8584 2.2945 10.0 ?user)
+    (node-slot-value ?user username ?name))
+#+END_SRC
+
+In this advanced pattern, the custom functor acts as an efficient, domain-specific index. It bridges the gap between the declarative query language and the high-performance, procedural code needed to implement custom access paths, giving you the best of both worlds.
+
+
+** Chapter 8: Indexing with Views
+
+You've seen how to create nodes and query them using the Prolog engine. But what happens when your graph grows to millions of nodes? Searching for a user by their username by iterating through every single user in the database, as we did in the last chapter, will become unacceptably slow.
+
+This is the exact problem that indexes solve in a traditional relational database. In VivaceGraph, the equivalent and more powerful concept is the *view*. This chapter will teach you how to use views to make your queries fast and to perform powerful data aggregations.
+
+*** The "Why": Avoiding Full Graph Scans
+
+Imagine you have a library with millions of books. If you want to find a book by its unique ISBN (its ID), you can go straight to the correct shelf. This is fast and efficient. This is analogous to looking up a VivaceGraph node with ~lookup-vertex~—a direct, indexed operation.
+
+Now, imagine you want to find all books written by "Herman Melville." Without a card catalog sorted by author, your only option is to walk down every aisle, pull every book off the shelf, and check the author's name. This is a *full table scan*, and it's exactly what happens in a database without an index.
+
+A view in VivaceGraph is like creating a new, specialized card catalog for your data. When you define a view on the `username` slot, you are telling VivaceGraph: "Please maintain a separate, sorted list that maps usernames directly to the nodes that contain them."
+
+When you later query for a user by name, VivaceGraph can consult this sorted list (the view's index) to find the answer instantly, without having to scan all the user nodes.
+
+Under the hood, VivaceGraph implements these view indexes using a persistent, on-disk *skip-list* data structure (see ~skip-list.lisp~), which provides very fast lookups, insertions, and deletions, making it perfect for maintaining real-time indexes.
+
+*** Defining Map-Only Views (~def-view~ with ~:map~) for Secondary Indexes
+
+The most common use for a view is to create a simple secondary index on a node property. This is done using the ~:map~ part of the ~def-view~ macro. The "map" phase defines how each node is transformed into one or more key-value pairs for the index.
+
+**** Syntax
+#+BEGIN_SRC lisp
+  (def-view <view-name> <sort-order> (<class-name> <graph-name>)
+    (:map
+     (lambda (node-instance)
+       ;; This lambda is called for every node of type <class-name>
+       ;; that is created or updated.
+       (yield (key-to-index) (value-to-store)))))
+#+END_SRC
+
+- *`<view-name>`*: The name you will use to refer to this index (e.g., `user-by-username`).
+- *`<sort-order>`*: Determines how the index is sorted. Use ~:lessp~ for ascending order (A-Z, 0-9) and ~:greaterp~ for descending order.
+- *`(<class-name> <graph-name>)`*: Specifies which node type this view applies to.
+- *`lambda (node-instance)`*: A function that receives an instance of your node class.
+- *`yield (key) (value)`*: The core of the map function. You call `yield` to create an entry in the index.
+  - The `key` is the value you want to be able to search for (e.g., a username, an email address, a timestamp).
+  - The `value` is typically `nil` for simple indexes, as the index automatically stores the node's ID.
+
+**** Example: Indexing Usernames and Post Timestamps
+
+Let's create two essential indexes for our social application.
+
+1.  An index to find users by their username.
+2.  An index to find posts by their creation time.
+
+#+BEGIN_SRC lisp
+  ;; From Chapter 2, our schema:
+  ;; (def-vertex user () ((username :type string)) :social-app)
+  ;; (def-vertex post () ((text :type string) (timestamp :type integer)) :social-app)
+
+  ;; 1. The username index
+  (def-view user-by-username :lessp (user :social-app)
+    (:map
+     (lambda (user-node)
+       (when (username user-node)
+         (yield (username user-node) nil)))))
+
+  ;; 2. The post timestamp index (sorted newest first)
+  (def-view posts-by-time :greaterp (post :social-app)
+    (:map
+     (lambda (post-node)
+       (when (timestamp post-node)
+         (yield (timestamp post-node) nil)))))
+#+END_SRC
+
+That's it! VivaceGraph will now automatically maintain these indexes. When you create a new user, an entry will be added to the `user-by-username` view. If you update a user's name, the view will be automatically updated to reflect the change.
+
+*** Defining Map-Reduce Views for Aggregation
+
+Views can do more than just create simple lookup indexes. They can also perform powerful data aggregations using a *map-reduce* pattern. This is perfect for pre-calculating values like counts, sums, or averages.
+
+The map phase works as before, but the `yield`ed values become the input to the reduce phase.
+
+- *`:reduce`*: You provide a second lambda function that takes two arguments: a list of keys and a list of their corresponding values. Its job is to "reduce" this list of values down to a single aggregate value.
+
+**** Example: Counting Followers
+
+A very common need in a social app is to know how many followers a user has. Calculating this on the fly would require counting all incoming `follows` edges every time, which is inefficient. We can pre-calculate it with a map-reduce view.
+
+Our view will operate on the ~follows~ edge class.
+
+#+BEGIN_SRC lisp
+  (def-view follower-count :greaterp (follows :social-app)
+    ;; The MAP phase:
+    ;; For every 'follows' edge, emit a count of 1 for the user being followed.
+    (:map
+     (lambda (follows-edge)
+       ;; 'to' is the user being followed. We use their ID as the key.
+       (yield (string-id (to follows-edge)) 1)))
+
+    ;; The REDUCE phase:
+    ;; Take a list of keys and values and return a single aggregated value.
+    (:reduce
+     (lambda (keys values)
+       ;; We are just counting, so we can ignore the keys.
+       (declare (ignore keys))
+       ;; The values will be a list of 1s, so we just add them up.
+       (apply #'+ values))))
+#+END_SRC
+
+*How it works:*
+1.  When Alice follows Bob, a new `follows` edge is created. The `:map` function is triggered. It yields `("<bob's-id>" 1)`.
+2.  When Carol follows Bob, another `follows` edge is created. The map function yields `("<bob's-id>" 1)`.
+3.  The reduce function is now invoked for the key `"<bob's-id>"`. It receives `keys` = `("<bob's-id>", "<bob's-id>")` and `values` = `(1, 1)`.
+4.  It computes `(apply #'+ '(1 1))`, which returns `2`.
+5.  The view stores the final aggregated result: the key `"<bob's-id>"` now maps to the reduced value `2`.
+
+This follower count is now stored directly in the view's index and is updated automatically whenever a user gains or loses a follower.
+
+*** Querying Views with ~invoke-graph-view~ and ~map-reduced-view~
+
+Once your views are defined, you need a way to query them.
+
+**** Querying Map-Only Views
+
+For simple indexes created with only a `:map` function, you use the function ~invoke-graph-view~.
+
+#+BEGIN_SRC lisp
+  ;; Usage: (invoke-graph-view 'class-name 'view-name :key <search-key>)
+
+  ;; Find the user with the username "alice"
+  (invoke-graph-view 'user 'user-by-username :key "alice")
+#+END_SRC
+
+This returns a list of alists, with each alist representing a match:
+#+BEGIN_EXAMPLE
+  (((:KEY . "alice") (:ID . "uuid-of-alice") (:VALUE)))
+#+END_EXAMPLE
+
+You can also use it within a Prolog query with the ~invoke-view~ predicate. This is often more convenient as it performs the unification for you.
+
+#+BEGIN_SRC lisp
+  (select-one (?user-object)
+    (invoke-view user user-by-username "alice" ?user-object))
+  ;;=> #<USER ...>
+#+END_SRC
+
+**** Querying Map-Reduce Views
+
+To query the aggregated results of a map-reduce view, you use the function ~map-reduced-view~.
+
+#+BEGIN_SRC lisp
+  ;; Let's get Bob's follower count. We need a helper to display the result.
+  (defun print-follower-count (user-id _ count)
+    (format t "User ~a has ~a followers.~%" user-id count))
+
+  ;; Now, call the function on our view.
+  (map-reduced-view #'print-follower-count 'follows 'follower-count)
+
+  ;; If you want the data back as a list instead of printing it:
+  (map-reduced-view (lambda (user-id _ count) (list user-id count))
+                    'follows 'follower-count
+                    :collect-p t)
+  ;;=> (("<bob's-id>" 2) ("<carol's-id>" 1))
+#+END_SRC
+
+You can also use ~invoke-graph-view~ on a reduce view by passing the `:group-p t` option. This is useful for getting the aggregate value for a *specific* key.
+
+#+BEGIN_SRC lisp
+  (invoke-graph-view 'follows 'follower-count :key "<bob's-id>" :group-p t)
+  ;;=> ((:KEY . "<bob's-id>") (:ID) (:VALUE . 2))
+#+END_SRC
+
+Views are the cornerstone of building high-performance VivaceGraph applications. They provide a flexible and powerful mechanism for both secondary indexing and real-time data aggregation.
+
+* Part IV: Advanced Topics & API
+
+This final part of the manual covers advanced features that allow VivaceGraph to integrate with a broader ecosystem of tools and services. We will explore the built-in REST API, the replication system for high availability, and the procedures for backing up and restoring your database.
+
+** Chapter 9: The REST API (~rest.lisp~)
+
+While VivaceGraph is written in Common Lisp, your applications don't have to be. VivaceGraph includes a built-in, high-performance web server that exposes a complete RESTful API for graph operations. This allows programs written in Python, JavaScript, Java, or any other language to create, read, update, and delete nodes and edges over standard HTTP.
+
+The REST server is implemented using the Clack web server interface and the Ningle routing library, as seen in ~rest.lisp~.
+
+*** Starting the Server
+
+The REST server is not started by default when you open a graph. You must start it manually.
+
+- To start the server:
+  #+BEGIN_SRC lisp
+    ;; The server will start on the default port (8080).
+    (start-rest)
+  #+END_SRC
+
+- To specify a different port:
+  #+BEGIN_SRC lisp
+    (start-rest 9090)
+  #+END_SRC
+  
+  The ~start-rest~ function returns a handle to the running server instance. You should save this handle if you intend to stop the server later.
+
+- To stop the server:
+  #+BEGIN_SRC lisp
+    ;; Assuming *server-handle* was saved from the call to start-rest.
+    (defvar *server-handle* (start-rest))
+    ;; ... later ...
+    (stop-rest *server-handle*)
+  #+END_SRC
+
+*** Authentication
+
+The REST API is protected by a username and password authentication system. It uses a standard `.htpasswd`-style file for storing credentials. VivaceGraph provides helper functions to manage users.
+
+*Important:* Authentication credentials are *not* sent via standard HTTP Basic Auth headers. Instead, they must be included as `username` and `password` fields in the JSON body of *every single request*.
+
+**** Creating a User
+To add a new user, call the ~add-rest-user~ function from your Lisp environment. This will create or update the password file (named ~rpasswd~ by default in the current directory).
+
+#+BEGIN_SRC lisp
+  ;; Add a user 'api-client' with the password 's3curePa$$w0rd'
+  (add-rest-user "api-client" "s3curePa$$w0rd")
+#+END_SRC
+
+This only needs to be done once per user.
+
+**** Deleting a User
+#+BEGIN_SRC lisp
+  (delete-rest-user "api-client")
+#+END_SRC
+
+**** Using Credentials in a Request
+Here is an example of a simple GET request using `curl`, showing how the credentials must be part of the JSON payload sent via the `-d` option.
+
+#+BEGIN_SRC sh
+  # Note: Even for a GET request, we send a POST-style body with credentials.
+  # This is a quirk of the current implementation.
+  curl -X GET -H "Content-Type: application/json" \
+       -d '{"username": "api-client", "password": "s3curePa$$w0rd"}' \
+       http://localhost:8080/graph/my-graph/vertex/some-node-id
+#+END_SRC
+
+*** API Endpoints (Get/Create/Update Nodes and Edges)
+
+The API is organized RESTfully around graph resources. All endpoints are prefixed with `/graph/:graph-name/`.
+
+| Method | Endpoint                                    | Description                                           |
+|--------+---------------------------------------------+-------------------------------------------------------|
+| *GET*    | ~/:graph-name~                              | Get metadata about the graph, including its schema.   |
+| *GET*    | ~/:graph-name/vertex/:id~                   | Retrieve a single vertex by its ID.                   |
+| *POST*   | ~/:graph-name/vertex/:type~                 | Create a new vertex of the specified `:type`.         |
+| *PUT*    | ~/:graph-name/vertex/:id~                   | Update the properties of an existing vertex.          |
+| *DELETE* | ~/:graph-name/vertex/:id~                   | Delete a vertex.                                      |
+| *GET*    | ~/:graph-name/edge/:id~                     | Retrieve a single edge by its ID.                     |
+| *POST*   | ~/:graph-name/edge/:type~                   | Create a new edge of the specified `:type`.           |
+| *PUT*    | ~/:graph-name/edge/:id~                     | Update the properties of an existing edge.            |
+| *DELETE* | ~/:graph-name/edge/:id~                     | Delete an edge.                                       |
+| *GET*    | ~/:graph-name/vertex/:id/edges~             | Get all edges (incoming and outgoing) for a vertex.   |
+
+**** Vertex Examples
+
+Let's assume our graph `:social-app` is running.
+
+- *Create a new user:*
+  *Request:* `POST /graph/social-app/vertex/user`
+  #+BEGIN_SRC json
+    {
+      "username": "api-client",
+      "password": "s3curePa$$w0rd",
+      "username": "dave" 
+    }
+  #+END_SRC
+
+  *Response:*
+  #+BEGIN_SRC json
+    {
+      "id": "A1B2C3D4...",
+      "type": "user",
+      "username": "dave"
+    }
+  #+END_SRC
+
+- *Update a user:*
+  *Request:* `PUT /graph/social-app/vertex/A1B2C3D4...`
+  #+BEGIN_SRC json
+    {
+      "username": "api-client",
+      "password": "s3curePa$$w0rd",
+      "username": "david"
+    }
+  #+END_SRC
+
+  *Response:* The updated vertex object.
+
+**** Edge Examples
+
+- *Create a 'follows' edge from Dave to Alice:*
+  *Request:* `POST /graph/social-app/edge/follows`
+  #+BEGIN_SRC json
+    {
+      "username": "api-client",
+      "password": "s3curePa$$w0rd",
+      "from": "uuid-for-dave",
+      "to": "uuid-for-alice"
+    }
+  #+END_SRC
+
+  *Response:*
+  #+BEGIN_SRC json
+    {
+      "id": "E1F2G3H4...",
+      "type": "follows",
+      "from": "uuid-for-dave",
+      "to": "uuid-for-alice"
+    }
+  #+END_SRC
+
+
+** Chapter 10: Replication and High Availability (~replication.lisp~)
+
+For production environments, relying on a single database instance creates a single point of failure. If the machine hosting the database goes down, your application becomes unavailable. To solve this, VivaceGraph provides a built-in *master-slave replication* system, implemented primarily in ~replication.lisp~ and ~transaction-streaming.lisp~.
+
+Replication allows you to maintain one or more read-only copies (slaves) of your primary database (the master). This architecture provides two key benefits:
+
+1.  *High Availability:* If the master instance fails, you can quickly promote one of the slave instances to become the new master, minimizing downtime for your application.
+2.  *Read Scaling:* You can distribute read-heavy query workloads across multiple slave instances, reducing the load on the master and improving overall application performance.
+
+*** Architecture: Master-Slave Replication
+
+VivaceGraph's replication model is simple, robust, and asynchronous.
+
+- *The Master:* There is a single *master* graph. This is the only instance where write operations (creates, updates, deletes) are allowed. The master is responsible for accepting new data, committing transactions, and broadcasting those changes to all connected slaves.
+
+- *The Slaves:* You can have one or more *slave* graphs. Slaves connect to the master over a TCP socket and receive a continuous stream of committed transactions. They are strictly read-only from an application perspective; their only source of data modification is the transaction stream from the master.
+
+- *The Transaction Log:* The mechanism that drives replication is the *transaction log*. Every time a transaction is successfully committed on the master, it is serialized into a compact binary format and appended to a log file on the master's disk. This log is a complete, ordered history of every change made to the database.
+
+- *The Streaming Process:* When a slave connects, it tells the master the ID of the last transaction it successfully processed. The master then finds the appropriate transaction log and streams all subsequent transactions to the slave. After the slave is caught up with the historical logs, the master will stream new transactions in real-time as they are committed.
+
+This asynchronous model ensures that write performance on the master is not impacted by slow or disconnected slaves.
+
+*** Setting up a Master and a Slave Graph
+
+Configuring replication involves starting two separate VivaceGraph instances with special options passed to ~make-graph~ or ~open-graph~.
+
+**** 1. Setting up the Master
+
+To configure a graph to act as a master, you must provide two key arguments:
+- ~:master-p t~: This flag designates the instance as the master.
+- ~:replication-port <port-number>~: The TCP port on which the master will listen for connections from slaves.
+- ~:replication-key <secret-string>~: A shared secret password that slaves must provide to connect.
+
+#+BEGIN_SRC lisp
+  ;; In the master's Lisp process:
+  
+  (defvar *master-graph*
+    (make-graph :social-app "/var/tmp/master-db/"
+                :master-p t
+                :replication-port 7878
+                :replication-key "a-very-secret-key"))
+#+END_SRC
+
+Once started, the master will automatically begin listening on port 7878 for slave connections. You can now perform writes on this master instance as you normally would.
+
+**** 2. Setting up the Slave
+
+To configure a graph to act as a slave, you provide a different set of arguments:
+- ~:slave-p t~: This flag designates the instance as a slave.
+- ~:master-host <hostname-or-ip>~: The address of the master instance.
+- ~:replication-port <port-number>~: The port to connect to on the master.
+- ~:replication-key <secret-string>~: The shared secret, which must match the master's key.
+
+#+BEGIN_SRC lisp
+  ;; In the slave's Lisp process (could be on a different machine):
+
+  (defvar *slave-graph*
+    (make-graph :social-app "/var/tmp/slave-db/"
+                :slave-p t
+                :master-host "localhost" ; or the master's IP address
+                :replication-port 7878
+                :replication-key "a-very-secret-key"))
+#+END_SRC
+
+Upon startup, the slave will attempt to connect to the master. If successful, it will authenticate and begin receiving a stream of transactions. The slave is now a read-only replica of the master. You can run `select` queries against ~*slave-graph*~, but any attempt to use ~with-transaction~ to modify data will fail.
+
+*** How the Transaction Log is Streamed
+
+The communication protocol between master and slave is designed for efficiency and robustness.
+
+1.  *Handshake:* When the slave first connects, a handshake occurs.
+    - The master sends a packet containing its protocol version, graph name, and a checksum (digest) of its schema.
+    - The slave verifies that all three of these match its own configuration. If there is a mismatch (e.g., the slave has an older schema), the connection is aborted to prevent data corruption.
+    - If the handshake succeeds, the slave sends back an authentication packet containing its `:replication-key` and the ID of the last transaction it successfully stored.
+
+2.  *Catching Up:* The master receives the slave's last known transaction ID. It then uses the function ~applicable-replication-logs~ to find all on-disk transaction log files that contain transactions committed after that point.
+    - It begins with the first relevant log file and streams only the necessary transactions (those with a higher ID).
+    - It then streams all subsequent log files in their entirety.
+    - Each transaction is sent as a self-contained binary packet over the socket.
+
+3.  *Real-Time Replication:* Once the slave is fully caught up with the historical logs, the master keeps the connection open. Whenever a new transaction is committed on the master, the `replicate-transaction` method is called, which immediately broadcasts the serialized transaction packet to all connected slaves.
+
+4.  *Reconnection:* The connection between master and slave can be interrupted at any time (e.g., due to a network partition). The slave is designed to handle this gracefully. Upon detecting a disconnection, it will automatically enter a retry loop, attempting to reconnect to the master with an exponential backoff. Once reconnected, the handshake process starts over, and the slave will request all transactions it missed while it was disconnected, ensuring it eventually regains full consistency with the master.
+
+
+** Chapter 11: Backup and Recovery
+
+A database is only as valuable as the data it holds. Ensuring that you can protect that data from hardware failure, software bugs, or human error is a critical operational requirement. VivaceGraph provides a straightforward yet robust mechanism for creating full backups of your graph and restoring them for disaster recovery or for populating new environments.
+
+*** Using ~snapshot~ and ~backup~
+
+VivaceGraph offers two functions for creating backups, but for most use cases, you should use the high-level ~snapshot~ command.
+
+**** The ~snapshot~ Command: Your Primary Backup Tool
+
+The ~snapshot~ function is the recommended, safe, and consistent way to back up your graph.
+
+#+BEGIN_SRC lisp
+  ;; Usage: (snapshot graph &key include-deleted-p check-data-integrity-p)
+  
+  ;; Create a snapshot of the currently active graph.
+  (snapshot *graph*)
+#+END_SRC
+
+When you call ~snapshot~, it performs several important steps to ensure a high-quality backup:
+
+1.  *Acquires a Write Lock:* It locks the entire transaction system. This guarantees that no new data is being written to the database while the backup is in progress, ensuring the snapshot represents a single, consistent point in time.
+
+2.  *Checks Data Integrity (Optional but Recommended):* By default, ~snapshot~ first runs a full data integrity check on the graph. It iterates through every vertex and edge, attempting to deserialize its data from the heap. This is an invaluable process that can detect data corruption *before* it gets written into your backup file. If any corruption is found, the snapshot is aborted, and a list of the problematic nodes is returned.
+
+3.  *Writes the Backup File:* It then calls the lower-level ~backup~ function to serialize every node and edge in the graph into a single, human-readable text file. The file is saved in a subdirectory of your graph's location named `txn-log/`, with a timestamped filename like `snap-3979326061.272155.log`.
+
+The resulting file contains a series of Lisp s-expressions, one for each node in the graph. This format is not only easy to inspect but is also crucial for the restore process.
+
+#+BEGIN_EXAMPLE
+  ;; A snapshot file looks like this:
+  (:V USER ((:USERNAME . "alice")) :ID #<"uuid-bytes"> :REVISION 2 :DELETED-P NIL)
+  (:V USER ((:USERNAME . "bob")) :ID #<"uuid-bytes"> :REVISION 1 :DELETED-P NIL)
+  (:E FOLLOWS ("<bob's-id>") ("<alice's-id>") 1.0 NIL :ID #<"uuid-bytes"> ...)
+  ...
+#+END_EXAMPLE
+
+**** The ~backup~ Function
+
+The ~backup~ function is the underlying worker called by ~snapshot~. It handles the process of iterating through all nodes and writing their serialized representations to a Lisp stream. While you can call it directly, it does not provide the safety guarantees (locking and integrity checks) of `snapshot`, so its direct use is discouraged for production backups.
+
+*** Restoring a Graph from a Snapshot (~replay~)
+
+The `replay` function is the counterpart to `snapshot`. It reads a snapshot file and uses it to reconstruct a graph from scratch. This is the primary tool for disaster recovery or for cloning an existing graph into a new environment (e.g., for staging or development).
+
+*Important Prerequisite:* The `replay` function must be run on a *new, empty graph*. You cannot replay a snapshot on top of an existing graph with data in it.
+
+The restoration process is as follows:
+
+1.  *Create a new, empty graph* in a different directory.
+2.  *Call ~replay~*, passing it the new graph instance and the path to the directory containing your snapshot files.
+3.  `replay` will automatically find the *most recent* snapshot file in that directory.
+4.  It reads the snapshot file one s-expression at a time and, in small, manageable transactions, recreates each vertex and edge.
+5.  *Crucially, after all nodes and edges have been restored, ~replay~ automatically regenerates all defined views.* The snapshot file contains only the raw node data, not the indexes. This final step rebuilds the high-performance view indexes from the restored data, making the new graph ready for querying.
+
+**** Complete Example: Backup and Restore
+
+Here is a complete, end-to-end example.
+
+#+BEGIN_SRC lisp
+  ;;;; 1. SETUP: Create and populate an original graph.
+  (defvar *original-db-path* "/var/tmp/original-db/")
+  (defvar *restored-db-path* "/var/tmp/restored-db/")
+
+  ;; Make sure the directories are clean for the example.
+  (uiop:delete-directory-tree *original-db-path* :validate t)
+  (uiop:delete-directory-tree *restored-db-path* :validate t)
+
+  ;; Define a simple schema for our original graph.
+  (def-vertex person () ((name :type string)) :original-graph)
+  (def-view person-by-name :lessp (person :original-graph)
+    (:map (lambda (p) (yield (name p) nil))))
+  
+  (let ((original-graph (make-graph :original-graph *original-db-path*)))
+    (let ((*graph* original-graph))
+      ;; Add some data.
+      (with-transaction ()
+        (make-person :name "Alice"))
+      
+      ;;;; 2. BACKUP: Take a snapshot of the original graph.
+      (format t "Taking snapshot of original graph...~%")
+      (snapshot original-graph)
+      (format t "Snapshot complete.~%")
+      
+      ;; We are done with the original graph.
+      (close-graph original-graph)))
+
+
+  ;;;; 3. RECOVERY: Restore the snapshot into a new, empty graph.
+  
+  ;; Create a new, empty graph instance for the restored data.
+  ;; Note: The graph name can be different, but the schema definitions must be loaded.
+  (let ((restored-graph (make-graph :original-graph *restored-db-path*)))
+    (let ((*graph* restored-graph))
+      (format t "Replaying snapshot into new graph...~%")
+      ;; Replay from the directory where the snapshot was saved.
+      (replay restored-graph (merge-pathnames "txn-log/" *original-db-path*)
+              :package-name :my-app) ; Specify the package where the schema is defined.
+      (format t "Replay complete.~%")
+      
+      ;;;; 4. VERIFICATION: Check if the data exists in the new graph.
+      (let ((result (invoke-graph-view 'person 'person-by-name :key "Alice")))
+        (assert result)
+        (format t "Successfully found 'Alice' in the restored graph!~%"))
+        
+      (close-graph restored-graph)))
+#+END_SRC
+
+*** Migrating a pre-MVCC graph (~migrate-graph~)
+
+Graphs created before the MVCC release use storage format *v1* (a 15-byte node head). A v2 build cannot open them directly — ~open-graph~ will signal an error telling you to migrate. The ~migrate-graph~ function does this for you; it is a logical snapshot-and-replay and is described in Chapter 12, "MVCC: Immutable Versioned Nodes."
+
+** Chapter 12: MVCC — Immutable Versioned Nodes
+
+VivaceGraph took early design inspiration from CouchDB, including its idea of keeping previous revisions of a document around rather than overwriting them in place. The MVCC release makes good on that idea: every update or delete now writes a *new* version of a node and *retains* the old one, chained together, until a background reaper decides it is safe to reclaim. This chapter explains how that works and the knobs you have for controlling it.
+
+The benefits are threefold:
+
+1. *The node-data read-after-free race is dissolved at its source.* Because an updated node's old data block is no longer freed at commit time, a concurrent reader that is mid-way through dereferencing it can never have the ground pulled out from under it. (Earlier versions guarded this with a per-read byte-copy under a bucket lock; that machinery is gone, replaced by lightweight read-epoch pins.)
+2. *Transactional reads get snapshot isolation* (for lookups — see the note below).
+3. *History is preserved* (bounded by your retention policy), laying the groundwork for future time-travel and audit features.
+
+*** The version chain
+
+Recall from Chapter 3 that a node's *head* gained two fields in storage format v2:
+
+- ~commit-epoch~ :: the id of the transaction that committed this version. Transaction ids are globally monotonic, so this acts as a logical timestamp.
+- ~prev-pointer~ :: a heap address pointing at the *previous* version's archived head (0 if there is none).
+
+When you update or delete a node, the engine:
+
+1. Writes the new version's data to the heap as usual.
+2. *Archives the prior version's head* into its own small heap block (its ~data-pointer~ still references the now-retained old data block).
+3. Sets the new live head's ~prev-pointer~ to that archived block and stamps its ~commit-epoch~ with the committing transaction id.
+
+The result is a singly-linked chain, newest-first: the live head (in the primary lhash table) points back through ~prev-pointer~ to each older version in the heap. The garbage collector (~gc-heap~) is version-aware — it roots these chains — so reopening a graph never reclaims a retained version out from under you.
+
+A crucial property for replication: ~prev-pointer~ is a *local heap address*. It is therefore **never** sent on the replication wire. The shared apply path re-derives it (and ~commit-epoch~) from the slave's own current node, so master and slave each build their own correct local chains. (See Chapter 10.)
+
+*** Controlling retention with ~:keep-revisions~
+
+By default a node keeps *no* extra history: the reaper reclaims a prior version as soon as it is safe to do so (see below), so in steady state you pay only for the single in-flight prior version. You can ask the engine to retain a deeper window with ~:keep-revisions~, available at two levels:
+
+- *Per node-type*, on ~def-vertex~ / ~def-edge~:
+
+#+BEGIN_SRC lisp
+  ;; Keep the 5 most recent prior versions of every audited-record.
+  (def-vertex audited-record ()
+    ((payload :type string))
+    :my-app
+    :keep-revisions 5)
+#+END_SRC
+
+- *Graph-wide default*, on ~make-graph~ (persisted with the schema) and overridable on ~open-graph~:
+
+#+BEGIN_SRC lisp
+  (make-graph :my-app "/var/db/my-app/" :keep-revisions 3)
+  ;; ... later, open with a different retention policy for this session:
+  (open-graph :my-app "/var/db/my-app/" :keep-revisions 10)
+#+END_SRC
+
+A node-type's own ~:keep-revisions~ overrides the graph default; ~nil~ on the type means "inherit the graph default." A value of ~0~ means "retain only what active readers require."
+
+*** The reaper: lazy and epoch-gated
+
+Reclamation is *lazy* (it runs as part of each commit) and *epoch-gated* so it can never free a version that an in-progress reader or transaction might still observe. The rule is conservative and simple: a prior version is reclaimable only once its *stop epoch* — the ~commit-epoch~ of the version that superseded it — is strictly older than the oldest epoch any active transaction or pinned reader could be reading at. Concretely, the reaper retains ~max(keep-revisions, what active readers still need)~ for each chain it visits, frees the safe oldest suffix, and repairs exactly one ~prev-pointer~ to close the gap.
+
+You do not call the reaper directly; it is automatic. Its only tunable is the retention window described above.
+
+*** Snapshot-isolation reads
+
+Inside a transaction, a point ~lookup~ (e.g. ~lookup-vertex~, ~lookup-edge~, or a generated ~lookup-<type>~) now returns the version that was live *as of the transaction's start* — the newest version whose ~commit-epoch~ precedes the transaction's start epoch. An update committed by a *later* transaction is therefore invisible to an in-progress one, and re-reading a node within a transaction is repeatable. The relevant older version is guaranteed to still exist because an open transaction holds the reaper's floor down.
+
+#+BEGIN_SRC lisp
+  ;; Transaction A reads X, sees its value as of A's start, and keeps seeing
+  ;; that value even if a concurrent transaction B commits an update to X.
+#+END_SRC
+
+*A note on scans.* This isolation applies to *lookups* (and to *typed* scans such as ~(map-vertices fn g :vertex-type 'user)~, which resolve each node through the lookup path). An *untyped*, whole-graph scan — ~(map-vertices fn g)~ with no ~:vertex-type~ — still reads each node's *live* version. This is a deliberate, documented limitation: making whole-graph scans snapshot-consistent would require versioning the indexes themselves (membership history), which is out of scope. In practice untyped scans are used for read-only maintenance and analytics, where this is harmless; when you need a consistent view, use a point lookup or a typed scan. Crucially, none of this affects *data integrity*: writes remain serializable via the engine's optimistic concurrency control regardless of how reads are resolved.
+
+*** Migrating a v1 graph to v2 (~migrate-graph~)
+
+The MVCC head grew from 15 to 31 bytes, so a v2 build cannot open a v1 graph directly. ~migrate-graph~ brings one across without touching the original:
+
+#+BEGIN_SRC lisp
+  ;; Load the schema (def-vertex / def-edge forms) for the graph first, then:
+  (let ((g (migrate-graph :my-app
+                          "/var/db/my-app-v1/"    ; existing v1 graph (untouched)
+                          "/var/db/my-app-v2/"    ; fresh v2 graph to create
+                          :package :my-app)))
+    ;; g is the new, open v2 graph.
+    ...)
+#+END_SRC
+
+Internally it is a *logical* snapshot-and-replay, the same format-independent mechanism used for backups: the v1 graph is opened read-only through a 15-byte-head shim, every live node is written to a pointer-free snapshot, and a fresh v2 graph is created and the snapshot replayed through the normal ~make-vertex~ / ~make-edge~ path. The original directory is left byte-for-byte untouched. (This mirrors the migration advice given for the 2016 hashing change — snapshot and replay — now packaged as a single call.)
+
+Note that, because the on-disk format uses ~cl-store~ for some structures, graph *directories* are not portable across Lisp implementations; migrate (and snapshot/replay) on the same implementation that wrote the graph.
+
+** Chapter 13: Spatial Queries
+
+VivaceGraph ships a general-purpose *spatial extension*: a geohash-backed index that answers "what's near here?" and "what's inside this area?" over nodes that carry a geometry. It is domain-agnostic — it stores only ids and geometry — and it is maintained automatically as part of normal transactions. This chapter shows how to make a node type spatial and how to query it.
+
+The design is the classic *filter then refine*: the geohash index quickly narrows the whole graph down to a small candidate set whose grid cells meet your query window, and exact predicates (great-circle distance, point-in-polygon) then refine that set to the true answer.
+
+*** Geometry values
+
+Locations are represented by the ~geometry~ value type. Coordinates are WGS84 and, following the GIS / GeoJSON convention, are written *(lon lat)* order, stored internally as ~double-float~. Four kinds are supported, built with these constructors:
+
+#+BEGIN_SRC lisp
+  (make-point lon lat)                 ; a single position
+  (make-linestring '((lon lat) ...))   ; a path
+  (make-polygon '(exterior-ring hole-ring ...))   ; ring = ((lon lat) ...)
+  (make-multipolygon '(polygon ...))   ; polygon = (ring ...)
+#+END_SRC
+
+A ~geometry~ is a normal serializable value, so you store one in a node slot just like a string or number. Useful accessors include ~geometry-kind~, ~geometry-coordinates~, ~geometry-lon~ / ~geometry-lat~ (for points), and ~geometry-bbox~ (axis-aligned bounding box as ~(values min-lon min-lat max-lon max-lat)~).
+
+*** Making a node type spatial
+
+To put a node type on the map, give it a geometry slot and mark that slot ~:index t~. That is all it takes: every create/update/delete of such a node then automatically maintains the graph's spatial index — there is no separate "add to index" call.
+
+#+BEGIN_SRC lisp
+  (def-vertex observation ()
+    ((location :type geometry :index t)   ; <- :index t makes it spatial
+     (note     :type string))
+    :survey-app)
+
+  (with-transaction ()
+    (make-observation :location (make-point 37.17d0 49.20d0)
+                      :note "sighting near the river"))
+#+END_SRC
+
+Under the hood, indexing goes through the ~node-geometry~ generic function, which returns the geometry a node occupies (or ~nil~ — the default — for a node with no location). The ~:index t~ flag wires this up for you: ~node-geometry~'s default method returns the value of the node's indexed geometry slot. You only need to write a ~node-geometry~ method yourself for a *computed* geometry (e.g. derived from several slots, or fetched from a related node); an explicit method takes precedence over the default.
+
+#+BEGIN_SRC lisp
+  ;; Equivalent to the :index t form above, and the escape hatch for a
+  ;; geometry that isn't simply stored in one slot:
+  (defmethod node-geometry ((o observation))
+    (slot-value o 'location))
+#+END_SRC
+
+The index itself lives inside the graph's index region (~indexes.dat~), is created by ~make-graph~, and is reopened automatically by ~open-graph~ — you do not manage it directly.
+
+*** Querying
+
+Two read styles are provided, both refining the index's candidates with exact geometry math.
+
+*Lisp API:*
+
+#+BEGIN_SRC lisp
+  ;; Nodes within RADIUS metres of a point, nearest first, as (node . distance):
+  (find-nodes-near 49.20 37.17 500.0)
+
+  ;; The K nodes nearest a point, nearest first (also (node . distance) pairs):
+  (find-nearest-k 49.20 37.17 5)
+
+  ;; Nodes whose location falls inside a :POLYGON / :MULTIPOLYGON area:
+  (find-nodes-within my-task-area)
+#+END_SRC
+
+~find-nearest-k~ is bounded by ~:max-radius~ (default 25 km): the geohash index answers a window by enumerating its grid cells, so an unbounded nearest-neighbour search is not supported — it returns the K nearest /within max-radius/ (widen it only if you accept the per-query cost, which grows with the square of the radius).
+
+*Prolog functors* (these /yield/ matching nodes, so they compose with the rest of a query):
+
+#+BEGIN_SRC lisp
+  ;; All observations within 500 m of (49.20, 37.17):
+  (select-flat (?o)
+    (is-a ?o observation)
+    (find-near ?o 49.20 37.17 500.0))
+
+  ;; The 5 observations nearest (49.20, 37.17):
+  (select-flat (?o)
+    (is-a ?o observation)
+    (find-nearest ?o 49.20 37.17 5))
+
+  ;; All observations inside a task-area geometry bound to ?area:
+  (select-flat (?o)
+    (is-a ?o observation)
+    (find-within ?o ?area))
+#+END_SRC
+
+~find-near/4~ takes ~?node lat lon radius-metres~; ~find-nearest/4~ takes ~?node lat lon k~; ~find-within/2~ takes ~?node area~.
+
+*** Under the hood, and a few caveats
+
+- *The index* is a skip list (in the graph's index region, ~indexes.dat~) keyed by fixed-precision *geohash* strings; each node id is stored under every grid cell its geometry occupies (duplicates allowed). A query computes the set of same-precision cells its window covers and looks each one up directly, so it touches only the cells in view. The grid precision is set with ~make-graph~'s ~:spatial-precision~ keyword (default 7, ≈150 m cells; 9 ≈ 5 m); it is persisted with the index and read back by ~open-graph~.
+- *Matching uses a representative point*: a ~:point~ matches exactly; an extended geometry (line, polygon) is matched by the centre of its bounding box, so radius/containment results for extended geometries are approximate. Point-in-polygon refinement honours holes.
+- *Distance* is the haversine great-circle distance — accurate to roughly half a percent, ample for most uses; a more precise geodesic can replace it later without changing the API.
+- *Heavier topology* (intersection, union, validity repair) is intentionally out of this dependency-free core and is left to an optional GEOS-backed module.
+
+*** Subset replication (field devices)
+
+A replication *slave* can hold only a subset of the master's data — useful for a field device that needs just its area of operations, not the whole dataset. Give the slave a ~:replication-filter~: a predicate ~(node) -> boolean~ that decides, per replicated write, whether the slave applies it. Each transaction still advances the slave's high-water mark, so filtered transactions are not re-requested.
+
+~make-spatial-replication-filter~ builds a filter from an area geometry. It accepts a node when it has /no/ geometry (so schema and reference data replicate in full) or when its geometry lies in the area:
+
+#+BEGIN_SRC lisp
+  (make-graph :ops-app "/data/field-laptop/"
+              :slave-p t :master-host "hq.example.org" :replication-port 5432
+              :replication-filter
+              (make-spatial-replication-filter my-area-of-operations))
+#+END_SRC
+
+This is a prototype: end-to-end master/slave streaming is exercised by the harness in =tests/replication/=, and a node that /moves/ across the area boundary on an update is not yet reconciled.
+
+*** Exact topology with GEOS (optional)
+
+The dependency-free refine layer answers "is this point in this area" exactly, but it judges an /extended/ geometry (a polygon or line node) only by a representative point, and it has no polygon↔polygon intersection or validity repair. For exact topology, load the optional ~graph-db/geos~ system, a thin in-house CFFI binding to the GEOS C library (~libgeos_c~):
+
+#+BEGIN_SRC lisp
+  (ql:quickload :graph-db/geos)   ; needs libgeos_c (e.g. brew install geos)
+#+END_SRC
+
+Core ~graph-db~ never depends on libgeos. Loading the add-on binds the library if present and flips ~*geos-available-p*~; if the library is missing it logs a warning and leaves the flag NIL — the seam below simply keeps using the fallbacks. So the add-on is safe to load unconditionally.
+
+The add-on /upgrades/ a set of generic functions in place (no API change). When it is loaded:
+
+- ~find-nodes-within~ judges extended-geometry nodes by **exact containment**, not their bbox centre.
+- ~find-nodes-intersecting~ / ~find-intersects/2~ become **exact** (without GEOS they fall back to a coarse bounding-box overlap).
+- ~geometry-intersects-p~, ~geometry-contains-geometry-p~ answer exactly for all geometry kinds.
+- ~geometry-make-valid~ repairs an invalid geometry (e.g. a self-intersecting polygon from a messy KML); ~geometry-valid-p~ tests validity. (~make-valid~ needs GEOS >= 3.8.)
+- ~geometry-distance-exact~ gives planar distance — note this is in *coordinate units* (degrees for lon/lat), not metres; use ~geodesic-distance~ / ~geometry-distance~ for metric distance between points.
+
+#+BEGIN_SRC lisp
+  ;; nodes whose footprint actually overlaps the area (exact with GEOS):
+  (find-nodes-intersecting my-task-area)
+
+  ;; repair a self-intersecting polygon before indexing it:
+  (let ((clean (geometry-make-valid messy-polygon)))
+    (with-transaction () (make-observation :location clean)))
+#+END_SRC
+
+Threading: GEOS's reentrant API forbids sharing a context between concurrent threads, and VivaceGraph runs transactions in the caller's thread. The add-on keeps a process-global **borrow/return context pool** (~with-geos-context~): each operation checks out a context for its duration, so a context is only ever used by one thread at a time, and contexts are reused across threads (bounded by peak concurrency). ~geos-shutdown~ releases the pool. This is validated under a concurrency storm and cross-checked against Python ~shapely~ in =tests/geos/=.
+
+** API Reference
+
+This chapter provides a categorized reference for the most important exported symbols from the ~graph-db~ package. It is not an exhaustive list of every internal function but focuses on the public API you will use most often when building applications.
+
+*** A categorized list of the most important exported functions and macros
+
+**** Graph Management
+- ~make-graph (name location &key ... )~ ::
+  Creates a new, empty graph database at the specified ~location~. The ~name~ must be a keyword and should match the graph name used in your schema definitions. Returns a `graph` object.
+
+- ~open-graph (name location &key ... )~ ::
+  Opens an existing graph database from ~location~. Fails if the database was not closed cleanly (i.e., if the ~.dirty~ file exists). Returns a `graph` object.
+
+- ~close-graph (graph &key snapshot-p)~ ::
+  Safely closes the graph database, ensuring all data is written to disk and all file locks are released. By default, it creates a final snapshot before closing.
+
+- ~lookup-graph (name)~ ::
+  Retrieves a handle to an already opened graph by its keyword ~name~.
+
+- ~*graph*~ ::
+  A special dynamic variable that should be bound to the currently active graph instance for most operations to work correctly.
+
+- ~graph-stats (&key graph detail-p)~ ::
+  Returns an alist of performance statistics for the graph, including free memory, cache size, read/write rates, and node counts.
+
+**** Schema Definition
+- ~def-vertex (name (parent-classes) (slot-definitions) graph-name)~ ::
+  A macro to define a new vertex class. It inherits from its ~parent-classes~ (which must include ~vertex~), defines its data ~slots~ using standard CLOS syntax, and associates it with the graph named ~graph-name~. Automatically creates a ~make-<name>~ constructor function.
+
+- ~def-edge (name (parent-classes) (slot-definitions) graph-name)~ ::
+  A macro to define a new edge class. Similar to ~def-vertex~, but the class must inherit from ~edge~.
+
+**** Transactions
+- ~with-transaction ( &body body)~ ::
+  A critical macro that wraps a block of database write operations in an ACID transaction. The transaction is automatically committed on successful completion or rolled back on error. All creates, updates, and deletes must occur within this macro.
+
+- ~commit ( &optional transaction)~ ::
+  Manually commits the current ~*transaction*~. Rarely needed, as ~with-transaction~ handles this automatically.
+
+- ~rollback ( &optional transaction)~ ::
+  Manually rolls back the current ~*transaction*~.
+
+**** Node Operations (CRUD)
+- ~make-<class-name> (&key ... )~ ::
+  Constructor functions automatically generated by ~def-vertex~ and ~def-edge~. Use these to create new nodes within a transaction. For example, `(make-user :name "Alice")`.
+
+- ~lookup-vertex (id &key graph)~ ::
+  Retrieves a vertex object from the database given its 16-byte UUID or string representation.
+
+- ~lookup-edge (id &key graph)~ ::
+  Retrieves an edge object from the database given its ID.
+
+- ~copy (node)~ ::
+  Creates a mutable copy of a node. This is the *required* first step for updating a node.
+
+- ~save (node-copy &key graph)~ ::
+  Saves a modified node copy back to the database, finalizing an update. Must be called on a node that was created via ~copy~ within the same transaction.
+
+- ~mark-deleted (node)~ ::
+  Marks a node as deleted. This is a "soft delete" and must be done within a transaction.
+
+- ~id (node)~ ::
+  Returns the 16-byte UUID of a node.
+
+- ~from (edge)~, ~to (edge)~, ~weight (edge)~ ::
+  Accessors for the core properties of an edge object.
+
+- ~data (node)~ ::
+  Returns the raw data alist associated with a node. It is generally recommended to use the standard slot accessors (e.g., `(name my-user)`) instead of this.
+
+**** Prolog Querying
+- ~select (options-plist vars-list &rest goals)~ ::
+  The primary macro for querying the graph. Executes a series of Prolog ~goals~ and returns a list of solutions for the specified ~vars-list~.
+
+- ~select-flat (vars-list &rest goals)~ ::
+  A convenience macro, equivalent to `(select (:flat t) ...)`, which returns a single flat list of results.
+
+- ~select-one (vars-list &rest goals)~ ::
+  A convenience macro that returns only the first value of the first variable from the first solution. Extremely useful for lookups.
+
+- ~def-global-prolog-functor (name/arity (args cont) &body body)~ ::
+  A macro to extend the query language with a new, custom predicate written in Lisp.
+
+- `(<- (head) . (body))` ::
+  A macro for defining Prolog rules.
+
+**** Views & Indexing
+- ~def-view (view-name sort-order (class-name graph-name) &body body)~ ::
+  Defines a new view (index). The body must contain a ~:map~ clause and may contain an optional ~:reduce~ clause for aggregation.
+
+- ~invoke-graph-view (class-name view-name &key key start-key end-key ... )~ ::
+  The primary function for querying a view. Use the `:key` argument for point lookups or `:start-key` and `:end-key` for range scans. Use `:group-p t` to query the aggregated results of a reduce view.
+
+- ~map-view (function class-name view-name &key ... )~ ::
+  A lower-level function to iterate over the results of a map-only view and apply a function to each result.
+
+- ~map-reduced-view (function class-name view-name &key ... )~ ::
+  Iterates over the aggregated results of a map-reduce view.
+
+- ~regenerate-view (graph class-name view-name)~ ::
+  Deletes and rebuilds the index for a specific view from scratch. Useful if the view's definition changes.
+
+**** Graph Traversal & Mapping
+- ~map-vertices (function graph &key vertex-type ... )~ ::
+  Applies a Lisp ~function~ to every vertex in the graph. Can be filtered by ~vertex-type~. Avoid using on large graphs without a filter, as it performs a full scan.
+
+- ~map-edges (function graph &key edge-type vertex direction ... )~ ::
+  Applies a ~function~ to every edge. Can be filtered by ~edge-type~ or constrained to a specific ~vertex~ and ~direction~ (:in or :out).
+
+- ~outgoing-edges (vertex &key edge-type)~ ::
+  A convenience function that returns a list of all outgoing edges from a given vertex.
+
+- ~incoming-edges (vertex &key edge-type)~ ::
+  A convenience function that returns a list of all incoming edges for a given vertex.
+
+- ~traverse (vertex &key ... )~ ::
+  Performs a breadth-first search traversal starting from a given vertex.
+
+**** Replication
+- ~start-replication (graph &key ... )~ ::
+  Starts the replication system for a graph configured as a master or a slave.
+
+- ~stop-replication (graph)~ ::
+  Safely stops the replication threads.
+
+**** Backup & Recovery
+- ~snapshot (graph &key ... )~ ::
+  The primary, safe command for creating a full, consistent backup of the graph. Performs an integrity check by default.
+
+- ~replay (graph snapshot-dir &key package-name)~ ::
+  Restores a graph from snapshot files located in ~snapshot-dir~ into a new, empty graph. Automatically finds the latest snapshot and rebuilds all views.
+
+- ~migrate-graph (name old-location new-location &key package include-deleted-p)~ ::
+  Migrates a pre-MVCC (storage v1) graph at ~old-location~ to the current (v2) format at ~new-location~, returning the new open graph. A logical snapshot-and-replay; the original is left untouched. See Chapter 12.
+
+**** MVCC / Versioning
+
+- ~def-vertex~ / ~def-edge ( ... :keep-revisions N)~ ::
+  Per node-type override for how many prior versions the reaper retains (~nil~ = inherit the graph default). See Chapter 12.
+
+- ~make-graph ( ... :keep-revisions N)~ / ~open-graph ( ... :keep-revisions N)~ ::
+  Graph-wide default retained-version count (persisted by ~make-graph~; an optional session override on ~open-graph~).
+
+**** Spatial (see Chapter 13)
+
+- ~make-point (lon lat)~ / ~make-linestring (coords)~ / ~make-polygon (rings)~ / ~make-multipolygon (polygons)~ ::
+  Construct WGS84 ~geometry~ values ((lon lat) order). Accessors: ~geometry-kind~, ~geometry-coordinates~, ~geometry-lon~, ~geometry-lat~, ~geometry-bbox~.
+
+- ~node-geometry (node)~ ::
+  Generic function (default ~nil~) returning the geometry a node occupies. Marking a geometry slot ~:index t~ wires its default up automatically; specialize it explicitly only for a *computed* geometry. Geometry-bearing nodes are then maintained automatically in the spatial index.
+
+- ~find-nodes-near (lat lon radius &key graph)~ ::
+  Live nodes within ~radius~ metres of ~(lat lon)~, nearest first, as ~(node . distance)~.
+
+- ~find-nearest-k (lat lon k &key graph max-radius)~ ::
+  The ~k~ nearest live nodes to ~(lat lon)~, nearest first, as ~(node . distance)~. Bounded by ~max-radius~ (default 25 km); returns fewer than ~k~ if fewer nodes lie within it.
+
+- ~find-nodes-within (area &key graph)~ ::
+  Live nodes whose location lies inside the ~:polygon~ / ~:multipolygon~ ~area~ geometry.
+
+- ~(find-near ?node lat lon radius)~ / ~(find-nearest ?node lat lon k)~ / ~(find-within ?node area)~ ::
+  Prolog functors that yield matching nodes, composable with the rest of a query.
+
+- ~geohash-neighbor (cell dlon dlat)~ / ~geohash-neighbors (cell)~ ::
+  Grid helpers: the cell ~dlon~/~dlat~ steps away (wraps the antimeridian, ~nil~ off a pole), and the 8 same-precision cells surrounding ~cell~.
+
+- ~rebuild-spatial-index (graph &key precision)~ ::
+  Rebuild the index from scratch by scanning every live node with a
+  ~node-geometry~. Use to change the grid ~precision~, adopt the index on a
+  graph that predates the spatial extension, or repair it. Run when the graph is
+  quiescent (like ~regenerate-view~). Returns the number of nodes indexed.
+
+- ~make-spatial-replication-filter (area)~ ::
+  Build a slave-graph ~:replication-filter~ predicate from ~area~ (a ~:polygon~ /
+  ~:multipolygon~): the slave applies non-spatial nodes plus spatial nodes inside
+  ~area~, so it holds only its area of operations. See "Subset replication" above.
+
+**** REST API
+- ~start-rest ( &optional port)~ ::
+  Starts the REST API server on the given ~port~ (defaults to 8080).
+
+- ~stop-rest ( &optional server-handle)~ ::
+  Stops the REST API server.
+
+- ~add-rest-user (username password)~ ::
+  Creates a new user account for authenticating with the REST API.
+
+**** Concurrency & Locking (Advanced)
+- ~make-rw-lock ()~ ::
+  Creates a read-write lock object.
+
+- ~with-read-lock ((lock) &body body)~ ::
+  Executes the body of code after acquiring a read lock.
+
+- ~with-write-lock ((lock) &body body)~ ::
+  Executes the body of code after acquiring an exclusive write lock.
+

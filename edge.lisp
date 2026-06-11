@@ -27,7 +27,8 @@
 
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
                      to weight written-p heap-written-p type-idx-written-p
-                     ve-written-p vev-written-p views-written-p)
+                     ve-written-p vev-written-p views-written-p
+                     commit-epoch prev-pointer)
   (let ((edge (get-edge-buffer)))
     (cond (id
            (setf (id edge) id))
@@ -38,6 +39,8 @@
     (when weight (setf (weight edge) weight))
     (when type-id (setf (type-id edge) type-id))
     (when revision (setf (revision edge) revision))
+    (when commit-epoch (setf (commit-epoch edge) commit-epoch))
+    (when prev-pointer (setf (prev-pointer edge) prev-pointer))
     ;; Flags
     (when deleted-p (setf (deleted-p edge) deleted-p))
     (when written-p (setf (written-p edge) written-p))
@@ -53,21 +56,23 @@
     edge))
 
 (defun serialize-edge-head (mf e offset)
-  (setq offset (serialize-node-head mf e offset))
-  (dotimes (i 16)
-    (set-byte mf (incf offset) (aref (from e) i)))
-  (dotimes (i 16)
-    (set-byte mf (incf offset) (aref (to e) i)))
-  (let ((int (ieee-floats:encode-float64 (weight e))))
-    (dotimes (i 8)
-      (set-byte mf (incf offset) (ldb (byte 8 0) int))
-      (setq int (ash int -8)))))
+  ;; Build the whole edge head (node head + from + to + weight) in one vector
+  ;; and move it with a single SET-BYTES (see SERIALIZE-NODE-HEAD).
+  (let ((vec (make-byte-vector +edge-header-size+))
+        (i 0))
+    (setq i (pack-node-head vec 0 e))      ;; i now past the node head
+    (replace vec (from e) :start1 i)       (incf i 16)
+    (replace vec (to e)   :start1 i)       (incf i 16)
+    (pack-uint vec i (ieee-floats:encode-float64 (weight e)) 8)
+    (set-bytes mf vec offset +edge-header-size+)
+    (+ offset (1- +edge-header-size+))))
 
 (defun deserialize-edge-head (mf offset)
   (multiple-value-bind
         (deleted-p written-p heap-written-p type-idx-written-p views-written-p
-                   ve-written-p vev-written-p type-id revision pointer offset)
-      (deserialize-node-head mf offset)
+                   ve-written-p vev-written-p type-id revision pointer
+                   commit-epoch prev-pointer offset)
+      (funcall *node-head-reader* mf offset)
     (let* ((subclass (if (eq type-id 0)
                          'edge
                          (let ((type-meta (lookup-node-type-by-id
@@ -84,6 +89,8 @@
                :type-id type-id
                :revision revision
                :data-pointer pointer
+               :commit-epoch commit-epoch
+               :prev-pointer prev-pointer
                :from (let ((vec (get-buffer 16)))
                        (dotimes (i 16)
                          (setf (aref vec i) (get-byte mf (incf offset))))
@@ -97,7 +104,7 @@
                            (setq int (dpb (get-byte mf (incf offset))
                                           (byte 8 (* i 8)) int)))
                          (ieee-floats:decode-float64 int)))))
-      (change-class e subclass))))
+      (change-node-class e subclass))))
 
 (defun make-edge-table (location &key (key-test 'uuid-array-equal)
                                    (base-buckets (expt 2 18)))
@@ -117,6 +124,9 @@
   (lookup-edge (read-id-array-from-string id) :graph graph))
 
 (defmethod lookup-edge ((id array) &key (graph *graph*))
+  "Return the edge with the given ID (a 16-byte id array or its string form) in
+GRAPH, or NIL if none.  Returns it regardless of its deleted flag; the
+generated LOOKUP-<type> functions filter deleted edges."
   (lookup-object id (edge-table graph) *transaction* graph))
 
 (defmethod add-to-ve-index ((edge edge) (graph graph) &key unless-present)
@@ -181,6 +191,12 @@
 (defun make-edge (type from to weight data &key id revision deleted-p
                   retry-p
                   (graph *graph*))
+  "Create and persist an edge of the type named/identified by TYPE (a node type
+name, integer id, or :GENERIC) from vertex FROM to vertex TO in GRAPH, with the
+given WEIGHT and slot DATA; return it.  FROM and TO may be vertices, id arrays,
+or id strings.  Must run inside a transaction.  You normally call the generated
+MAKE-<type> constructor (e.g. (MAKE-FOLLOWS :FROM a :TO b)) instead.  :RETRY-P
+regenerates the id on a duplicate-key collision."
   (when (stringp id)
     (setq id (read-id-array-from-string id)))
   (typecase from
@@ -212,7 +228,7 @@
                    :weight weight
                    :bytes bytes
                    :data data)))
-          (change-class e subclass)
+          (change-node-class e subclass)
           (setf (bytes e) bytes)
           (handler-case
               (create-node e graph)
@@ -281,15 +297,32 @@
           (map-index-list
            (lambda (edge-id)
              (let ((edge (lookup-edge edge-id :graph graph)))
-               (when (and (written-p edge)
+               (when (and edge (written-p edge)
                           (active-edge-p edge))
                  (return-from edge-exists-p edge))))
            index-list))))))
 
 (defun map-edges (fn graph &key collect-p edge-type vertex direction
                   include-deleted-p to-vertex from-vertex exclude-edge-types)
+  "Call FN on edges of GRAPH.  Narrow the set with :EDGE-TYPE (a type name) /
+:EXCLUDE-EDGE-TYPES; with :VERTEX plus :DIRECTION (:OUT or :IN) for that
+vertex's adjacent edges; or with :FROM-VERTEX and/or :TO-VERTEX for a specific
+endpoint pair.  Deleted edges are skipped unless :INCLUDE-DELETED-P.  With
+:COLLECT-P, collect and return FN's values; otherwise return NIL.  This drives
+OUTGOING-EDGES / INCOMING-EDGES."
   ;; FIXME: need to handle subclasses when edge-type is specified
-  (let ((result nil))
+  ;; Bind *GRAPH* to GRAPH so the value-deserializer (deserialize-edge-head)
+  ;; resolves type-ids against the right schema even when mapping a graph that
+  ;; isn't the current *GRAPH* (see the note in MAP-VERTICES).
+  (let* ((result nil)
+         (*graph* graph)
+         ;; Collected edges escape the scan pin -> materialize before FN; a
+         ;; side-effect scan runs FN inside the pin so its lazy reads are safe.
+         (fn (if collect-p
+                 (let ((user-fn fn))
+                   (lambda (e) (ensure-node-bytes e graph) (funcall user-fn e)))
+                 fn)))
+    (with-read-pin (graph)        ; retain whatever versions this scan observes
     (cond ((and edge-type to-vertex from-vertex)
            (let ((type-meta (or (and (integerp edge-type)
                                      (lookup-node-type-by-id edge-type :edge))
@@ -303,7 +336,7 @@
                    (map-index-list
                     (lambda (edge-id)
                       (let ((edge (lookup-edge edge-id :graph graph)))
-                        (when (and (written-p edge)
+                        (when (and edge (written-p edge)
                                    (or include-deleted-p
                                        ;;(not (deleted-p edge))))
                                        (active-edge-p edge)))
@@ -348,7 +381,7 @@
                    (map-index-list
                     (lambda (edge-id)
                       (let ((edge (lookup-edge edge-id :graph graph)))
-                        (when (and (written-p edge)
+                        (when (and edge (written-p edge)
                                    (or include-deleted-p
                                        ;;(not (deleted-p edge))))
                                        (active-edge-p edge)))
@@ -385,7 +418,7 @@
                (let ((index-list (get-type-index-list (edge-index graph) edge-type-id)))
                  (map-index-list (lambda (id)
                                    (let ((edge (lookup-edge id :graph graph)))
-                                     (when (and (written-p edge)
+                                     (when (and edge (written-p edge)
                                                 (or include-deleted-p
                                                     ;;(not (deleted-p edge))))
                                                     (active-edge-p edge)))
@@ -396,7 +429,7 @@
           (t
            (map-lhash #'(lambda (pair)
                           (let ((edge (cdr pair)))
-                            (when (and (written-p edge)
+                            (when (and edge (written-p edge)
                                        (or include-deleted-p
                                            (active-edge-p edge))
                                        (not (member (type-of edge) exclude-edge-types)))
@@ -404,14 +437,20 @@
                               (if collect-p
                                   (push (funcall fn edge) result)
                                   (funcall fn edge)))))
-                      (edge-table *graph*))))
+                      (edge-table graph)))))
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
+  "Return a list of edges directed out of VERTEX (i.e. whose FROM is VERTEX) in
+GRAPH.  :EDGE-TYPE restricts to one edge type; :INCLUDE-DELETED-P includes
+soft-deleted edges (excluded by default)."
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :out
              :collect-p t :include-deleted-p include-deleted-p))
 
 (defmethod incoming-edges ((vertex vertex) &key (graph *graph*) edge-type include-deleted-p)
+  "Return a list of edges directed into VERTEX (i.e. whose TO is VERTEX) in
+GRAPH.  :EDGE-TYPE restricts to one edge type; :INCLUDE-DELETED-P includes
+soft-deleted edges (excluded by default)."
   (map-edges 'identity graph :vertex vertex :edge-type edge-type :direction :in
              :collect-p t :include-deleted-p include-deleted-p))
 

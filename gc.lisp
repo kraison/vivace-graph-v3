@@ -92,10 +92,30 @@ walking the heap."
                 (funcall fn allocation-data-offset))
               (heap graph)))
 
+(defun map-version-chain-addresses (fn graph)
+  "Call FN with the heap address of every archived MVCC version head AND its
+retained data block, reachable via PREV-POINTER chains from the live nodes.
+Without this, GC-HEAP (which roots only live heads) would free the retained
+version chain on the next OPEN-GRAPH, leaving live PREV-POINTERs dangling."
+  (map-all-nodes
+   (lambda (node)
+     (let ((p (prev-pointer node)))
+       (loop
+         (when (zerop p) (return))
+         (funcall fn p)                       ; the archived head block
+         (multiple-value-bind (d w hw tiw vw vew vvw type-id rev data-ptr epoch prev off)
+             (deserialize-node-head (heap graph) p)
+           (declare (ignore d w hw tiw vw vew vvw type-id rev epoch off))
+           (when (> data-ptr 0)
+             (funcall fn data-ptr))            ; the archived version's data block
+           (setf p prev)))))
+   graph))
+
 (defun map-all-graph-allocations (fn graph)
   "Call FN for each heap address referenced through a data structure
 within GRAPH."
   (map-node-addresses fn graph)
+  (map-version-chain-addresses fn graph)
   (map-all-index-list-addresses fn graph))
 
 (defun heap-allocation-table (graph)

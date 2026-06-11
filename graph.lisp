@@ -1,11 +1,69 @@
 (in-package :graph-db)
 
+(defun spatial-index-root-file (location)
+  (format nil "~A/spatial-index.root" location))
+
+(defun init-spatial-index (graph &key (precision 7))
+  "Create GRAPH's spatial index (at geohash PRECISION) in its indexes heap and
+persist the skip-list root pointer + precision to a sidecar file (mirrors how
+views persist their pointer).  PRECISION is read back by RESTORE-SPATIAL-INDEX."
+  (let ((idx (make-spatial-index (indexes graph) :precision precision)))
+    (setf (spatial-index graph) idx)
+    (cl-store:store (list :address (spatial-index-address idx)
+                          :precision (spatial-index-precision idx))
+                    (spatial-index-root-file (location graph)))
+    idx))
+
+(defun restore-spatial-index (graph)
+  "Reopen GRAPH's spatial index from its root sidecar, or create a fresh one if
+the graph predates the spatial index (backward compatible)."
+  (let ((file (spatial-index-root-file (location graph))))
+    (if (probe-file file)
+        (destructuring-bind (&key address precision) (cl-store:restore file)
+          (setf (spatial-index graph)
+                (open-spatial-index (indexes graph) address :precision precision)))
+        (init-spatial-index graph))))
+
 (defun make-graph (name location &key master-p slave-p master-host
                                    replication-port replication-key package
                                    replay-txn-dir (buffer-pool-p t)
                                    (buffer-pool-size 100000)
                                    (vertex-buckets 8)
-                                   (edge-buckets 8))
+                                   (edge-buckets 8)
+                                   (heap-size *default-heap-size*)
+                                   (index-size *default-index-size*)
+                                   (keep-revisions 0)
+                                   (spatial-precision 7)
+                                   replication-filter)
+  "Create a brand-new graph named NAME with its on-disk files under the
+directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
+return it.  The directory is created if necessary and must not already contain
+a graph; use OPEN-GRAPH to reopen an existing one.
+
+Keyword arguments:
+  :MASTER-P / :SLAVE-P    create a replication master or slave.  Both require
+                          :REPLICATION-PORT; a slave also requires :MASTER-HOST.
+  :REPLICATION-PORT, :REPLICATION-KEY, :MASTER-HOST, :REPLAY-TXN-DIR
+                          replication configuration (see Chapter 10 of the
+                          manual).
+  :BUFFER-POOL-P          whether to start the shared node buffer pool (default T).
+  :BUFFER-POOL-SIZE       buffer pool size (default 100000).
+  :VERTEX-BUCKETS / :EDGE-BUCKETS
+                          initial linear-hash bucket counts (default 8).
+  :HEAP-SIZE / :INDEX-SIZE
+                          initial sizes (bytes) of the heap and indexes regions
+                          (default *DEFAULT-HEAP-SIZE* / *DEFAULT-INDEX-SIZE*).
+                          Both grow on demand, so these are only starting sizes.
+  :SPATIAL-PRECISION      geohash precision of the spatial index grid (default 7,
+                          ~150 m cells; 9 ~ 5 m).  Persisted with the index and
+                          read back on OPEN-GRAPH.  See Chapter 13.
+  :REPLICATION-FILTER     (slaves only) a predicate (NODE) -> boolean; the slave
+                          applies only replicated writes whose node it accepts,
+                          so it holds just a subset (e.g. its area of operations).
+                          See MAKE-SPATIAL-REPLICATION-FILTER.
+
+A .dirty marker file is written on creation; always CLOSE-GRAPH to flush data
+to disk and remove it."
   (when (and replay-txn-dir (not slave-p))
     (error ":REPLAY-TXN-DIR is only for slave graphs"))
   (when (and (or slave-p master-p) (not replication-port))
@@ -21,7 +79,7 @@
       (ensure-buffer-pool buffer-pool-size))
     (let* ((heap (create-memory
                   (format nil "~A/heap.dat" path)
-                  (* 1024 1024 1000)))
+                  heap-size))
            (graph
             (make-instance
              (cond (slave-p 'slave-graph)
@@ -33,6 +91,7 @@
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
              #+lispworks (make-hash-table :single-thread nil)
+             #+ecl (make-hash-table)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -46,7 +105,7 @@
              :heap heap
              :indexes (create-memory
                        (format nil "~A/indexes.dat" path)
-                       (* 1024 1024 1000))
+                       index-size)
              :ve-index-in (make-ve-index
                            (format nil "~A/ve-index-in/" path))
              :ve-index-out (make-ve-index
@@ -59,14 +118,24 @@
       (setf (edge-index graph)
             (make-type-index
              (format nil "~A/edge-index.dat" path) heap))
+      ;; (MVCC: the lhash value-finalizer that copied node bytes under the bucket
+      ;; lock is gone; read paths now materialize bytes under a read pin instead.)
       (let ((*graph* graph))
         (init-schema graph)
+        ;; MVCC: graph-wide default retained-version count (per-type overrides via
+        ;; def-vertex/def-edge :keep-revisions).  Set before update-schema persists.
+        (setf (schema-keep-revisions (schema graph)) keep-revisions)
         (update-schema graph)
+        (init-spatial-index graph :precision spatial-precision)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph))
       (when slave-p
         (setf (master-host graph) master-host)
+        ;; Set the subset filter before replay/replication so the slave applies
+        ;; only its subset from the very first transaction.
+        (when replication-filter
+          (setf (replication-filter graph) replication-filter))
         (when replay-txn-dir
           (let ((*graph* graph))
             (replay graph replay-txn-dir package))))
@@ -80,7 +149,19 @@
       graph)))
 
 (defun open-graph (name location &key master-p slave-p master-host replication-port
-                   replication-key package (buffer-pool-p t) (gc-heap-p t))
+                   replication-key package (buffer-pool-p t) (gc-heap-p t)
+                   (buffer-pool-size 100000)
+                   (accept-versions (list +storage-version+))
+                   keep-revisions)
+  "Open the existing graph named NAME whose files live under directory
+LOCATION, register it, and return it.  Use this to reopen a graph created
+earlier with MAKE-GRAPH; the keyword arguments mirror MAKE-GRAPH's.
+
+Signals an error if LOCATION holds a .dirty marker, which means the graph was
+not closed cleanly and must be recovered first (see RECOVER-TRANSACTIONS and
+the backup/recovery chapter).  By default the heap is garbage-collected
+(:GC-HEAP-P) and outstanding transactions are recovered on open.  Always
+CLOSE-GRAPH when finished."
   (ensure-directories-exist location)
   (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
@@ -92,8 +173,9 @@
     (log:info "Opening graph.")
     (when buffer-pool-p
       (log:info "Initializing buffer pool.")
-      (ensure-buffer-pool))
-    (let* ((heap (open-memory (format nil "~A/heap.dat" path)))
+      (ensure-buffer-pool buffer-pool-size))
+    (let* ((heap (open-memory (format nil "~A/heap.dat" path)
+                              :accept-versions accept-versions))
            (graph
             (make-instance
              (cond (slave-p 'slave-graph)
@@ -105,6 +187,7 @@
              #+sbcl (make-hash-table :synchronized t)
              #+ccl (make-hash-table :shared t)
              #+lispworks (make-hash-table :single-thread nil)
+             #+ecl (make-hash-table)
              :cache
              (make-id-table :synchronized t :weakness :value)
              :replication-key replication-key
@@ -115,7 +198,8 @@
                           (format nil "~A/edge/" path))
              :heap heap
              :indexes (open-memory
-                       (format nil "~A/indexes.dat" path))
+                       (format nil "~A/indexes.dat" path)
+                       :accept-versions accept-versions)
              :ve-index-in (open-ve-index
                            (format nil "~A/ve-index-in/" path))
              :ve-index-out (open-ve-index
@@ -127,13 +211,24 @@
               (open-type-index (format nil "~A/vertex-index.dat" path) heap))
         (setf (edge-index graph)
               (open-type-index (format nil "~A/edge-index.dat" path) heap))
+        ;; (MVCC: no lhash value-finalizer; read paths materialize node bytes
+        ;; under a read pin -- see ENSURE-NODE-BYTES.)
         (if (probe-file schema-file)
-            (setf (schema graph)
-                  (cl-store:restore schema-file))
+            (progn
+              (setf (schema graph)
+                    (cl-store:restore schema-file))
+              ;; Locks aren't persisted; rebuild the per-class rw-locks for the
+              ;; restored types (otherwise schema-class-locks is nil and
+              ;; def-vertex/def-edge and with-*-locked-class fail -- issue #32).
+              (restore-schema-locks (schema graph)))
             (init-schema graph))
         (setf (schema-lock (schema graph)) (make-recursive-lock))
+        ;; MVCC: optional override of the persisted graph-wide keep-revisions.
+        (when keep-revisions
+          (setf (schema-keep-revisions (schema graph)) keep-revisions))
         (update-schema graph)
         (restore-views graph)
+        (restore-spatial-index graph)
         (with-open-file (out dirty-file :direction :output)
           (format out "~S" (get-universal-time)))
         (setf (gethash name *graphs*) graph)
@@ -152,6 +247,12 @@
       graph)))
 
 (defmethod close-graph ((graph graph) &key (snapshot-p t))
+  "Cleanly close GRAPH: stop replication, flush and unmap all on-disk
+structures (heap, indexes, vertex/edge tables), remove the .dirty marker, and
+deregister it.  With :SNAPSHOT-P true (the default) a snapshot backup is taken
+first.  Returns GRAPH.  Must be called with *GRAPH* bound to GRAPH (the
+snapshot path relies on it).  Failing to close a graph leaves its .dirty marker
+in place, forcing recovery on the next OPEN-GRAPH."
   (when (graph-open-p graph)
     (stop-replication graph)
     (remhash (graph-name graph) *graphs*)

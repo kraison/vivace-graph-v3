@@ -48,8 +48,17 @@
   (key-serializer 'serialize-key)
   (key-deserializer 'deserialize-key)
   (value-serializer 'serialize-uint64)
-  (value-deserializer 'deserialize-uint64))
+  (value-deserializer 'deserialize-uint64)
+  ;; OBSOLETE (MVCC): the node-data read-after-free finalizer is gone -- read
+  ;; paths now materialize bytes under a read pin (see ENSURE-NODE-BYTES).  The
+  ;; slot is retained (unused, always NIL) so cl-store can still restore lhash
+  ;; struct.dat files written before the finalizer was removed.
+  (value-finalizer nil))
 
+;; ECL does not expose SIMPLE-VECTOR as a class usable as a method
+;; specializer; the ((x array) (y array)) method below (using AREF) handles
+;; simple vectors there too.
+#-ecl
 (defmethod uuid-array-equal ((x simple-vector) (y simple-vector) &optional _a _b)
   (declare (optimize (speed 3) (safety 0)))
   (declare (ignore _a _b))
@@ -218,10 +227,14 @@
         (expt 2 (%lhash-level lhash)))))
 
 (defun hash (lhash level key)
+  ;; Uses %lhash-next-split (raw) — all callers already hold split-lock READ or
+  ;; WRITE; re-acquiring via read-lhash-next-split would deadlock if a writer
+  ;; is queued (nested read blocks on condition-wait while outer read holds R=1
+  ;; that the writer is waiting on).
   (let* ((hkey (%hash key))
          (mod-n (* (%lhash-base-buckets lhash) (expt 2 level)))
          (h0 (mod hkey mod-n)))
-    (if (and (>= h0 (read-lhash-next-split lhash))
+    (if (and (>= h0 (%lhash-next-split lhash))
              (< h0 mod-n))
         h0
         (mod hkey (* (%lhash-base-buckets lhash) (expt 2 (1+ level)))))))
@@ -299,7 +312,8 @@
       (setf (svref (%lhash-lock-vector lhash) i)
             #+sbcl (sb-thread:make-mutex)
             #+lispworks (mp:make-lock)
-            #+ccl (make-lock)))
+            #+ccl (make-lock)
+            #+ecl (mp:make-lock :recursive t)))
     lhash))
 
 (defun open-lhash (location)
@@ -346,7 +360,8 @@
             (setf (svref (%lhash-lock-vector lhash) i)
                   #+sbcl (sb-thread:make-mutex)
                   #+lispworks (mp:make-lock)
-                  #+ccl (make-lock))))
+                  #+ccl (make-lock)
+                  #+ecl (mp:make-lock :recursive t))))
       (error (c)
         (log:debug "Cannot open lhash: ~S" c)
         (munmap-file (%lhash-config lhash))
@@ -380,6 +395,7 @@
         #+sbcl (sb-thread:release-mutex lock)
         #+lispworks (mp:process-unlock lock)
         #+ccl (ccl:release-lock lock)
+        #+ecl (mp:giveup-lock lock)
       (log:debug "RELEASED LOCK: ~A" lock))))
 
 (defun grab-lhash-lock (lhash index &key (wait-p t) timeout)
@@ -390,6 +406,8 @@
         #+lispworks (mp:process-lock lock nil timeout)
         ;; FIXME honor wait-p and timeout for CCL
         #+ccl (ccl:grab-lock lock)
+        ;; FIXME honor timeout for ECL
+        #+ecl (mp:get-lock lock wait-p)
       (log:debug "GOT LOCK: ~A" lock))))
 
 (defmacro with-locked-hash-key ((lhash key) &body body)
@@ -397,12 +415,18 @@
     `(let ((,lh ,lhash))
        (with-read-lock ((%lhash-split-lock ,lh))
          (let* ((,k ,key)
-                (,bucket (hash ,lh (read-lhash-level ,lh) ,k))
+                ;; Use %lhash-level (raw) — split-lock is already held as read;
+                ;; calling read-lhash-level here would re-acquire it and deadlock
+                ;; if a writer is queued.
+                (,bucket (hash ,lh (%lhash-level ,lh) ,k))
                 (,lock (lookup-lhash-lock ,lhash ,bucket)))
            #+ccl
            (ccl:with-lock-grabbed (,lock)
              ,@body)
            #+lispworks
+           (mp:with-lock (,lock)
+             ,@body)
+           #+ecl
            (mp:with-lock (,lock)
              ,@body)
            #+sbcl
@@ -416,6 +440,9 @@
        (ccl:with-lock-grabbed (,lock)
          ,@body)
        #+lispworks
+       (mp:with-lock (,lock)
+         ,@body)
+       #+ecl
        (mp:with-lock (,lock)
          ,@body)
        #+sbcl
@@ -597,14 +624,18 @@
   ;; requires no bookkeeping bytes.  Use read-bucket-as-bytes for reorg?
   (let ((pairs (read-bucket lhash file offset)))
     (clear-bucket lhash file offset)
-    (dolist (pair pairs)
-      (if (funcall (%lhash-test lhash) (car pair) key)
-          (decf-lhash-count lhash)
-          (add-to-bucket lhash
-                         (%lhash-table lhash)
-                         offset
-                         (car pair)
-                         (cdr pair))))))
+    ;; The survivors are re-added, not newly inserted, so bind
+    ;; *rehashing-bucket* to keep add-to-bucket from inflating the count.
+    ;; Only the matched key's decf should affect it.
+    (let ((*rehashing-bucket* t))
+      (dolist (pair pairs)
+        (if (funcall (%lhash-test lhash) (car pair) key)
+            (decf-lhash-count lhash)
+            (add-to-bucket lhash
+                           (%lhash-table lhash)
+                           offset
+                           (car pair)
+                           (cdr pair)))))))
 
 (defun rehash-bucket (lhash bucket)
   ;;(log:info "REHASHING BUCKET ~A" bucket)
@@ -658,7 +689,9 @@
 
 (defun %lhash-insert (lhash key val)
   ;;(log:info "ADDING ~A/~A TO ~A" key val lhash)
-  (let ((bucket (hash lhash (read-lhash-level lhash) key)) (split-p nil))
+  ;; Use %lhash-level (raw) — callers hold split-lock READ; re-acquiring via
+  ;; read-lhash-level would deadlock if a writer is queued.
+  (let ((bucket (hash lhash (%lhash-level lhash) key)) (split-p nil))
     (with-locked-hash-bucket (lhash bucket)
       (setq split-p
             (add-to-bucket lhash (%lhash-table lhash)
@@ -667,13 +700,13 @@
 
 (defun lhash-insert (lhash key val)
   (let ((split-p nil))
-    ;;(log:debug "~A TRYING TO GET READ LOCK ~A" (current-thread) (%lhash-split-lock lhash))
     (with-read-lock ((%lhash-split-lock lhash))
-      ;;(log:debug "~A GOT READ LOCK ~A" (current-thread) (%lhash-split-lock lhash))
-      (setq split-p (%lhash-insert lhash key val))
-      (when (and (null split-p) (> (load-factor lhash) .75))
-        (setq split-p t)))
-    ;;(log:debug "~A RELEASED READ LOCK ~A" (current-thread) (%lhash-split-lock lhash))
+      (setq split-p (%lhash-insert lhash key val)))
+    ;; split-p is set by %lhash-insert when a bucket overflows; that is the
+    ;; only split trigger.  A secondary load-factor check here would call
+    ;; read-lhash-level, re-acquiring the split-lock while a writer may
+    ;; already be queued — new reads block, the queued writer never drains
+    ;; R=1 → deadlock.
     (handler-case
         (when split-p
           (split-lhash lhash))
@@ -683,7 +716,7 @@
     (read-lhash-count lhash)))
 
 (defun %lhash-update (lhash key val)
-  (let ((bucket (hash lhash (read-lhash-level lhash) key)))
+  (let ((bucket (hash lhash (%lhash-level lhash) key)))
     (with-locked-hash-bucket (lhash bucket)
       (update-in-bucket lhash (%lhash-table lhash)
                         (bucket-offset lhash bucket) key val))))
@@ -697,7 +730,7 @@
       (error c))))
 
 (defun %lhash-custom-update (lhash fn key)
-  (let ((bucket (hash lhash (read-lhash-level lhash) key)))
+  (let ((bucket (hash lhash (%lhash-level lhash) key)))
     (with-locked-hash-bucket (lhash bucket)
       (custom-update-in-bucket lhash (%lhash-table lhash)
                                (bucket-offset lhash bucket)
@@ -713,7 +746,7 @@
       (error c))))
 
 (defun %lhash-get (lhash key)
-  (let ((bucket (hash lhash (read-lhash-level lhash) key)))
+  (let ((bucket (hash lhash (%lhash-level lhash) key)))
     (with-locked-hash-bucket (lhash bucket)
       (read-from-bucket lhash (%lhash-table lhash)
                         (bucket-offset lhash bucket) key))))
@@ -729,7 +762,7 @@
 (defun lhash-remove (lhash key)
   (handler-case
       (with-read-lock ((%lhash-split-lock lhash))
-        (let* ((bucket (hash lhash (read-lhash-level lhash) key)))
+        (let* ((bucket (hash lhash (%lhash-level lhash) key)))
           (with-locked-hash-bucket (lhash bucket)
             (remove-from-bucket lhash (%lhash-table lhash)
                                 (bucket-offset lhash bucket) key))))
@@ -740,7 +773,7 @@
 
 (defun map-lhash (fn lhash &key collect-p)
   (with-read-lock ((%lhash-split-lock lhash))
-    (let ((result nil) (bucket-count (bucket-count lhash)))
+    (let ((result nil) (bucket-count (%bucket-count lhash)))
       (dotimes (bucket bucket-count)
         (let* ((offset (bucket-offset lhash bucket))
                (items (read-bucket lhash (%lhash-table lhash) offset)))
@@ -753,7 +786,7 @@
 
 (defun analyze-lhash (lhash)
   (with-read-lock ((%lhash-split-lock lhash))
-    (let ((result nil) (bucket-count (bucket-count lhash)))
+    (let ((result nil) (bucket-count (%bucket-count lhash)))
       (dotimes (bucket bucket-count)
         (let* ((offset (bucket-offset lhash bucket))
                (items (read-bucket lhash (%lhash-table lhash) offset)))

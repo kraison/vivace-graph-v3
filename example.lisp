@@ -28,8 +28,12 @@
    (upc :type string))
   :test-graph)
 
+;; A geometry slot marked :index t opts the type into the spatial index: every
+;; merchant is automatically (re)indexed by its LOCATION on commit, with no
+;; hand-written node-geometry method.  (make-point takes lon, lat in WGS84.)
 (def-vertex merchant ()
-  ((name :type string))
+  ((name :type string)
+   (location :type geometry :index t))
   :test-graph)
 
 (def-edge likes ()
@@ -86,9 +90,15 @@
 (with-transaction ()
   (let ((c1 (make-customer :first-name "Joe" :last-name "Blow" :email "joe@blow.com"))
         (c2 (make-customer :first-name "Jill" :last-name "Blow" :email "jill@blow.com"))
-        (m1 (make-merchant :name "Snake Oil, Inc."))
+        ;; m1 carries a LOCATION (lon, lat); committing it indexes it spatially.
+        (m1 (make-merchant :name "Snake Oil, Inc."
+                           :location (make-point 37.1724d0 49.2020d0)))
         (p1 (make-product :name "Oil of Longevity" :upc "1234567890"))
         (p2 (make-product :name "Oil of Slipperiness" :upc "abcdefghijk")))
+    ;; Two more merchants: one ~1.5 km away, one in another city -- so the
+    ;; proximity queries below have something to discriminate.
+    (make-merchant :name "Elixir Emporium" :location (make-point 37.1850d0 49.2080d0))
+    (make-merchant :name "Faraway Tonics"  :location (make-point 23.7183d0 50.0263d0))
     (make-sells :from m1 :to p1)
     ;; The above is equivalent to
     ;; (make-edge 'sells m1 p1 1 nil)
@@ -148,5 +158,34 @@
            :edge-type 'likes
            :vertex (lookup-customer-by-email "joe@blow.com")
            :direction :out)
+
+;;; Spatial queries
+;;;
+;;; Because MERCHANT has a (location :type geometry :index t) slot, every
+;;; merchant was placed in the graph's spatial index on commit.  No extra
+;;; bookkeeping is needed -- the transaction write-path maintains it.
+
+;; Merchants within 2 km of a downtown point (lat, lon, radius-metres).
+;; Returns (merchant . distance-metres) pairs, nearest first.
+(find-nodes-near 49.2020d0 37.1724d0 2000d0)
+;; => Snake Oil, Inc. (~0 m) and Elixir Emporium (~1.5 km); Faraway Tonics
+;;    (another city) is excluded.
+
+;; The two nearest merchants to that same point, nearest first.
+(find-nearest-k 49.2020d0 37.1724d0 2)
+
+;; Merchants whose location falls inside an area of interest (a polygon, given
+;; as rings of (lon lat) -- the first ring is the outer boundary).
+(find-nodes-within
+ (make-polygon '(((37.165d0 49.196d0) (37.195d0 49.196d0)
+                  (37.195d0 49.212d0) (37.165d0 49.212d0)
+                  (37.165d0 49.196d0)))))
+
+;; The same proximity query, composed in Prolog with a type test: bind ?m to
+;; every merchant within 2 km of the point.  find-near/4 yields nodes, so it
+;; cooperates with is-a and the rest of the query language.
+(select-flat (?m)
+  (is-a ?m merchant)
+  (find-near ?m 49.2020d0 37.1724d0 2000d0))
 
 (close-graph *graph*)

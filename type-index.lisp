@@ -10,11 +10,13 @@
   (locks (map-into (make-array +max-node-types+)
                    #+ccl 'make-lock
                    #+lispworks 'mp:make-lock
+                   #+ecl 'mp:make-lock
                    #+sbcl 'sb-thread:make-mutex))
   (cache
    #+sbcl (make-hash-table :test 'eq :synchronized t)
    #+lispworks (make-hash-table :test 'eq :single-thread nil)
-   #+ccl (make-hash-table :test 'eq :shared t)))
+   #+ccl (make-hash-table :test 'eq :shared t)
+   #+ecl (make-hash-table :test 'eq)))
 
 (defun make-type-index (location heap)
   (let* ((table (mmap-file location

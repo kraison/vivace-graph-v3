@@ -7,6 +7,7 @@
              (:conc-name pg-))
   (counter 0 :type (unsigned-byte 64))
   #+ccl (lock (ccl:make-lock))
+  #+ecl (lock (mp:make-lock))
   (symbols nil :type list))
 
 (defvar *prolog-gensym* (make-prolog-gensym))
@@ -24,6 +25,11 @@
   (with-lock ((pg-lock *prolog-gensym*))
     (or (pop (pg-symbols *prolog-gensym*))
         (let ((num (incf (pg-counter *prolog-gensym*))))
+          (make-symbol (format nil "~A~D" thing num)))))
+  #+ecl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (or (pop (pg-symbols *prolog-gensym*))
+        (let ((num (incf (pg-counter *prolog-gensym*))))
           (make-symbol (format nil "~A~D" thing num))))))
 
 (defun release-prolog-symbol (symbol)
@@ -32,6 +38,9 @@
   #+lispworks
   (sys:atomic-push symbol (pg-symbols *prolog-gensym*))
   #+ccl
+  (with-lock ((pg-lock *prolog-gensym*))
+    (push symbol (pg-symbols *prolog-gensym*)))
+  #+ecl
   (with-lock ((pg-lock *prolog-gensym*))
     (push symbol (pg-symbols *prolog-gensym*))))
 
@@ -108,9 +117,14 @@
   (first list))
 
 (defun prolog-compile-help (functor clauses)
-  (let ((arity (relation-arity (clause-head (first clauses)))))
-    (compile-functor functor arity (clauses-with-arity clauses #'= arity))
-    (prolog-compile-help functor (clauses-with-arity clauses #'/= arity))))
+  ;; Base case: stop once every clause has been compiled.  Without this guard,
+  ;; (first nil) -> nil, relation-arity -> 0, and the function recurses forever
+  ;; on the empty clause set, repeatedly compiling a degenerate arity-0 functor
+  ;; -- which hangs the Lisp compiler.  This made every <- rule definition hang.
+  (unless (null clauses)
+    (let ((arity (relation-arity (clause-head (first clauses)))))
+      (compile-functor functor arity (clauses-with-arity clauses #'= arity))
+      (prolog-compile-help functor (clauses-with-arity clauses #'/= arity)))))
 
 (defmethod prolog-compile ((functor functor))
   (if (null (functor-clauses functor))
@@ -601,6 +615,16 @@
                 (iterate:collect (cons k v))))
 
 (defmacro select (options vars &rest goals)
+  "Run the Prolog query GOALS and collect the bindings of the result VARS.
+
+VARS is a list of ?-variables (e.g. (?a ?b)).  GOALS are query goals such as
+(is-a ?u user), an edge functor (follows ?a ?b), (node-slot-value ?n slot ?v),
+or (lisp ?x form).  OPTIONS is a plist; the most useful are :FLAT (return a
+flat list of the single var's values rather than a list of tuples), :LIMIT,
+and :SKIP.  Returns a list of solutions.
+
+A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
+SELECT-FIRST for common shorthands."
   (let* ((goals (replace-?-vars goals))
          (options (plist-alist options)))
     `(let* ((top-level-query (prolog-gensym "PROVE"))
@@ -643,15 +667,23 @@
        (nreverse *select-list*))))
 
 (defmacro select-flat (vars &rest goals)
+  "Like SELECT with :FLAT t: return a flat list of values rather than a list of
+tuples.  Most convenient with a single result variable."
   `(select (:flat t) ,vars ,@goals))
 
 (defmacro select-first (vars &rest goals)
+  "Return only the first solution's tuple for VARS (cuts after the first
+match)."
   `(first (select () ,vars ,@goals !)))
 
 (defmacro select-one (vars &rest goals)
+  "Return the first value of the first result variable from the first solution
+-- ideal for single-result lookups (e.g. find one node by a property)."
   `(first (select (:flat t :limit 1) ,vars ,@goals !)))
 
 (defmacro do-query (&rest goals)
+  "Run GOALS purely for their side effects, collecting nothing.  Useful with
+goals like (trigger ...) or (retract ...)."
   `(select () () ,@goals))
 
 #|

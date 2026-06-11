@@ -11,7 +11,8 @@
 
 (let ((length-table #+sbcl (make-hash-table :synchronized t)
                     #+lispworks (make-hash-table :single-thread nil)
-                    #+ccl (make-hash-table :shared t)))
+                    #+ccl (make-hash-table :shared t)
+                    #+ecl (make-hash-table)))
   (defun encode-length (int)
     (declare (type integer int))
     (or (gethash int length-table)
@@ -269,8 +270,17 @@
   (uuid:byte-array-to-uuid bytes))
 
 (defmethod serialize ((uuid uuid:uuid))
-  "Encode a UUID."
-  (uuid:uuid-to-byte-array uuid +uuid+))
+  "Encode a UUID as [+uuid+ 16 <16 raw bytes>].
+The installed uuid library's uuid-to-byte-array takes a single argument and
+returns the raw 16 octets, so we prepend the type tag and length ourselves
+to match the layout extract-length / deserialize-help expect for +uuid+."
+  (let ((raw (uuid:uuid-to-byte-array uuid))
+        (vec (make-byte-vector 18)))
+    (setf (aref vec 0) +uuid+)
+    (setf (aref vec 1) 16)
+    (dotimes (i 16)
+      (setf (aref vec (+ 2 i)) (aref raw i)))
+    vec))
 
 (defmethod deserialize-help ((become (eql +positive-integer+)) (bytes array))
   "Decode a positive integer."
@@ -305,16 +315,17 @@
       (make-array 3
                   :element-type '(unsigned-byte 8)
                   :initial-contents `(,+positive-integer+ 1 0))
-      (let* ((n-bytes (ceiling (integer-length int) 8))
+      ;; Derive the byte count from the magnitude, not from INT itself: the
+      ;; integer-length of a negative power of two (e.g. -256, or -1) is one
+      ;; bit short of its magnitude, which would truncate the stored bytes.
+      (let* ((negativep (minusp int))
+             (magnitude (abs int))
+             (n-bytes (ceiling (integer-length magnitude) 8))
              (vec (make-array (+ 2 n-bytes) :element-type '(unsigned-byte 8))))
-        (if (minusp int)
-            (progn
-              (setf (aref vec 0) +negative-integer+)
-              (setq int (abs int)))
-            (setf (aref vec 0) +positive-integer+))
+        (setf (aref vec 0) (if negativep +negative-integer+ +positive-integer+))
         (setf (aref vec 1) n-bytes)
         (dotimes (i n-bytes)
-          (setf (aref vec (+ 2 i)) (ldb (byte 8 (* i 8)) int)))
+          (setf (aref vec (+ 2 i)) (ldb (byte 8 (* i 8)) magnitude)))
         vec)))
 
 (defmethod deserialize-help ((become (eql +single-float+)) (bytes array))
@@ -397,8 +408,13 @@ another for prepending our code and the length of the object."
   (intern (deserialize-help +string+ bytes) :keyword))
 
 (defmethod serialize ((symbol symbol))
-  (or (and (null symbol) #(#.+null+))
-      (and (eq symbol t) #(#.+t+))
+  ;; T and NIL must serialize to (unsigned-byte 8) vectors like everything
+  ;; else; the previous literal #(...) vectors were simple-vectors of type T,
+  ;; which DESERIALIZE rejected at top level.
+  (or (and (null symbol)
+           (let ((v (make-byte-vector 1))) (setf (aref v 0) +null+) v))
+      (and (eq symbol t)
+           (let ((v (make-byte-vector 1))) (setf (aref v 0) +t+) v))
       (let ((symbol-name (serialize (symbol-name symbol))))
         (if (keywordp symbol)
             (progn

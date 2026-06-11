@@ -19,6 +19,18 @@
 (defmethod get-byte ((array array) offset)
   (aref array offset))
 
+;; Batched counterparts so the head codecs' single SET-BYTES/GET-BYTES also work
+;; when the "file" is a plain byte array (the .txn transaction buffer and the
+;; codec round-trip tests), not just an mmap'd file.
+(defmethod set-bytes ((array array) vec offset length)
+  (replace array vec :start1 offset :end1 (+ offset length) :start2 0 :end2 length)
+  vec)
+
+(defmethod get-bytes ((array array) offset length)
+  (let ((vec (make-byte-vector length)))
+    (replace vec array :start2 offset :end2 (+ offset length))
+    vec))
+
 (defmethod serialize-uint64 ((array array) int offset)
   (setf (aref array (+ offset 0)) (ldb (byte 8  0) int))
   (setf (aref array (+ offset 1)) (ldb (byte 8  8) int))
@@ -58,7 +70,8 @@
 
 (defclass object-set ()
   ((table
-    :initform (make-id-table)
+    ;; Validation reads object-sets from other threads; CCL requires :shared t.
+    :initform (make-id-table #+ccl :synchronized #+ccl t)
     :reader table)))
 
 (defmethod object-set-list ((set object-set))
@@ -171,7 +184,19 @@
 
 (defgeneric lookup-object (id table transaction graph)
   (:method (id table (transaction null) graph)
-    (lookup-node table id graph))
+    ;; Non-transactional read: pin the read epoch so the reaper retains whatever
+    ;; version we observe.  If this is a STANDALONE lookup (no enclosing pin), the
+    ;; node escapes our pin, so materialize its bytes now (the lhash value-
+    ;; finalizer used to do this under the bucket lock).  If we are nested in a
+    ;; pinned scan, that scan already protects the node and handles escape, so we
+    ;; leave the data lazy.  Transactional reads -- the other method -- are
+    ;; covered by the transaction's own start-tx-id.
+    (let ((standalone (not *read-pinned-p*)))
+      (with-read-pin (graph)
+        (let ((node (lookup-node table id graph)))
+          (when (and standalone (node-p node))
+            (ensure-node-bytes node graph))
+          node))))
   (:method (id table transaction (graph t))
     (let ((local-cache (local-cache transaction))
           (graph-cache (graph-cache transaction)))
@@ -181,8 +206,18 @@
             (let ((value (or (gethash id graph-cache)
                              (lookup-node table id (graph transaction)))))
               (when value
-                (add-to-object-set value (read-set transaction))
-                (setf (gethash id local-cache) value))))))))
+                ;; P4: resolve the version visible at this transaction's snapshot
+                ;; (commit-epoch < start-tx-id).  The resolved (possibly archived)
+                ;; version is cached only in the txn-private local-cache, so reads
+                ;; are repeatable within the transaction.  Validation keys the
+                ;; read-set by id, so OCC is unaffected.
+                (when *snapshot-reads-p*
+                  (setq value (resolve-version-at-epoch
+                               value (graph transaction)
+                               (start-tx-id transaction))))
+                (when value
+                  (add-to-object-set value (read-set transaction))
+                  (setf (gethash id local-cache) value)))))))))
 
 (defgeneric write-object (object transaction))
 
@@ -219,6 +254,15 @@
 
 (defmacro with-transaction ((&optional (transaction-manager '(transaction-manager *graph*)))
                             &body body)
+  "Run BODY as a single ACID transaction against TRANSACTION-MANAGER (by
+default that of the current *GRAPH*) and return BODY's value.
+
+All mutations -- MAKE-<type> constructors, SAVE, DELETE-NODE/MARK-DELETED --
+must run inside a transaction.  On normal exit the transaction is validated
+against its read/write sets and committed; if validation finds a conflict it
+is retried (up to *MAXIMUM-TRANSACTION-ATTEMPTS*, then under an exclusive
+lock).  A non-local exit rolls it back.  To modify an existing node, COPY it
+inside the transaction, mutate the copy, then SAVE it."
   `(call-with-transaction (lambda () ,@body) ,transaction-manager))
 
 (defclass tx ()
@@ -348,6 +392,212 @@ no data are not written."
         (error (c)
           (log:error "Unable to free ~A (~A): ~A" (string-id node) data-pointer c))))))
 
+;;; ---------------------------------------------------------------------------
+;;; MVCC versioned write path + lazy, epoch-gated reaper
+;;;
+;;; On update/delete the prior version's head is archived into its own heap block
+;;; (its data-pointer still references the -- now retained -- old data block) and
+;;; the new live head's PREV-POINTER chains to it.  COMMIT-EPOCH stamps every
+;;; write with the committing transaction-id.  Old versions are reclaimed lazily
+;;; by REAP-OLD-VERSIONS once no active reader/transaction can still observe them.
+;;; ---------------------------------------------------------------------------
+
+;; The committing transaction-id, bound by APPLY-TRANSACTION (the shared apply
+;; path, so masters, slaves, restore and recovery all stamp consistently).  Never
+;; travels on the replication wire -- the slave re-derives it from the tx header.
+(defvar *commit-epoch* 0)
+
+(defun archive-node-version (old-node graph)
+  "Copy OLD-NODE's current head into a freshly allocated heap block and return
+its address (for the new live head's PREV-POINTER).  The archived head keeps
+OLD-NODE's data-pointer/commit-epoch/prev-pointer, so the retained old data block
+and the rest of the version chain remain reachable."
+  (let* ((size (etypecase old-node
+                 (edge   +edge-header-size+)
+                 (vertex +node-header-size+)))
+         (addr (allocate (heap graph) size)))
+    (etypecase old-node
+      (edge   (serialize-edge-head   (heap graph) old-node addr))
+      (vertex (serialize-vertex-head (heap graph) old-node addr)))
+    addr))
+
+(defun read-archived-head (graph addr)
+  "Return (values data-pointer commit-epoch prev-pointer) of the archived head
+at heap ADDR.  Only the node-head prefix is read (an edge's from/to/weight are
+irrelevant to reaping)."
+  (multiple-value-bind (d w hw tiw vw vew vvw type-id rev data-ptr epoch prev off)
+      (deserialize-node-head (heap graph) addr)
+    (declare (ignore d w hw tiw vw vew vvw type-id rev off))
+    (values data-ptr epoch prev)))
+
+;;; --- P4 (PROTOTYPE): snapshot-isolation reads -------------------------------
+;;; A transaction observes the newest version with commit-epoch < its
+;;; start-tx-id.  When the live head is too new (committed after the reader
+;;; started), walk the prev-pointer chain and materialize the archived version
+;;; that was live as of the reader's snapshot.  The reaper's floor retains every
+;;; version an active transaction could need, so the chain is guaranteed present.
+
+(defvar *snapshot-reads-p* t
+  "When true, transactional LOOKUP-OBJECT resolves the version visible at the
+transaction's start epoch (snapshot isolation).  Prototype toggle.")
+
+(defun resolve-version-at-epoch (live-node graph epoch)
+  "Return the version of LIVE-NODE visible to a reader whose snapshot is EPOCH
+(the newest version with commit-epoch < EPOCH), or NIL if the node did not exist
+before EPOCH.  Materializes an archived version (full head + data bytes) when the
+live head is newer than EPOCH."
+  (if (< (commit-epoch live-node) epoch)
+      live-node
+      (let ((id (id live-node))
+            (edge-p (typep live-node 'edge))
+            (p (prev-pointer live-node)))
+        (loop
+          (when (zerop p) (return nil))   ; nothing old enough -> invisible
+          (let ((ver (if edge-p
+                         (deserialize-edge-head (heap graph) p)
+                         (deserialize-vertex-head (heap graph) p))))
+            (setf (id ver) id)
+            (if (< (commit-epoch ver) epoch)
+                (progn (ensure-node-bytes ver graph) (return ver))
+                (setf p (prev-pointer ver))))))))
+
+;;; Read-epoch pins (non-transactional reads).  A reader records the current
+;;; epoch BEFORE it reads a node head and holds the pin until it has finished
+;;; dereferencing that node's data.  While pinned, the reaper's floor is bounded
+;;; by the pin, so any version that was live at pin time (stop-epoch >= pin)
+;;; cannot be reclaimed out from under the reader.
+
+(defun pin-read-epoch (transaction-manager)
+  "Register a read pin at the current epoch; return its token (for UNPIN)."
+  ;; Racy read of tx-id-counter is fine: it is monotonic, and a slightly stale
+  ;; (smaller) value only makes the reaper MORE conservative, never less.
+  (let ((epoch (tx-id-counter transaction-manager)))
+    (with-recursive-lock-held ((read-pins-lock transaction-manager))
+      (let ((token (incf (read-pin-counter transaction-manager))))
+        (setf (gethash token (read-pins transaction-manager)) epoch)
+        token))))
+
+(defun unpin-read-epoch (transaction-manager token)
+  (with-recursive-lock-held ((read-pins-lock transaction-manager))
+    (remhash token (read-pins transaction-manager))))
+
+(defun minimum-read-pin (transaction-manager)
+  (with-recursive-lock-held ((read-pins-lock transaction-manager))
+    (let (min)
+      (maphash (lambda (token epoch)
+                 (declare (ignore token))
+                 (setf min (if min (min min epoch) epoch)))
+               (read-pins transaction-manager))
+      min)))
+
+;; WITH-READ-PIN (the macro) lives in graph-class.lisp -- it is used by
+;; MAP-VERTICES / MAP-EDGES, which are compiled before this file.
+
+(defun reap-safe-floor (transaction-manager)
+  "The oldest epoch any still-active transaction OR pinned non-transactional
+reader could observe.  NIL => nothing active => every archived version is
+reclaimable."
+  (let ((s (minimum-start-transaction-id transaction-manager))
+        (p (minimum-read-pin transaction-manager)))
+    (cond ((and s p) (min s p))
+          (s s)
+          (p p)
+          (t nil))))
+
+(defun %sever-prev-pointer (owner table live-node graph)
+  "Set OWNER's prev-pointer field to 0.  OWNER is :LIVE (LIVE-NODE's lhash head)
+or the heap address of an archived head."
+  (if (eq owner :live)
+      (progn
+        (lhash-custom-update
+         table
+         (lambda (mf off)
+           (dotimes (i 8) (set-byte mf (+ off +node-prev-pointer-offset+ i) 0)))
+         (id live-node))
+        (setf (prev-pointer live-node) 0))
+      (dotimes (i 8)
+        (set-byte (heap graph) (+ owner +node-prev-pointer-offset+ i) 0))))
+
+(defun %free-version-chain (addr graph)
+  "Free the archived-version head blocks from ADDR down its prev-pointer chain,
+plus each version's retained data block."
+  (let ((heap (heap graph))
+        (p addr))
+    (loop
+      (when (zerop p) (return))
+      (multiple-value-bind (data-ptr epoch prev) (read-archived-head graph p)
+        (declare (ignore epoch))
+        (let ((next prev))
+          (when (> data-ptr 0)
+            (handler-case (free heap data-ptr)
+              (error (c) (log:error "reaper: free data ~A failed: ~A" data-ptr c))))
+          (handler-case (free heap p)
+            (error (c) (log:error "reaper: free head ~A failed: ~A" p c)))
+          (setq p next))))))
+
+(defun reap-node-chain (live-node graph floor keep)
+  "Walk LIVE-NODE's prev-pointer chain and free the contiguous oldest suffix
+whose stop-epoch (the commit-epoch of the next-newer version) is < FLOOR,
+retaining at least KEEP archived versions.  Repairs exactly one prev-pointer."
+  (let ((table (tx-write-table live-node graph))
+        (above-epoch (commit-epoch live-node))  ; stop-epoch of the first archived ver
+        (owner :live)                           ; :live or a heap address
+        (p (prev-pointer live-node))
+        (kept 0))
+    (loop
+      (when (zerop p) (return))
+      (multiple-value-bind (data-ptr epoch prev) (read-archived-head graph p)
+        (declare (ignore data-ptr))
+        (cond
+          ;; A reader with start-tx-id S observes versions with commit-epoch < S.
+          ;; The version at P stopped being live at ABOVE-EPOCH (its successor's
+          ;; commit-epoch), so a reader needs it iff S <= ABOVE-EPOCH.  Hence it
+          ;; is reclaimable iff every active start is strictly past ABOVE-EPOCH,
+          ;; i.e. ABOVE-EPOCH < FLOOR (strict).  NIL floor => nothing active.
+          ((and (>= kept keep)
+                (or (null floor) (< above-epoch floor)))
+           ;; This version (and all older) can no longer be observed: cut here.
+           (%sever-prev-pointer owner table live-node graph)
+           (%free-version-chain p graph)
+           (return))
+          (t
+           ;; Retain this version; descend one link.
+           (incf kept)
+           (setf above-epoch epoch
+                 owner p
+                 p prev)))))))
+
+(defun node-keep-revisions (node graph default)
+  "How many archived versions of NODE the reaper retains regardless of epoch
+safety: NODE's node-type :keep-revisions if set, else the graph DEFAULT."
+  (let ((type-id (type-id node)))
+    (or (and (integerp type-id) (> type-id 0)
+             (let ((meta (lookup-node-type-by-id
+                          type-id (if (typep node 'edge) :edge :vertex)
+                          :graph graph)))
+               (and meta (node-type-keep-revisions meta))))
+        default)))
+
+(defun reap-old-versions (writes graph)
+  "Post-commit: reclaim archived versions of every updated/deleted node that no
+active reader/transaction can still observe, keeping each node's configured
+:KEEP-REVISIONS window.  Runs inside the transaction-manager lock (via
+APPLY-TRANSACTION)."
+  ;; During crash recovery OPEN-GRAPH replays transactions BEFORE it installs the
+  ;; transaction-manager, so the slot may be unbound here.  No readers can be
+  ;; active during recovery, so a NIL floor (reap-everything-safe) is correct.
+  (let ((floor (let ((tm (and (slot-boundp graph 'transaction-manager)
+                              (transaction-manager graph))))
+                 (and tm (reap-safe-floor tm))))
+        (default-keep (if (slot-boundp graph 'schema)
+                          (schema-keep-revisions (schema graph))
+                          0)))
+    (dolist (write writes)
+      (when (typep write 'tx-update)        ; tx-update and its subclass tx-delete
+        (let ((node (node write)))
+          (reap-node-chain node graph floor
+                           (node-keep-revisions node graph default-keep)))))))
+
 (defgeneric add-node-to-indexes (node graph &key unless-present)
   (:method ((node node) graph &key unless-present)
     (add-to-type-index node graph :unless-present unless-present)
@@ -406,6 +656,17 @@ no data are not written."
     (maybe-write-to-heap node graph)
     (add-node-to-indexes node graph
                          :unless-present *add-to-indexes-unless-present-p*)
+    ;; Mark written-p BEFORE the node becomes visible in the lhash.  written-p is
+    ;; a persisted node-head flag; if it is set only afterward (in finalize-node)
+    ;; the node is briefly in the table with written-p=0 on disk, and a
+    ;; concurrent reader can deserialize and cache that stale copy, overwriting
+    ;; the committed one — so map-vertices later skips it (its written-p guard
+    ;; fails) and the insert is lost from type-indexed scans.  Setting it here
+    ;; means the lhash entry carries written-p=1 from its first appearance.
+    (setf (written-p node) t)
+    ;; MVCC: stamp the committing epoch; a fresh node has no prior version.
+    (setf (commit-epoch node) *commit-epoch*
+          (prev-pointer node) 0)
     (handler-case
         (lhash-insert table (id node) node)
       (duplicate-key-error (condition)
@@ -423,10 +684,12 @@ no data are not written."
     (setf (bytes new-node)
           (serialize (data new-node)))
     (maybe-write-to-heap new-node graph)
-    (lhash-update table (id new-node) new-node)
-    ;; KTR: moved to post-view generation
-    ;;(maybe-free-from-heap old-node graph)
-    )
+    ;; MVCC: archive the prior version's head (it still points at the retained
+    ;; old data block) and chain the new live head to it.  The old data block is
+    ;; NO LONGER freed here -- REAP-OLD-VERSIONS reclaims it when epoch-safe.
+    (setf (prev-pointer new-node) (archive-node-version old-node graph)
+          (commit-epoch new-node) *commit-epoch*)
+    (lhash-update table (id new-node) new-node))
   write)
 
 
@@ -525,23 +788,194 @@ no data are not written."
     (dolist (write writes)
       (apply-tx-write-to-views write graph))))
 
-(defgeneric garbage-collect-heap (writes graph)
+;;; Applying transaction spatial-index updates (public spatial extension).
+;;;
+;;; Mirrors the view-maintenance pass above: a node's geometry -- obtained via
+;;; the NODE-GEOMETRY protocol, which an application specializes for its
+;;; geometry-bearing node types -- is (re)indexed on create/update and removed
+;;; on delete.  The spatial index keys on node id, so it is independent of the
+;;; MVCC version chains and the reaper (reaping an old version of a node never
+;;; changes its index entry).
+
+(defvar *node-geometry-slot-cache*
+  #+sbcl (make-hash-table :test 'eq :synchronized t)
+  #+ccl (make-hash-table :test 'eq :shared t)
+  #+lispworks (make-hash-table :test 'eq :single-thread nil)
+  #+ecl (make-hash-table :test 'eq)
+  "Cache CLASS -> list of its :INDEX-marked slot names (candidate geometry slots).")
+
+(defun node-geometry-index-slots (class)
+  "Names of CLASS's :INDEX-marked slots -- the candidate geometry slots.  A
+geometry slot opts into spatial indexing declaratively, e.g.
+  (def-vertex observation () ((location :type geometry :index t)) :app)
+We deliberately do NOT match on the declared slot type here: the `:type geometry'
+symbol is read in the *application's* package, which is not necessarily EQ to
+GRAPH-DB:GEOMETRY (and a user need not even declare a type).  Instead we return
+every indexed slot, and NODE-GEOMETRY picks the one whose runtime value is an
+actual GEOMETRY (via GEOMETRYP) -- robust across packages and to mixed
+geometry/non-geometry indexed slots on the same type.  Cached per class (runtime
+schema redefinition is not expected)."
+  (multiple-value-bind (val present) (gethash class *node-geometry-slot-cache*)
+    (if present
+        val
+        (setf (gethash class *node-geometry-slot-cache*)
+              (when (class-finalized-p class)
+                (loop for slot in (class-slots class)
+                      when (indexed-p slot)
+                        collect (slot-definition-name slot)))))))
+
+(defgeneric node-geometry (node)
+  (:documentation
+   "The GEOMETRY a node occupies, or NIL if it has none.  By default this is the
+value of the node's :INDEX-marked geometry slot (see NODE-GEOMETRY-INDEX-SLOTS);
+declaring (slot :type geometry :index t) is enough to make a node type spatially
+indexed.  Applications may instead specialize this method (e.g. for a computed
+geometry); an explicit method takes precedence over the default.")
+  (:method (node) (declare (ignore node)) nil)
+  (:method ((node node))
+    ;; NB: do NOT gate on SLOT-BOUNDP -- node-class persistent slots are read
+    ;; through SLOT-VALUE-USING-CLASS from the serialized buffer, and
+    ;; SLOT-BOUNDP reports the (always-unbound) backing CLOS slot, so it would
+    ;; skip every persistent slot.  Read the value and test it directly.
+    (loop for slot in (node-geometry-index-slots (class-of node))
+          for v = (ignore-errors (slot-value node slot))
+          when (geometryp v) return v)))
+
+(defgeneric apply-tx-write-to-spatial-index (write graph)
+  (:method (write graph) (declare (ignore write graph)) nil))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-create) graph)
+  (let ((node (node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((geom (node-geometry node)))
+        (when (and geom (not (deleted-p node)))
+          (spatial-index-insert idx (id node) geom))))))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-update) graph)
+  (let ((new-node (node write)) (old-node (old-node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((old-geom (node-geometry old-node))
+            (new-geom (node-geometry new-node)))
+        (when old-geom (spatial-index-remove idx (id old-node) old-geom))
+        (when (and new-geom (not (deleted-p new-node)))
+          (spatial-index-insert idx (id new-node) new-geom))))))
+
+(defmethod apply-tx-write-to-spatial-index ((write tx-delete) graph)
+  (let ((node (node write)) (idx (spatial-index graph)))
+    (when idx
+      (let ((geom (node-geometry node)))
+        (when geom (spatial-index-remove idx (id node) geom))))))
+
+(defgeneric apply-tx-writes-to-spatial-index (writes graph)
   (:method (writes graph)
-    (let ((old-nodes (delete-duplicates
-                      (mapcar 'old-node
-                              (remove-if-not (lambda (write)
-                                               (typep write 'tx-update))
-                                             writes)))))
-      (dolist (old-node old-nodes)
-        (maybe-free-from-heap old-node graph)))))
+    (dolist (write writes)
+      (apply-tx-write-to-spatial-index write graph))))
+
+;; NB: the old free-the-prior-version GARBAGE-COLLECT-HEAP is gone.  Under MVCC
+;; the prior version is retained (archived + chained) and reclaimed later by
+;; REAP-OLD-VERSIONS; freeing it at commit would orphan the version chain.
+
+(defvar *after-apply-tx-writes-hook* nil
+  "When non-nil, a zero-argument function called after apply-tx-writes but
+before apply-tx-writes-to-views.  The hook fires once and self-clears.
+Intended for durability tests that need to simulate a crash between the
+lhash write and the view update, leaving a pending .txn file for recovery.")
+
+(defun filter-writes (writes filter)
+  "Keep only the WRITES whose node FILTER accepts; with no FILTER, keep all.
+Used for subset replication: a slave applies just the writes its filter accepts."
+  (if filter
+      (remove-if-not (lambda (w) (funcall filter (node w))) writes)
+      writes))
+
+;;; --- Subset-replication reconciliation -------------------------------------
+;;;
+;;; Plain FILTER-WRITES keeps a write iff its (new) node passes the filter.  That
+;;; is wrong for a node that CROSSES the subset boundary on an update: a node that
+;;; leaves the subset would be dropped, leaving the slave holding a stale in-subset
+;;; copy; a node that enters the subset would be applied as an update the slave
+;;; cannot satisfy (it never had the node).  RECONCILE-SLAVE-WRITES fixes both by
+;;; considering the filter AND whether the slave currently holds the node:
+;;;
+;;;   update, passes, slave has it      -> apply update
+;;;   update, passes, slave lacks it    -> apply as CREATE (node entered subset)
+;;;   update, fails,  slave has it      -> apply as DELETE (node left subset)
+;;;   update, fails,  slave lacks it    -> drop
+;;;   create, passes / delete, present  -> keep; otherwise drop
+;;;
+;;; This is the generic predicate-filtered-replication MECHANISM (it works for any
+;;; REPLICATION-FILTER, spatial or not); the area predicate itself is supplied by
+;;; the application (e.g. MAKE-SPATIAL-REPLICATION-FILTER).
+
+(defun %slave-current-node (node graph)
+  "The slave's live local node with NODE's id (a vertex or edge), or NIL."
+  (etypecase node
+    (vertex (lookup-vertex (id node) :graph graph))
+    (edge   (lookup-edge (id node) :graph graph))))
+
+(defun %slave-has-node-p (node graph)
+  (let ((n (%slave-current-node node graph)))
+    (and n (not (deleted-p n)))))
+
+(defun %make-slave-delete-write (write graph)
+  "A tx-delete that removes the node from the slave because it left the subset.
+Built from the slave's CURRENT local node (so the MVCC archive/chain uses local
+heap addresses), mirroring DELETE-NODE."
+  (let ((current (%slave-current-node (node write) graph)))
+    (when current
+      (let ((deleted (copy current)))
+        (setf (bytes deleted) (bytes current)
+              (deleted-p deleted) t)
+        (make-instance 'tx-delete :node deleted :old-node current)))))
+
+(defun reconcile-slave-write (write new-passes present graph)
+  "Map one incoming WRITE to the write the slave should apply (or NIL to drop),
+given whether its new node passes the filter and whether the slave holds it.
+NB: tx-delete is a subclass of tx-update, so it must be matched first."
+  (typecase write
+    (tx-delete (and present write))
+    (tx-create (and new-passes write))
+    (tx-update
+     (cond ((and new-passes present) write)
+           (new-passes (make-instance 'tx-create :node (node write)))
+           (present (%make-slave-delete-write write graph))
+           (t nil)))
+    (t (and new-passes write))))
+
+(defun reconcile-slave-writes (writes filter graph)
+  "FILTER-WRITES with boundary-crossing reconciliation (see commentary above).
+With no FILTER, returns WRITES unchanged."
+  (if (null filter)
+      writes
+      (loop for w in writes
+            for reconciled = (reconcile-slave-write
+                              w
+                              (funcall filter (node w))
+                              (%slave-has-node-p (node w) graph)
+                              graph)
+            when reconciled collect it)))
 
 (defgeneric apply-transaction (transaction graph)
   (:method (transaction graph)
     (with-transaction-lock (transaction)
-      (let ((writes (writes transaction)))
+      (let ((writes (writes transaction))
+            ;; MVCC: every write in this transaction is stamped with this id.
+            (*commit-epoch* (transaction-id transaction)))
+        ;; Subset replication: on a slave with a replication-filter, drop the
+        ;; writes outside its subset BEFORE applying, so the lhash, views and
+        ;; spatial index all stay consistent.  The highest-transaction-id is
+        ;; still advanced below, so filtered transactions are not re-requested.
+        (when (slave-graph-p graph)
+          (setq writes (reconcile-slave-writes
+                        writes (replication-filter graph) graph)))
         (apply-tx-writes writes graph)
+        (when *after-apply-tx-writes-hook*
+          (let ((hook *after-apply-tx-writes-hook*))
+            (setf *after-apply-tx-writes-hook* nil)
+            (funcall hook)))
         (apply-tx-writes-to-views writes graph)
-        (garbage-collect-heap writes graph)
+        (apply-tx-writes-to-spatial-index writes graph)
+        (reap-old-versions writes graph)
         (persist-highest-transaction-id (transaction-id transaction) graph)))))
 
 (defmethod apply-transaction :after (transaction (graph master-graph))
@@ -593,14 +1027,21 @@ no data are not written."
 (defun make-tx-header-vector ()
   (make-byte-vector +tx-header-size+))
 
-(defun serialize-tx-header (tx vector offset)
+;; The transaction-id lives at this byte offset within the serialized header
+;; (and thus at the start of the tx file): 8-byte size + 1 flag + 1 type code.
+;; In a .txn file this is left at the placeholder 0 (the authoritative id is the
+;; filename; see the TODO above FINALIZE-TX-PERSISTENCE).  Master graphs patch
+;; the real id into the in-memory bytes at this offset for the replication log.
+(defconstant +tx-header-id-offset+ 10)
+
+(defun serialize-tx-header (tx vector offset &optional (id (transaction-id tx)))
   (serialize-uint64 vector +tx-header-size+ offset)
   (incf offset 8)
   ;; Skip flags
   (incf offset)
   (setf (aref vector offset) +tx-header-type-code+)
   (incf offset)
-  (serialize-uint64 vector (transaction-id tx) offset)
+  (serialize-uint64 vector id offset)
   (incf offset 8)
   (let ((writes (writes tx)))
     (serialize-uint64 vector (length writes) offset)
@@ -621,9 +1062,9 @@ no data are not written."
                      :write-count write-count
                      :write-size write-size))))
 
-(defun tx-header-vector (tx)
+(defun tx-header-vector (tx &optional (id (transaction-id tx)))
   (let ((vector (make-tx-header-vector)))
-    (values (serialize-tx-header tx vector 0))))
+    (values (serialize-tx-header tx vector 0 id))))
 
 (defun read-uint64-sized-vector (stream)
   (let ((size-vector (make-byte-vector 8)))
@@ -890,16 +1331,22 @@ no data are not written."
           (deserialize-transaction-node-vector vector offset))
     (if (= count 2)
         (let ((old-node (deserialize-transaction-node-vector vector offset)))
-          ;; get local data-pointer to replace the one read from the txn file
+          ;; The wire/txn copy of OLD-NODE carries the writer's LOCAL heap
+          ;; addresses + epoch (the master's, for a replicated tx), which are
+          ;; meaningless here.  Re-derive them from THIS graph's current node so
+          ;; ARCHIVE-NODE-VERSION builds a correct local version chain (the MVCC
+          ;; prev-pointer is a local heap address and must never be copied across
+          ;; the wire).  COMMIT-EPOCH of the new live head is re-stamped from the
+          ;; transaction-id in APPLY-TRANSACTION, so it stays consistent.
           (log:debug "FINDING PROPER DATA-POINTER FOR ~A (~A)"
                      (id old-node) (data-pointer old-node))
           (let ((local-old-node (if (vertex-p old-node)
                                     (lookup-vertex (id old-node))
                                     (lookup-edge (id old-node)))))
-            (log:debug "SETTING DATA-POINTER OF ~A TO ~A"
-                       (id old-node)
-                       (data-pointer local-old-node))
-            (setf (data-pointer old-node) (data-pointer local-old-node)))
+            (when local-old-node
+              (setf (data-pointer old-node)  (data-pointer local-old-node)
+                    (prev-pointer old-node)  (prev-pointer local-old-node)
+                    (commit-epoch old-node)  (commit-epoch local-old-node))))
           (make-instance class
                          :node node
                          :old-node old-node))
@@ -916,8 +1363,8 @@ no data are not written."
       (save-bytes-component-vector v tx)
       (write-sequence (tx-write-vector write) stream))))
 
-(defun write-tx-header-to-stream (tx stream)
-  (let ((v (tx-header-vector tx)))
+(defun write-tx-header-to-stream (tx stream &optional (id (transaction-id tx)))
+  (let ((v (tx-header-vector tx id)))
     (save-bytes-component-vector v tx)
     (write-sequence v stream)))
 
@@ -1005,6 +1452,78 @@ left in the stream."
                         (replication-log (transaction-manager transaction)))
         (finish-output stream)))))
 
+(defun transaction-prepare-pathname (transaction)
+  "A unique per-attempt temp pathname, keyed by SEQUENCE-NUMBER (the
+transaction-id is not yet assigned at prepare time).  Type \"txn-tmp\" so
+RECOVERY-TRANSACTION-FILES (which scans \"txn\" files) ignores it even if a
+crash orphans one."
+  (make-pathname :name (format nil "prep-~16,'0X" (sequence-number transaction))
+                 :type "txn-tmp"
+                 :defaults (persistent-transaction-directory
+                            (graph transaction))))
+
+;;; -------------------------------------------------------------------------
+;;; TODO (revisit — correctness/maintainability): the transaction file's HEADER
+;;; transaction-id is intentionally left at a placeholder 0; the AUTHORITATIVE id
+;;; for a .txn file is its FILENAME (~16,'0X hex), and recovery reads it from
+;;; there (LOAD-RECOVERY-TRANSACTION).  This is what lets FINALIZE do a single
+;;; rename under the manager lock instead of an in-lock header write — the only
+;;; form measured to actually relieve the CCL/ECL commit-lock convoy at high
+;;; thread counts (any in-lock file write reconvoys; see
+;;; docs/concurrency-scaling-investigation.md).  The smell: the same header
+;;; layout means two different things — placeholder 0 in a .txn file vs. the real
+;;; id in a replication-log entry (masters patch it into the in-memory bytes
+;;; below).  Replication is unaffected (it reads the replication-log, never the
+;;; .txn files).  Revisit for a cleaner design (e.g. drop the id from the .txn
+;;; header format entirely, or a stable-id scheme) once the rw-lock work lands.
+;;; -------------------------------------------------------------------------
+
+(defun prepare-tx-persistence (transaction)
+  "Serialize TRANSACTION to a temp file and populate its BYTES slot.  Runs BEFORE
+the transaction-manager lock, so the bulk serialization + disk write (and the
+flush at close) are off the serialized commit path.  The header id is written as
+the placeholder 0 — the real id is encoded in the final FILENAME by the rename in
+FINALIZE-TX-PERSISTENCE, and recovery reads it from there.  Returns the temp
+pathname."
+  (let ((tmp (transaction-prepare-pathname transaction)))
+    (with-open-file (stream tmp :direction :output
+                            :if-exists :supersede
+                            :if-does-not-exist :create
+                            :element-type '(unsigned-byte 8))
+      (write-tx-header-to-stream transaction stream 0)
+      (write-tx-writes-to-stream transaction stream))
+    (initialize-bytes-from-components transaction)
+    tmp))
+
+(defun finalize-tx-persistence (transaction tmp)
+  "Under the transaction-manager lock, once TRANSACTION-ID is assigned: make the
+durable, recovery-visible record by renaming the prepared temp file to its final
+id-keyed name.  For a non-replicated graph this is a SINGLE rename — the only
+file I/O left in the commit critical section, which is what relieves the
+commit-lock convoy (the bulk write happened in PREPARE-TX-PERSISTENCE before the
+lock).  Recovery reads the id from this filename, so the file's header id stays
+at its placeholder 0.  Master graphs additionally patch the real id into the
+in-memory bytes and append them to the replication log in commit order for
+downstream slaves (the replication path is the only consumer of the header id,
+and it reads these patched bytes, never the .txn files)."
+  ;; Use POSIX rename(2) (atomic; replaces an existing target) rather than
+  ;; cl:rename-file.  SBCL/ECL's rename-file already overwrites per POSIX, but
+  ;; CCL's signals "File exists" when the target exists — which intermittently
+  ;; crashed concurrent-stress on CCL.  osicat-posix:rename gives portable,
+  ;; atomic, overwrite-on-rename behavior across all implementations.
+  (osicat-posix:rename (namestring tmp)
+                       (namestring (transaction-pathname transaction)))
+  (let ((tm (transaction-manager transaction)))
+    (when (master-graph-p (graph tm))
+      (serialize-uint64 (bytes transaction)
+                        (transaction-id transaction)
+                        +tx-header-id-offset+)
+      (let ((repl-stream (replication-log tm))
+            (lock (replication-log-lock tm)))
+        (with-recursive-lock-held (lock)
+          (write-sequence (bytes transaction) repl-stream)
+          (finish-output repl-stream))))))
+
 ;;; Locking for object sets
 
 (defun ordered-bucket-locks (lhash keys)
@@ -1071,12 +1590,21 @@ left in the stream."
                                    :written-p (slot-value node 'written-p)
                                    :data-pointer (slot-value node 'data-pointer))))
       (setf (data new-node) (copy-tree (slot-value node 'data)))
+      ;; Copy bytes so maybe-init-node-data on the copy does not try to
+      ;; re-read from data-pointer (which may be freed by a concurrent commit).
+      (setf (bytes new-node) (bytes node))
       (if *transaction*
           (setf (gethash new-node (copies *transaction*)) node)
           (warn 'no-transaction-in-progress-warning))
       new-node)))
 
 (defgeneric update-node (new-node graph)
+  (:documentation
+   "Persist NEW-NODE -- which must be a COPY (made with COPY inside the current
+transaction) of an existing node -- recording the change in the transaction's
+write set.  Prefer the SAVE method, which calls this.  Signals
+NO-TRANSACTION-IN-PROGRESS outside a transaction, or MODIFYING-NON-COPY if
+NEW-NODE was not produced by COPY.")
   (:method (new-node graph)
     ;; This does not automatically ensure a transaction, because you
     ;; have to COPY any node you want to modify within a transaction
@@ -1087,6 +1615,13 @@ left in the stream."
       (unless old-node
         (error 'modifying-non-copy
                :node new-node))
+      ;; Refresh the serialized bytes from the (modified) data: NEW-NODE is a
+      ;; COPY that still carries the ORIGINAL node's bytes, and mutating a slot
+      ;; updates DATA but not BYTES.  The write is serialized from BYTES into
+      ;; both the .txn log and the replication stream, so without this the
+      ;; logged/replicated update carries the OLD data (the master only looks
+      ;; correct because apply-tx-write re-serializes its own copy locally).
+      (setf (bytes new-node) (serialize (data new-node)))
       (add-to-object-set (make-instance 'tx-update
                                         :node new-node
                                         :old-node old-node)
@@ -1094,6 +1629,10 @@ left in the stream."
       new-node)))
 
 (defgeneric delete-node (node graph)
+  (:documentation
+   "Soft-delete NODE from GRAPH within a transaction (auto-wrapping one if
+needed): records a deletion of a copy with its deleted flag set, so the node
+stops appearing in queries.  MARK-DELETED is the usual entry point.")
   (:method (node graph)
     (let ((old-node node)
           (new-node (copy node)))
@@ -1143,7 +1682,21 @@ left in the stream."
    (graph
     :initarg :graph
     :reader graph
-    :initform *graph*)))
+    :initform *graph*)
+   ;; MVCC read-epoch pins: TOKEN -> epoch for each in-flight non-transactional
+   ;; read.  REAP-SAFE-FLOOR folds in the minimum so the reaper never frees a
+   ;; version a pinned reader could still dereference (the basis for dropping the
+   ;; read-after-free finalizer).  Transactional reads need no pin -- their
+   ;; start-tx-id already lower-bounds the floor.
+   (read-pins
+    :reader read-pins
+    :initform (make-hash-table :test 'eql))
+   (read-pins-lock
+    :reader read-pins-lock
+    :initform (make-recursive-lock "read-pins lock"))
+   (read-pin-counter
+    :accessor read-pin-counter
+    :initform 0)))
 
 (defmethod print-object ((transaction-manager transaction-manager) stream)
   (print-unreadable-object (transaction-manager stream :type t)
@@ -1173,7 +1726,8 @@ left in the stream."
                          :direction :output
                          :element-type '(unsigned-byte 8)
                          :if-exists :append
-                         :if-does-not-exist :create)))
+                         :if-does-not-exist :create
+                         #+ccl :sharing #+ccl :lock)))
       (setf (replication-log (transaction-manager graph)) stream))))
 
 (defgeneric close-replication-log (graph)
@@ -1256,20 +1810,32 @@ left in the stream."
     result))
 
 (defun minimum-start-transaction-id (transaction-manager)
+  ;; Include :committing transactions, not just :active ones.  A :committing
+  ;; transaction is blocked waiting for the TM lock but will validate against
+  ;; committed transactions with tx-id >= its start-tx-id once it acquires the
+  ;; lock.  If we used only :active starts, a newer :active transaction could
+  ;; push the minimum high enough that prune-committed-transactions removes a
+  ;; record the :committing thread needs, causing a silent lost update.
   (let (min)
-    (do-active-transactions (tx transaction-manager)
-      (let ((start (start-tx-id tx)))
-        (if min
-            (setf min (min start min))
-            (setf min start))))
+    (do-transactions (tx transaction-manager)
+      (when (or (eql (state tx) :active)
+                (eql (state tx) :committing))
+        (let ((start (start-tx-id tx)))
+          (if min
+              (setf min (min start min))
+              (setf min start)))))
     min))
 
 (defun prune-committed-transactions (transaction-manager)
+  ;; Only prune when active transactions exist.  When every in-flight thread is
+  ;; in :committing state, min-id is nil here; pruning everything then would
+  ;; delete committed entries that the waiting committers still need for
+  ;; validation (causing lost updates).
   (let ((min-id (minimum-start-transaction-id transaction-manager)))
-    (do-committed-transactions (tx transaction-manager)
-      (when (or (not min-id)
-                (< (transaction-id tx) min-id))
-        (remove-transaction tx transaction-manager)))))
+    (when min-id
+      (do-committed-transactions (tx transaction-manager)
+        (when (< (transaction-id tx) min-id)
+          (remove-transaction tx transaction-manager))))))
 
 (defgeneric remove-transaction (transaction transaction-manager)
   (:method (transaction transaction-manager)
@@ -1314,18 +1880,51 @@ left in the stream."
 
 (defmethod %commit ((tx tx))
   (when (eql (state tx) :active)
-    (let ((tm (transaction-manager tx)))
+    (let ((tm (transaction-manager tx))
+          (tmp nil)
+          (renamed nil))
       (setf (state tx) :committing)
-      (setf (finish-tx-id tx) (tx-id-counter tm))
-      (with-transaction-manager-lock (tm)
-        (unless (validate tx)
-          (error 'validation-conflict :transaction tx))
-        (setf (transaction-id tx) (tx-id-counter tm))
-        (incf (tx-id-counter tm))
-        (prune-committed-transactions tm)
-        (persist-transaction tx)))
-    (apply-transaction tx (graph tx))
-    (setf (state tx) :committed)))
+      (unwind-protect
+           (progn
+             ;; Serialize the transaction and write its log file BEFORE taking
+             ;; the manager lock, so the bulk serialization + disk write are off
+             ;; the serialized commit path (this is the main relief for the
+             ;; commit-lock convoy on CCL/ECL).  Under the lock,
+             ;; FINALIZE-TX-PERSISTENCE only renames it to its durable,
+             ;; recovery-visible, id-keyed name (a single rename for a
+             ;; non-replicated graph).
+             (setf tmp (prepare-tx-persistence tx))
+             (with-transaction-manager-lock (tm)
+               ;; finish-tx-id must be set inside the manager lock so the overlap
+               ;; window computed by validate is consistent with tx-id-counter.
+               ;; Setting it outside would let concurrent commits advance the
+               ;; counter between the read and the lock acquisition, making lost
+               ;; updates invisible.
+               (setf (finish-tx-id tx) (tx-id-counter tm))
+               (unless (validate tx)
+                 (error 'validation-conflict :transaction tx))
+               (setf (transaction-id tx) (tx-id-counter tm))
+               (incf (tx-id-counter tm))
+               (prune-committed-transactions tm)
+               ;; Cheap under the lock: rename temp to its final id-keyed name
+               ;; (+ append replication log in commit order for masters).  Must
+               ;; precede apply-transaction so the durable record exists before
+               ;; the change is visible in memory.
+               (finalize-tx-persistence tx tmp)
+               (setf renamed t)
+               ;; apply-transaction must run inside the manager lock so that:
+               ;; (a) applies happen in tx-id order (no concurrent-apply race
+               ;;     where a lower-tx-id apply overwrites a higher-tx-id apply);
+               ;; (b) the graph cache is updated before the lock is released, so
+               ;;     any transaction created after this commit (start-tx-id >
+               ;;     this tx-id) reads the committed value rather than a stale
+               ;;     pre-apply snapshot.
+               (apply-transaction tx (graph tx)))
+             (setf (state tx) :committed))
+        ;; On validation conflict (retry) or any error before the rename, drop
+        ;; the orphan temp file so prepared-but-not-committed attempts don't leak.
+        (when (and tmp (not renamed))
+          (ignore-errors (delete-file tmp)))))))
 
 (defmethod cleanup-transaction ((tx tx))
   (let ((transaction-manager (transaction-manager tx)))
@@ -1335,11 +1934,16 @@ left in the stream."
 
 
 (defun commit (&optional (transaction *transaction*))
+  "Commit TRANSACTION (the current one by default), making its changes durable.
+WITH-TRANSACTION commits automatically on normal exit, so this is rarely
+called directly.  Signals NO-TRANSACTION-IN-PROGRESS if none is active."
   (unless *transaction*
     (error 'no-transaction-in-progress))
   (%commit transaction))
 
 (defun rollback (&optional (transaction *transaction*))
+  "Abort TRANSACTION (the current one by default), discarding its changes.
+Signals NO-TRANSACTION-IN-PROGRESS if none is active."
   (unless *transaction*
     (error 'no-transaction-in-progress))
   (%rollback transaction))
@@ -1356,9 +1960,13 @@ left in the stream."
     :accessor writes)))
 
 (defun load-recovery-transaction (file)
+  ;; The transaction-id is authoritative in the FILENAME (~16,'0X hex), set by the
+  ;; rename in FINALIZE-TX-PERSISTENCE; the .txn header id is a deliberate
+  ;; placeholder (0).  recovery-transaction-files already replays in filename
+  ;; (= id) order.  See the TODO above FINALIZE-TX-PERSISTENCE.
   (let ((tx-header (load-tx-file file)))
     (make-instance 'recovery-transaction
-                   :transaction-id (transaction-id tx-header)
+                   :transaction-id (parse-integer (pathname-name file) :radix 16)
                    :writes (writes tx-header))))
 
 (defmethod call-with-transaction-lock ((transaction recovery-transaction) fun)

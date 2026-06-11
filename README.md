@@ -3,15 +3,38 @@ VivaceGraph
 
 VivaceGraph is an open source graph database written in pure Common Lisp.
 
-VG takes design inspiration from CouchDB, neo4j and AllegroGraph.  It implements an ACID-compliant object graph model with user-defined indexes and map-reduce views.  It also implements a master / slave replication scheme for redundancy and horizontal read scaling.  Querying the graph is accomplished via a number of Lisp methods or via a Prolog-like query language.
+VG takes design inspiration from CouchDB, neo4j and AllegroGraph.  It implements an ACID-compliant object graph model with user-defined indexes and map-reduce views.  As of the MVCC release it also keeps immutable, versioned nodes CouchDB-style — each update retains the prior version, with configurable retention and snapshot-isolation reads (see Chapter 12 of the manual).  A geohash-backed spatial extension answers proximity and area queries over nodes that carry a geometry (Chapter 13).  It also implements a master / slave replication scheme for redundancy and horizontal read scaling.  Querying the graph is accomplished via a number of Lisp methods or via a Prolog-like query language.
 
-It currently only works with SBCL versions >= 1.045, LispWorks and Clozure CL, though it would not take much work to port it to other Common Lisp implementations. A port to ECL has been started and can be found in the ecl-port branch.
+VivaceGraph runs on SBCL (>= 1.045), ECL (>= 26.5.5), and Clozure CL (CCL, Linux x86_64). The full test suite passes on SBCL (macOS arm64 and Linux x86_64), CCL (Linux x86_64), and ECL 26.5.5 (macOS arm64 and Linux x86_64). Two ECL-only concurrency tests can time out under the high thread-count parallelism of many-core Linux hosts (issues #42, #43); every other suite is green on all three implementations. (Earlier ECL releases such as 21.2.1 are no longer supported — 26.5.5 is required.)
+
+LispWorks support is currently **untested** for lack of access to a license; the free Personal Edition's heap limit is too small to compile VivaceGraph. The codebase still carries `#+lispworks` conditionalization, but its status is unknown until it can be exercised on a current LispWorks.
+
+A note on CCL: it works on Linux x86_64, but **not on Apple-Silicon macOS** — the Clozure ARM64 port has been stalled for several years and macOS support for Intel (x86_64) binaries is nearly gone, so there is no usable CCL on M-series Macs. On Apple Silicon, use SBCL or ECL.
 
 To get started, please see example.lisp.
 
+### Documentation
+
+A comprehensive developer's manual lives in [`docs/vivace-graph-v3-doc.org`](docs/vivace-graph-v3-doc.org), covering getting started, the storage engine and object model, transactions, the Prolog query language, views, the REST API, replication, backup/recovery, MVCC / versioned nodes, and spatial queries, plus an API reference.
+
+This manual was written by [Gwang-Jin Kim (@gwangjinkim)](https://github.com/gwangjinkim) — the project's first thorough documentation, and a great piece of work. Many thanks to him. It has been adopted here and is maintained alongside the code; newer chapters (such as Chapter 12 on MVCC) are maintainer additions written in his style.
+
+### Announcement, 2026-06-06 — MVCC and storage format v2 (breaking)
+
+The MVCC release adds immutable, versioned nodes (issue #19): each update now retains the previous version of a node in a heap-backed chain, reclaimed by a lazy, epoch-gated reaper according to a configurable `:keep-revisions` policy. This brings configurable history, snapshot-isolation reads for transactional lookups, and — as a bonus — finally dissolves the long-standing node-data read-after-free race at its source.
+
+**This bumps the on-disk storage format to v2 (the node head grew from 15 to 31 bytes).** A v2 build will refuse to open a pre-MVCC (v1) graph and direct you to migrate. To migrate an existing graph, use the new `migrate-graph` function (a logical snapshot + replay that leaves the original untouched):
+
+```lisp
+;; load your schema (def-vertex / def-edge) first, then:
+(migrate-graph :my-app "/path/to/old-v1-graph/" "/path/to/new-v2-graph/" :package :my-app)
+```
+
+See Chapter 12 of the developer's manual for the full story (versioning, retention, snapshot reads, and migration).
+
 ### Announcement, 2024-10-15
 
-The author is still volunteering in Ukraine, and is looking for help maintaining this codebase while he is away (and after he returns).  There are currently 11 outstanding issues and very little documentation.  Please let kevin@chatsubolabs.com know if you are interested in helping out.
+The author is still volunteering in Ukraine, and is looking for help maintaining this codebase while he is away (and after he returns).  Please let kevin@chatsubolabs.com know if you are interested in helping out — there is now a comprehensive developer's manual (see above) and a growing automated test suite, but plenty of open issues remain.
 
 ### Announcement, 2016-12-12
 

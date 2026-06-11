@@ -7,7 +7,8 @@
   ;;(dirty-p (sb-concurrency:make-gate :open t)) ;; Not currently used
   (table #+sbcl (make-hash-table :test 'eql :synchronized t)
          #+lispworks (make-hash-table :test 'eql :single-thread nil)
-         #+ccl (make-hash-table :test 'eql :shared t))
+         #+ccl (make-hash-table :test 'eql :shared t)
+         #+ecl (make-hash-table :test 'eql))
   (lock (make-rw-lock)))
 
 (defstruct (view
@@ -31,6 +32,10 @@
   (sort-order :lessp))
 
 (defun yield (key value)
+  "Emit one index entry, KEY -> VALUE, from inside a view's :MAP lambda.  KEY
+determines the view's ordering and is what you query by; VALUE is carried
+through (and, for a map-reduce view, fed to the :REDUCE function).  Call it
+once per entry you want the node to contribute (zero, one, or many times)."
   ;;(dbg "PUSHING (~S ~S) ON TO *VIEW-RV*" key value)
   (push (list key value) *view-rv*))
 
@@ -135,7 +140,10 @@
 
 (defmethod restore-views ((graph graph))
   (let ((views-file (format nil "~A/views.dat" (location graph)))
-        (view-table (make-hash-table #-lispworks :synchronized #-lispworks t #+lispworks :single-thread #+lispworks nil)))
+        (view-table (make-hash-table
+                     #+sbcl :synchronized #+sbcl t
+                     #+ccl :shared #+ccl t
+                     #+lispworks :single-thread #+lispworks nil)))
     (when (probe-file views-file)
       (let ((blob (cl-store:restore views-file)))
         (dolist (view-data blob)
@@ -536,6 +544,12 @@
 (defmethod map-view (fn (class-name symbol) (view-name symbol)
                      &key (graph *graph*) key start-key end-key count skip
                        collect-p include-deleted-p write-p)
+  "Call FN on entries of the view VIEW-NAME (defined on CLASS-NAME) in GRAPH.
+FN receives (key id value).  Restrict to a single :KEY, or to a :START-KEY /
+:END-KEY range, and page with :SKIP / :COUNT.  With :COLLECT-P, collect and
+return FN's values.  This walks the raw (unreduced) view entries; see
+MAP-REDUCED-VIEW for aggregated results and INVOKE-GRAPH-VIEW for the common
+high-level lookup."
   (if (lookup-view-group class-name graph)
       (let ((thunk
              (lambda ()
@@ -546,27 +560,45 @@
                           :view-name view-name))
                  (let* ((lookup-fn (view-lookup-fn view))
                         (skip-list (view-skip-list view))
+                        ;; The view skip list is sorted per the view's order, and
+                        ;; same-key entries are tiebroken by node id in that SAME
+                        ;; direction (see reduce-comp-lessp / reduce-comp-greaterp).
+                        ;; So the bounds that bracket a key must follow the order:
+                        ;; for :greaterp the id sentinels and the open-ended key
+                        ;; sentinels are reversed.  Otherwise a :key / :start-key /
+                        ;; :end-key lookup on a :greaterp view brackets an empty
+                        ;; range and returns nothing (issue #18).
+                        (greaterp-p (eql :greaterp (view-sort-order view)))
+                        (start-id (if greaterp-p +max-key+ +null-key+))
+                        (end-id   (if greaterp-p +null-key+ +max-key+))
+                        (start-sentinel (if greaterp-p +max-sentinel+ +min-sentinel+))
+                        (end-sentinel   (if greaterp-p +min-sentinel+ +max-sentinel+))
                         (cursor (if (and (null start-key) (null key) (null end-key))
                                     (make-cursor skip-list)
                                     (make-range-cursor skip-list
                                                        (list (cond (key key)
                                                                    (start-key start-key)
-                                                                   (t +min-sentinel+))
-                                                      +null-key+)
+                                                                   (t start-sentinel))
+                                                      start-id)
                                                 (list (cond (key key)
                                                             (end-key end-key)
-                                                            (t +max-sentinel+))
-                                                      +max-key+))))
+                                                            (t end-sentinel))
+                                                      end-id))))
                  (result nil) (found-count 0) (cursor-count 0))
             (loop
                for node = (cursor-next cursor)
                until (or (null node) (and count (= found-count count)))
                do
                ;;(log:debug "~S" node)
-                 (when (or (null skip) (> cursor-count skip))
-                   (incf cursor-count)
-                   (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
-                     (unless (or include-deleted-p (null pnode) (deleted-p pnode))
+                 ;; Count VISIBLE (non-deleted) entries for paging, then SKIP the
+                 ;; first SKIP of them.  cursor-count must advance per visible
+                 ;; entry -- previously it was incremented only inside the skip
+                 ;; guard, so (> 0 skip) was never true and :skip dropped every
+                 ;; result.
+                 (let ((pnode (funcall lookup-fn (second (%sn-key node)))))
+                   (unless (or include-deleted-p (null pnode) (deleted-p pnode))
+                     (incf cursor-count)
+                     (when (or (null skip) (> cursor-count skip))
                        (incf found-count)
                        (if collect-p
                            (push (funcall fn
@@ -595,6 +627,10 @@
 (defmethod map-reduced-view (fn (class-name symbol) (view-name symbol)
                              &key (graph *graph*) start-key end-key count
                                skip collect-p)
+  "Call FN on the aggregated entries of the map-reduce view VIEW-NAME (defined
+on CLASS-NAME) in GRAPH.  FN receives (key id reduced-value), one call per
+distinct key, where REDUCED-VALUE is the output of the view's :REDUCE function.
+Supports :START-KEY/:END-KEY range, :SKIP/:COUNT paging, and :COLLECT-P."
   (if (lookup-view-group class-name graph)
       (with-read-locked-view-group (class-name graph)
         (let ((view (lookup-view graph class-name view-name)))
@@ -638,6 +674,16 @@
 (defmethod invoke-graph-view ((class-name symbol) (view-name symbol)
                               &key (graph *graph*) key start-key end-key count
                                 skip group-p (reduce-p t))
+  "Query the view VIEW-NAME (defined on CLASS-NAME) in GRAPH and return its
+matches as a list of alists, each with keys :KEY, :ID and :VALUE.  This is the
+usual high-level lookup.
+
+For a map-only view (or with :REDUCE-P nil), returns the matching entries,
+optionally narrowed by :KEY or a :START-KEY/:END-KEY range and paged with
+:SKIP/:COUNT.  For a map-reduce view it returns reduced results: the grand
+aggregate by default, the per-key aggregate for a given :KEY with :GROUP-P, or
+all groups with :GROUP-P alone.  Signals INVALID-VIEW-ERROR if the view does
+not exist."
   (if (lookup-view-group class-name graph)
       (with-read-locked-view-group (class-name graph)
         (let ((view (lookup-view graph class-name view-name)))
@@ -702,6 +748,21 @@
     (format nil "~S" expression)))
 
 (defmacro def-view (name sort-order parents &body body)
+  "Define a view (a secondary index) named NAME over a node type.
+
+PARENTS is (CLASS-NAME GRAPH-NAME).  SORT-ORDER is the key comparator, e.g.
+:LESSP or :GREATERP.  BODY holds a (:MAP lambda) and optionally a (:REDUCE
+lambda):
+  - the :MAP lambda receives a node and calls YIELD to emit key/value entries;
+  - the optional :REDUCE lambda receives (keys values) and aggregates them,
+    making this a map-reduce view.
+
+The graph named GRAPH-NAME must already exist when DEF-VIEW runs (define views
+after MAKE-GRAPH/OPEN-GRAPH).  Once defined, the view is maintained
+incrementally as matching nodes are saved.  Query it with INVOKE-GRAPH-VIEW,
+MAP-VIEW, or MAP-REDUCED-VIEW.  Example:
+  (def-view user-by-username :lessp (user :social-app)
+    (:map (lambda (u) (when (username u) (yield (username u) nil)))))"
   (with-gensyms (view-name class-name graph-name graph lookup-fn view-sort-order)
     (let ((map-code (cadr (assoc :map body)))
           (reduce-code (cadr (assoc :reduce body))))

@@ -1,0 +1,119 @@
+;;;; ACID-ISOLATION-SUITE
+;;;;
+;;;; Verifies isolation semantics under concurrent access:
+;;;;   - No dirty reads (uncommitted writes are invisible)
+;;;;   - Snapshot is frozen at transaction start
+;;;;   - Write-write conflicts are detected and force correct retries
+
+(in-package #:graph-db/acid-test)
+
+(def-suite acid-isolation-suite
+  :description "Transaction isolation: dirty reads, snapshot stability, conflict detection."
+  :in acid-suite)
+
+(in-suite acid-isolation-suite)
+
+;;; ---------------------------------------------------------------------------
+;;; Test 1: no dirty reads
+;;;
+;;; T1 writes V=99 inside a transaction but has not committed yet.  While T1 is
+;;; in-flight, the main thread reads V and must see the original value (0).
+;;; The graph-cache is only updated when apply-tx-writes runs inside the TM
+;;; lock at commit time; pre-commit writes live in T1's local-cache only.
+;;; ---------------------------------------------------------------------------
+
+(test no-dirty-reads
+  "A transaction's uncommitted write must not be visible to concurrent readers."
+  (with-acid-graph (g)
+    (let (vid)
+      (with-transaction ()
+        (setq vid (id (make-ac-item :value 0 :label "watched"))))
+      (let ((t1-wrote (make-semaphore))
+            (t2-read  (make-semaphore))
+            t2-saw)
+        ;; T1: writes V=99, signals T2 that it has written, waits before committing
+        (make-thread
+         (lambda ()
+           (let ((*graph* g))
+             (with-transaction ()
+               (let* ((item (copy (lookup-vertex vid))))
+                 (setf (slot-value item 'value) 99)
+                 (save item))
+               ;; Still inside with-transaction body (not committed yet)
+               (signal-semaphore t1-wrote)
+               (wait-on-semaphore t2-read))
+             ;; Transaction commits here (body returned; %commit runs in cleanup)
+           ))
+         :name "acid-dirty-t1")
+        ;; T2 (main): read V while T1 is in-flight
+        (wait-on-semaphore t1-wrote)
+        (setq t2-saw (slot-value (lookup-vertex vid) 'value))
+        (signal-semaphore t2-read)
+        (is (= 0 t2-saw)
+            "T2 must see original value (0), not T1's uncommitted write (99); got ~D"
+            t2-saw)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 2: snapshot frozen at start
+;;;
+;;; T1 opens a transaction and reads V (=0), caching it in its local-cache.
+;;; T2 then commits V=99.  When T1 reads V again inside the same transaction,
+;;; it must still see 0 — the local-cache provides snapshot isolation for
+;;; repeated reads of the same vertex within one transaction.
+;;; ---------------------------------------------------------------------------
+
+(test snapshot-frozen-at-start
+  "A vertex read twice in the same transaction must return the same value."
+  (with-acid-graph (g)
+    (let (vid)
+      (with-transaction ()
+        (setq vid (id (make-ac-item :value 0 :label "frozen"))))
+      (let ((t1-read (make-semaphore))
+            (t2-done (make-semaphore))
+            t1-second-read)
+        ;; T2: waits for T1 to read V, then commits V=99
+        (make-thread
+         (lambda ()
+           (let ((*graph* g))
+             (wait-on-semaphore t1-read)
+             (with-transaction ()
+               (let* ((item (copy (lookup-vertex vid))))
+                 (setf (slot-value item 'value) 99)
+                 (save item)))
+             (signal-semaphore t2-done)))
+         :name "acid-snapshot-t2")
+        ;; T1: read V, signal T2, wait for T2 to commit, then re-read V
+        (with-transaction ()
+          ;; First read: puts V=0 in local-cache
+          (slot-value (lookup-vertex vid) 'value)
+          (signal-semaphore t1-read)
+          (wait-on-semaphore t2-done)
+          ;; Second read: must still come from local-cache (=0), not live cache
+          (setq t1-second-read (slot-value (lookup-vertex vid) 'value)))
+        (is (= 0 t1-second-read)
+            "Snapshot must be frozen: expected 0, got ~D" t1-second-read)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Test 3: write-write conflict forces retry with fresh value
+;;;
+;;; Two threads both increment the same counter.  The loser's conflict
+;;; validation causes a retry; the retry reads the winner's committed value
+;;; and increments from there.  Final value = initial + 2.
+;;; ---------------------------------------------------------------------------
+
+(test write-write-conflict-forces-retry
+  "Two concurrent increments: conflict causes retry; final value = initial + 2."
+  (with-acid-graph (g)
+    (let (vid)
+      (with-transaction ()
+        (setq vid (id (make-ac-item :value 0 :label "contested"))))
+      (run-threads 2
+                   (lambda (i)
+                     (declare (ignore i))
+                     (with-transaction ()
+                       (let* ((item (copy (lookup-vertex vid)))
+                              (old  (slot-value item 'value)))
+                         (setf (slot-value item 'value) (1+ old))
+                         (save item)))))
+      (is (= 2 (slot-value (lookup-vertex vid) 'value))
+          "Final counter must be 2 (initial 0 + 2 successful increments)"))))

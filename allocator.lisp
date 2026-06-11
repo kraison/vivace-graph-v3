@@ -23,7 +23,8 @@
   (free-list
    #+sbcl (make-hash-table :synchronized t)
    #+lispworks (make-hash-table :single-thread nil)
-   #+ccl (make-hash-table :shared t))
+   #+ccl (make-hash-table :shared t)
+   #+ecl (make-hash-table))
   free-list-thread
   (pointer 0 :type (UNSIGNED-BYTE 64))
   (lock (make-rw-lock))
@@ -33,7 +34,8 @@
   (cache
    #+sbcl (make-hash-table :synchronized t :weakness :value)
    #+lispworks (make-hash-table :single-thread nil :weak-kind :value)
-   #+ccl (make-hash-table :shared t :weak :value)))
+   #+ccl (make-hash-table :shared t :weak :value)
+   #+ecl (make-hash-table :weakness :value)))
 
 (defmethod set-byte ((memory memory) offset byte)
   (declare (type word offset))
@@ -112,7 +114,10 @@
          (ccl:with-lock-grabbed (,lock)
            ,@body)
          #+lispworks
-         (with-recursive-lock-held (,lock) 
+         (with-recursive-lock-held (,lock)
+           ,@body)
+         #+ecl
+         (with-recursive-lock-held (,lock)
            ,@body)
          #+sbcl
          (sb-thread:with-recursive-lock (,lock :wait-p ,wait-p)
@@ -232,7 +237,12 @@
       (log:error "SEGV: ~A magic-byte corrupted: 0x~X" (memory-location memory) byte)
       byte)))
 
-(defun open-memory (location &key (extent-size (* 1024 1024 100)))
+(defun open-memory (location &key (extent-size (* 1024 1024 100))
+                               (accept-versions (list +storage-version+)))
+  "Open the memory-mapped region at LOCATION.  ACCEPT-VERSIONS is the list of
+on-disk storage-format versions this open will tolerate (default: only the
+current build's version).  MIGRATE-GRAPH passes the older version(s) so it can
+read a pre-MVCC graph for logical backup."
   (let ((memory
          (make-memory :location location
                       :data-offset +memory-usable-offset+
@@ -242,9 +252,12 @@
     (when (memory-magic-byte-corrupt-p memory)
       (munmap-file (memory-mmap memory))
       (error "~A is not a memory file!" location))
-    (unless (= +storage-version+ (get-byte (memory-mmap memory) +memory-storage-version-offset+))
-      (munmap-file (memory-mmap memory))
-      (error "~A is the wrong data version!" location))
+    (let ((found (get-byte (memory-mmap memory) +memory-storage-version-offset+)))
+      (unless (member found accept-versions)
+        (munmap-file (memory-mmap memory))
+        (error "~A is storage format v~D but this build expects v~D. ~
+Pre-MVCC (v1) graphs must be migrated with MIGRATE-GRAPH (snapshot + replay)."
+               location found +storage-version+)))
     (setf (memory-pointer memory) (read-memory-pointer memory)
           (memory-size memory) (size-of (memory-mmap memory)))
     (init-free-list memory)
