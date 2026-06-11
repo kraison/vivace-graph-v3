@@ -135,10 +135,19 @@ slower machines or bumped for deeper stress.  Must be ≥ 4.")
            (collect-garbage))))))
 
 ;;; ---------------------------------------------------------------------------
-;;; run-threads — barrier-synchronized, 60s deadlock timeout
+;;; run-threads — barrier-synchronized, impl-aware deadlock timeout (60s; 240s ECL)
 ;;; ---------------------------------------------------------------------------
 
-(defun run-threads (n fn &key (timeout 60))
+;;; TIMEOUT is implementation-aware.  ECL needs a much larger budget than
+;;; SBCL/CCL: FULL-SYSTEM-STORM runs in ~28s in isolation but ~140s when it runs
+;;; late in the suite, at a ~4 GB Boehm heap.  That is NOT a leak (CLOSE-GRAPH
+;;; releases cleanly -- RSS plateaus across repeated open/insert/close) and NOT a
+;;; hang; it is ECL GC mark-cost over the cumulative live set, dominated by the
+;;; global buffer pool's millions of pre-allocated objects, which every GC marks.
+;;; Bumping the budget is a workaround for the suite; the real fix is to cap/tune
+;;; that pool on ECL (see issue #43).  SBCL/CCL keep the tight 60s budget so a
+;;; genuine deadlock still trips quickly there.
+(defun run-threads (n fn &key (timeout #+ecl 240 #-ecl 60))
   "Spawn N threads, barrier-synchronize, release, join.  *GRAPH* is captured
 and rebound in each child.  Errors in children are re-raised in the caller."
   (let* ((captured-graph *graph*)
