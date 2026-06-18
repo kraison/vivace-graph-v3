@@ -141,6 +141,16 @@ goal's argument count."
 (def-global-prolog-functor var/1 (?arg1 cont)
   (if (unbound-var-p ?arg1) (funcall cont)))
 
+(def-global-prolog-functor param/2 (?var key cont)
+  "Unify ?VAR with the value bound to KEY in *QUERY-PARAMS* (the parameters of a
+DEF-QUERY, or any SELECT run with *QUERY-PARAMS* bound).  A pure read -- it
+injects a runtime value into a query without arbitrary evaluation, so it is
+permitted even under the strictest effect policy (:effects nil)."
+  (setq key (var-deref key))
+  (let ((cell (assoc key *query-params* :test #'equal)))
+    (when (and cell (unify ?var (cdr cell)))
+      (funcall cont))))
+
 (def-global-prolog-functor is/2 (var exp cont)
   "Similar to lisp/2, but unifies instead of assigns the lisp return value."
   (require-effect :eval)
@@ -725,12 +735,17 @@ order of terms with duplicates removed."
   (setq node (var-deref node)
         slot (var-deref slot)
         var (var-deref var))
-  (handler-case
-      (when (unify var (node-slot-value node slot))
-        (funcall cont))
-    (error (c)
-      (log:error "Problem unifying (node-slot-value ~A ~A): ~A" node slot c)
-      nil)))
+  ;; Guard ONLY the slot read -- not (funcall cont).  The continuation is the
+  ;; rest of the query; wrapping it here would swallow any error a downstream
+  ;; goal signals (e.g. a prolog-permission-error from a denied write, or a
+  ;; prolog-resource-error), silently turning it into a non-match.
+  (let ((value (handler-case (node-slot-value node slot)
+                 (error (c)
+                   (log:error "Problem reading (node-slot-value ~A ~A): ~A"
+                              node slot c)
+                   (return-from node-slot-value/3 nil)))))
+    (when (unify var value)
+      (funcall cont))))
 
 (def-global-prolog-functor weight/2 (edge var cont)
   (setq edge (var-deref edge)

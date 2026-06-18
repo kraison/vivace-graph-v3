@@ -800,6 +800,11 @@ inline, composing with cut and the control constructs.  When Goal is a variable
   "When true (SELECT :COUNT t / SELECT-COUNT), the query counts solutions
 without projecting or consing their bindings.")
 
+(defvar *query-params* nil
+  "Alist of (KEY . VALUE) parameter bindings for the current query, read by the
+PARAM/2 functor.  Bound by DEF-QUERY (and bindable around any SELECT) to inject
+runtime values into a query without an arbitrary-eval functor.")
+
 (defun %count-tick (cont)
   "Account one solution under the active :SKIP/:LIMIT window without consing any
 bindings, then continue (or stop once :LIMIT is reached).  The :COUNT-mode

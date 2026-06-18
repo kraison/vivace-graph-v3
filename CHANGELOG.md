@@ -76,7 +76,35 @@ All notable changes to VivaceGraph are recorded here.
   `select` `:count t` option does the same and composes with `:limit` and
   `:skip` (so a capped or offset count counts the rows `select` would return).
 
+- **`def-query` -- named parameterized queries over the web (issue #44).** A new
+  `def-query` registers a server-authored, read-only graph query as a REST
+  endpoint at `POST /graph/:graph/query/<name>`.  The author declares typed,
+  named parameters (`:string`/`:integer`/`:number`/`:boolean`/`:keyword`),
+  result variables, and the query goals; the client supplies only the
+  parameters.  Each query runs through `select` with safe defaults the author
+  may override -- read-only (`:effects nil`), and a result limit, inference
+  budget, and wall-clock timeout.  A read-only query runs under a lightweight
+  MVCC read snapshot; a query whose `:effects` permit side effects instead runs
+  inside a `with-transaction`, so its writes flatten into one transaction that
+  provides the same snapshot and commits on success (or rolls back if a bound or
+  permission error aborts it).  Responses are a JSON array of objects keyed by the camelCase result
+  names; a missing/malformed parameter is a 400, a resource-bound breach a 400,
+  a forbidden effect a 403, and an unknown query a 404.  Parameter values are
+  injected through a new pure `param/2` functor (and `*query-params*`), so
+  injection works under the read-only policy.
+
 ### Fixed
+- **REST procedures were broken on ECL.** `*rest-procedures*` had `#+sbcl`/
+  `#+ccl`/`#+lispworks` initforms but no `#+ecl` branch, so on ECL the variable
+  was declared special but left unbound; `def-rest-procedure` and
+  `call-rest-procedure` then failed with an `unbound-variable` error.  Added the
+  `#+ecl` branch so REST procedures work on ECL like the other implementations.
+- **`node-slot-value/3` swallowed downstream query errors.** Its `handler-case`
+  wrapped `(funcall cont)` -- the continuation -- so an error raised by any goal
+  *after* a `node-slot-value` (e.g. a `prolog-permission-error` from a denied
+  write, or a `prolog-resource-error`) was caught and silently turned into a
+  non-match.  The guard now wraps only the slot read; the continuation runs
+  outside it so downstream errors propagate.
 - **Prolog `if/3` else-semantics (issue #45).** `(if Test Then Else)` now runs
   `Else` only when `Test` has no solution; previously it also ran `Else` when
   `Test` succeeded but `Then` failed.  The runtime `if/3` functor (the meta-call

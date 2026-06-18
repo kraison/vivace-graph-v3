@@ -57,6 +57,13 @@
            #:stop-rest
            #:def-rest-procedure
            #:*rest-procedures*
+           #:def-query
+           #:*rest-queries*
+           #:*query-params*
+           #:*query-default-limit*
+           #:*query-default-max-inferences*
+           #:*query-default-timeout*
+           #:query-param-error
 
            #:with-transaction
            #:with-read-snapshot

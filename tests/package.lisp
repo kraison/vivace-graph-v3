@@ -191,8 +191,10 @@
                 #:select-one
                 #:select-count
                 #:do-query
+                #:def-query
                 #:is-a/2
                 #:select/2
+                #:param/2
                 #:node-slot-value/3
                 #:retract/1
                 #:retract/3

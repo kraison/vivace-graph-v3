@@ -256,3 +256,123 @@ flagged rather than 404 -- this asserts the documented current behavior.)"
                  (rest-params (cons :type "noSuchType") (cons "name" "x"))))))
         (is-true (assoc :error j)
                  "unknown vertex type should yield an :error body")))))
+
+;;; ---------------------------------------------------------------------------
+;;; def-query (#44): named, parameterized, read-only queries over /query/.
+;;; ---------------------------------------------------------------------------
+
+;; A friends-by-name query: read-only and snapshot-isolated by default.
+(def-query friends-of
+  :params ((?name :string))
+  :return (?friend-name)
+  :where ((is-a ?person g-person)
+          (node-slot-value ?person name ?name)
+          (g-knows ?person ?friend)
+          (node-slot-value ?friend name ?friend-name)))
+
+;; Same query, capped at a single result, to exercise an author-set bound.
+(def-query friends-of-capped
+  :params ((?name :string))
+  :return (?friend-name)
+  :limit 1
+  :where ((is-a ?person g-person)
+          (node-slot-value ?person name ?name)
+          (g-knows ?person ?friend)
+          (node-slot-value ?friend name ?friend-name)))
+
+;; A query that attempts a write -- must be refused under the read-only default.
+(def-query try-retract
+  :params ((?name :string))
+  :return (?name)
+  :where ((is-a ?p g-person)
+          (node-slot-value ?p name ?name)
+          (retract ?p)))
+
+;; The same write, explicitly write-enabled: runs in a transaction and commits.
+(def-query delete-person
+  :params ((?name :string))
+  :effects (:write)
+  :return (?name)
+  :where ((is-a ?p g-person)
+          (node-slot-value ?p name ?name)
+          (retract ?p)))
+
+(defun make-a-knows-b-and-c ()
+  "A knows B and C; returns nothing."
+  (with-transaction ()
+    (let ((a (make-g-person :name "A")))
+      (make-g-knows :from a :to (make-g-person :name "B"))
+      (make-g-knows :from a :to (make-g-person :name "C")))))
+
+(test def-query-returns-json-objects
+  "A def-query endpoint returns a JSON array of objects keyed by the camelCase
+result-variable names."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (let* ((j (rest-decode
+                 (graph-db::call-rest-query "friendsOf"
+                                            (rest-params (cons "name" "A")))))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :friend-name row))) j)
+                          #'string<)))
+        (is (= 2 (length j)))
+        (is (equal '("B" "C") names))))))
+
+(test def-query-honors-author-set-limit
+  "An author-set :limit caps the number of results."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (is (= 1 (length (rest-decode
+                        (graph-db::call-rest-query
+                         "friendsOfCapped" (rest-params (cons "name" "A"))))))))))
+
+(test def-query-missing-parameter-is-400
+  "A missing required parameter yields a 400 with an :error body."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "friendsOf" (rest-params)))))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
+(test def-query-write-attempt-is-403
+  "The read-only default refuses a query that tries to mutate the graph (403),
+and nothing is deleted."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "tryRetract"
+                                           (rest-params (cons "name" "A"))))))
+        (is (= 403 (rest-status)))
+        (is-true (assoc :error j)))
+      (is (= 2 (length (select-flat (?p) (is-a ?p g-person))))
+          "the write was refused, so both persons survive"))))
+
+(test def-query-write-enabled-commits
+  "A query whose :effects permit writes runs in a transaction and its mutation
+persists (the retract flattens into the wrapping with-transaction)."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+      (graph-db::call-rest-query "deletePerson" (rest-params (cons "name" "A")))
+      (is (equal '("B")
+                 (sort (select-flat (?n) (is-a ?p g-person) (node-slot-value ?p name ?n))
+                       #'string<))
+          "the write-enabled query committed its retract"))))
+
+(test def-query-unknown-name-is-404
+  "An unknown query name yields a 404."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "noSuchQuery" (rest-params)))))
+        (is (= 404 (rest-status)))
+        (is-true (assoc :error j))))))
