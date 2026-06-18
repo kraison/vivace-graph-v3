@@ -390,3 +390,22 @@ spin loop with a catchable prolog-resource-error."
   (with-test-graph (g)
     (build-knows-chain 5)
     (is (= 5 (length (select-flat (?p) (is-a ?p g-person)))))))
+
+(test effect-policy-applies-through-user-rule
+  "The :effects policy is transitive: a side effect reached through a
+user-defined (<-) rule is gated just like a direct one."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (build-knows-chain 3)
+    (drop-rule 'zap 1)
+    (<- (zap ?p) (retract ?p))          ; a rule that performs a :write
+    (unwind-protect
+         (in-test-package
+           (progn
+             (signals graph-db:prolog-permission-error
+               (with-query-timeout (15)
+                 (select (:effects nil) (?p) (is-a ?p g-person) (zap ?p))))
+             (is (= 3 (length (with-query-timeout (15)
+                                (select-flat (?p) (is-a ?p g-person)))))
+                 "retract inside the rule was blocked under :effects nil")))
+      (drop-rule 'zap 1))))

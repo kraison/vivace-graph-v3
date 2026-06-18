@@ -167,9 +167,13 @@
            #:show-prolog-vars
            #:prolog-error
            #:prolog-resource-error
+           #:prolog-permission-error
            #:*inference-budget*
            #:*default-inference-budget*
            #:*default-query-timeout*
+           #:*allowed-effects*
+           #:*default-allowed-effects*
+           #:require-effect
            #:prolog-ignore
            #:delete-functor
            #:set-functor-fn

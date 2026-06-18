@@ -24,12 +24,15 @@ goal's argument count."
   (gethash symbol *prolog-global-functors*))
 
 (def-global-prolog-functor read/1 (exp cont)
+  (require-effect :io)
   (if (unify exp (read)) (funcall cont)))
 
 (def-global-prolog-functor write/1 (exp cont)
+  (require-effect :io)
   (format t "~A" (deref-exp exp)) (funcall cont))
 
 (def-global-prolog-functor nl/0 (cont)
+  (require-effect :io)
   (terpri) (funcall cont))
 
 (def-global-prolog-functor repeat/0 (cont)
@@ -97,6 +100,7 @@ goal's argument count."
  supplied Prolog var.  (lisp ?result (+ 1 2)).  Any lisp variables that you
  wish to access within a prolog query using the lisp functor should be
  declared special."
+  (require-effect :eval)
   (let ((exp (deref-exp exp)))
     (when *prolog-trace* (format t "TRACE: LISP/2 ?result <- ~A~%" exp))
     (cond ((consp exp)
@@ -115,6 +119,7 @@ goal's argument count."
   "Call out to lisp from within a Prolog query and throws away the result.
  Any lisp variables that you wish to access within a prolog query using the
  lisp functor should be declared special."
+  (require-effect :eval)
   (let ((exp (deref-exp exp)))
     (when *prolog-trace* (format t "TRACE: LISPP/1 ~A~%" exp))
     (cond ((consp exp)
@@ -138,6 +143,7 @@ goal's argument count."
 
 (def-global-prolog-functor is/2 (var exp cont)
   "Similar to lisp/2, but unifies instead of assigns the lisp return value."
+  (require-effect :eval)
   (if (and (not (find-if-anywhere #'unbound-var-p exp))
 	   (unify var (eval (deref-exp exp))))
       (funcall cont)))
@@ -288,6 +294,7 @@ Runtime (meta-call) counterpart of the FORALL compiler macro."
 
 (def-global-prolog-functor trigger/1 (exp cont)
   "Call out to lisp ignoring the return value."
+  (require-effect :eval)
   (eval (deref-exp exp))
   ;;(let ((exp (deref-exp exp)))
     ;;(typecase exp
@@ -774,12 +781,14 @@ order of terms with duplicates removed."
           *graph*))))
 
 (def-global-prolog-functor retract/1 (node cont)
+  (require-effect :write)
   (setq node (var-deref node))
   (when (node-p node)
     (mark-deleted node)
     (funcall cont)))
 
 (def-global-prolog-functor retract/3 (edge-type from to cont)
+  (require-effect :write)
   (setq edge-type (var-deref edge-type)
         from (var-deref from)
         to (var-deref to))

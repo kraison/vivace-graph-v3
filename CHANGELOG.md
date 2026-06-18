@@ -40,6 +40,16 @@ All notable changes to VivaceGraph are recorded here.
   Both default to nil (unlimited): trusted queries are unchanged, untrusted ones
   (e.g. the planned #44 web surface) opt in.  Solution count remains bounded by
   the existing `:limit`.
+- **Effect partitioning / query effect policy (issue #45, Phase 1).** The
+  side-effecting Prolog functors are now tagged by effect -- `:write` (graph
+  mutation: `retract`), `:eval` (arbitrary Lisp: `lisp`/`lispp`/`is`/`trigger`),
+  `:io` (`read`/`write`/`nl`) -- and check the per-query policy before acting.
+  The `:effects` select option (or `*allowed-effects*` / `*default-allowed-effects*`)
+  is `t` for all (the default) or a list of permitted tags; a disallowed effect
+  aborts with a catchable `prolog-permission-error`.  Reads and pure logic are
+  always allowed, so `:effects nil` is a safe read-only query mode (the basis for
+  exposing queries to untrusted callers).  The check is transitive -- an effect
+  reached through a user rule or meta-call is gated the same way.
 
 ### Changed
 - **Unknown Prolog predicates are now noisy.** A goal naming an undefined

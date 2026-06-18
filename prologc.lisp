@@ -839,6 +839,48 @@ resource bound is exceeded.  A no-op when no bound is in effect."
   (when (and *query-deadline* (>= (get-internal-real-time) *query-deadline*))
     (error 'prolog-resource-error :reason "query timeout exceeded")))
 
+;;; ---------------------------------------------------------------------------
+;;; Effect partitioning (#45 Phase 1).
+;;;
+;;; Goals are partitioned into pure logic + graph READS (always permitted -- a
+;;; query is for reading) and a few SIDE-EFFECTING functors, each tagged with an
+;;; effect: :write (mutates the graph -- retract), :eval (evaluates arbitrary
+;;; Lisp -- lisp/lispp/is/trigger), :io (stream input/output -- read/write/nl).
+;;; A side-effecting functor calls REQUIRE-EFFECT at entry; if its effect is not
+;;; permitted by the current policy it signals a catchable
+;;; PROLOG-PERMISSION-ERROR before performing the effect.
+;;;
+;;; *ALLOWED-EFFECTS* is T (everything -- the default, so trusted queries are
+;;; unchanged) or a list of permitted effect tags; (:effects ...) on SELECT sets
+;;; it per query.  An untrusted surface (e.g. the #44 web layer) runs read-only
+;;; queries with :effects nil, which still allows all reads and pure logic but
+;;; forbids mutation, arbitrary eval, and io.  The check is transitive: a
+;;; side-effecting functor reached through a user rule or a meta-call is caught
+;;; the same way, since the tag lives on the functor itself.
+;;; ---------------------------------------------------------------------------
+
+(define-condition prolog-permission-error (prolog-error)
+  ()
+  (:documentation "Signaled when a goal attempts a side effect (:write, :eval or
+:io) that the current query's effect policy (*ALLOWED-EFFECTS* / the :EFFECTS
+select option) does not permit.  A subclass of PROLOG-ERROR, so it aborts the
+query but is catchable."))
+
+(defvar *allowed-effects* t
+  "Effects permitted for the current query: T = all (the default), or a list of
+permitted tags drawn from (:write :eval :io).  Graph reads and pure logic are
+always allowed and are not tagged.")
+(defvar *default-allowed-effects* t
+  "Effect policy applied to queries that don't specify :EFFECTS.")
+
+(defun require-effect (effect)
+  "Signal PROLOG-PERMISSION-ERROR unless EFFECT is permitted by the current
+*ALLOWED-EFFECTS* policy.  Called at entry by every side-effecting functor."
+  (unless (or (eq *allowed-effects* t)
+              (member effect *allowed-effects*))
+    (error 'prolog-permission-error
+           :reason (format nil "~A is not permitted in this query" effect))))
+
 (defun plist-alist (plist)
   "Transform a plist into an alist."
   (iterate:iter (iterate:for k iterate:in plist iterate::by 'cddr)
@@ -855,8 +897,11 @@ flat list of the single var's values rather than a list of tuples), :LIMIT,
 and :SKIP.  :MAX-INFERENCES bounds the number of inference steps and :TIMEOUT
 bounds the wall-clock seconds; exceeding either aborts the query with a
 PROLOG-RESOURCE-ERROR (both default to the *DEFAULT-INFERENCE-BUDGET* /
-*DEFAULT-QUERY-TIMEOUT* globals, which are nil = unlimited).  Returns a list of
-solutions.
+*DEFAULT-QUERY-TIMEOUT* globals, which are nil = unlimited).  :EFFECTS sets the
+side-effect policy -- T (all, the default) or a list of permitted tags drawn
+from (:write :eval :io); a disallowed effect aborts with a
+PROLOG-PERMISSION-ERROR.  Reads and pure logic are always allowed, so
+:EFFECTS nil yields a safe read-only query.  Returns a list of solutions.
 
 A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
 SELECT-FIRST for common shorthands."
@@ -879,6 +924,9 @@ SELECT-FIRST for common shorthands."
             (*query-deadline* (%deadline ,(if (assoc :timeout options)
                                               (cdr (assoc :timeout options))
                                               '*default-query-timeout*)))
+            (*allowed-effects* ,(if (assoc :effects options)
+                                    `',(cdr (assoc :effects options))
+                                    '*default-allowed-effects*))
             (*seen-table* (make-hash-table)) ;; For unique values
 	    (functor (make-functor :name *functor* :clauses nil)))
        (unwind-protect
