@@ -796,6 +796,22 @@ inline, composing with cut and the control constructs.  When Goal is a variable
 (defvar *prolog-block-name* nil)
 (defvar *select-flat* nil)
 (defvar *seen-table* nil)
+(defvar *select-count-only* nil
+  "When true (SELECT :COUNT t / SELECT-COUNT), the query counts solutions
+without projecting or consing their bindings.")
+
+(defun %count-tick (cont)
+  "Account one solution under the active :SKIP/:LIMIT window without consing any
+bindings, then continue (or stop once :LIMIT is reached).  The :COUNT-mode
+counterpart of the SELECT/2 collector; the running total is *SELECT-CURRENT-COUNT*."
+  (when (or (null *select-limit*) (< *select-current-count* *select-limit*))
+    (when (and *select-skip* (<= *select-current-skip* *select-skip*))
+      (incf *select-current-skip*))
+    (when (or (null *select-skip*) (> *select-current-skip* *select-skip*))
+      (incf *select-current-count*)))
+  (if (or (null *select-limit*) (< *select-current-count* *select-limit*))
+      (funcall cont)
+      (throw :prolog-limit-reached nil)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Query resource bounds (#45 Phase 0.4 / Phase 1).
@@ -901,7 +917,9 @@ PROLOG-RESOURCE-ERROR (both default to the *DEFAULT-INFERENCE-BUDGET* /
 side-effect policy -- T (all, the default) or a list of permitted tags drawn
 from (:write :eval :io); a disallowed effect aborts with a
 PROLOG-PERMISSION-ERROR.  Reads and pure logic are always allowed, so
-:EFFECTS nil yields a safe read-only query.  Returns a list of solutions.
+:EFFECTS nil yields a safe read-only query.  :COUNT t returns the integer number
+of solutions instead of the list, consing nothing per solution (see
+SELECT-COUNT).  Returns a list of solutions (or, with :COUNT, a count).
 
 A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
 SELECT-FIRST for common shorthands."
@@ -927,6 +945,7 @@ SELECT-FIRST for common shorthands."
             (*allowed-effects* ,(if (assoc :effects options)
                                     `',(cdr (assoc :effects options))
                                     '*default-allowed-effects*))
+            (*select-count-only* ,(cdr (assoc :count options)))
             (*seen-table* (make-hash-table)) ;; For unique values
 	    (functor (make-functor :name *functor* :clauses nil)))
        (unwind-protect
@@ -954,12 +973,21 @@ SELECT-FIRST for common shorthands."
          (progn
            (delete-functor functor)
            (release-prolog-symbol top-level-query)))
-       (nreverse *select-list*))))
+       (if *select-count-only*
+           *select-current-count*
+           (nreverse *select-list*)))))
 
 (defmacro select-flat (vars &rest goals)
   "Like SELECT with :FLAT t: return a flat list of values rather than a list of
 tuples.  Most convenient with a single result variable."
   `(select (:flat t) ,vars ,@goals))
+
+(defmacro select-count (vars &rest goals)
+  "Run the query GOALS and return the NUMBER of solutions as an integer, without
+projecting or consing any bindings.  VARS may be () when only the count matters.
+For a capped or offset count use the SELECT (:count t :limit N :skip M ...) form;
+SELECT-COUNT itself counts every solution."
+  `(select (:count t) ,vars ,@goals))
 
 (defmacro select-first (vars &rest goals)
   "Return only the first solution's tuple for VARS (cuts after the first

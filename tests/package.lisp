@@ -189,6 +189,7 @@
                 #:select
                 #:select-flat
                 #:select-one
+                #:select-count
                 #:do-query
                 #:is-a/2
                 #:select/2

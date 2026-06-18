@@ -480,6 +480,10 @@ order of terms with duplicates removed."
       (dbg "TRACE: SELECT/2(~A ~A)~%" var-names vars)
       (dbg "TRACE: SELECT/2 COUNT: ~A, SKIP: ~A" *select-current-count* *select-current-skip*)
       (dbg "TRACE: SELECT/2 SELECT-LIST: ~{~A~^ ~}" *select-list*))
+    ;; :COUNT mode -- tally solutions (honoring :skip/:limit) without projecting
+    ;; or consing any bindings.
+    (when *select-count-only*
+      (return-from select/2 (%count-tick cont)))
     (when (or (null *select-limit*)
               (< *select-current-count* *select-limit*))
       (when (not (null vars))

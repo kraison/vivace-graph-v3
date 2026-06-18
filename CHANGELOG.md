@@ -60,6 +60,12 @@ All notable changes to VivaceGraph are recorded here.
   results.  (A future `catch/3` + ISO `existence_error` will make this
   recoverable; see #45.)
 
+- **`select-count` / `select` `:count`.** `select-count` (already exported but
+  never implemented) now returns the integer number of solutions to a query
+  without projecting or consing any per-solution bindings; the underlying
+  `select` `:count t` option does the same and composes with `:limit` and
+  `:skip` (so a capped or offset count counts the rows `select` would return).
+
 ### Fixed
 - **Prolog `if/3` else-semantics (issue #45).** `(if Test Then Else)` now runs
   `Else` only when `Test` has no solution; previously it also ran `Else` when

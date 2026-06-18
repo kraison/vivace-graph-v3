@@ -181,7 +181,6 @@
            #:*select-flat*
            #:*select-list*
            #:select-count
-           #:*select-count*
            #:*select-skip*
            #:*select-current-count*
            #:*select-current-skip*
