@@ -166,11 +166,21 @@
 
 (defun prolog-compiler-macro (name)
   "Fetch the compiler macro for a Prolog predicate."
-  ;; Note NAME is the raw name, not the name/arity
-  (typecase name
-    (string (get (intern (string-upcase name)) 'prolog-compiler-macro))
-    (symbol (get name 'prolog-compiler-macro))
-    (otherwise nil)))
+  ;; Note NAME is the raw name, not the name/arity.
+  ;;
+  ;; Goal heads are read in the caller's package, so a control word written in a
+  ;; user package (e.g. GRAPH-DB/TEST::ONCE) is a *different* symbol from the
+  ;; GRAPH-DB symbol the macro is defined on.  CL-inherited heads (=, and, or,
+  ;; not, if) are the same symbol everywhere and hit directly; for the rest we
+  ;; fall back to the same-named symbol interned in GRAPH-DB -- mirroring how
+  ;; MAKE-FUNCTOR-SYMBOL canonicalizes runtime predicate names by string.
+  (flet ((canonical (sym)
+           (let ((c (find-symbol (symbol-name sym) :graph-db)))
+             (and c (not (eq c sym)) (get c 'prolog-compiler-macro)))))
+    (typecase name
+      (string (get (intern (string-upcase name) :graph-db) 'prolog-compiler-macro))
+      (symbol (or (get name 'prolog-compiler-macro) (canonical name)))
+      (otherwise nil))))
 
 (defmacro def-prolog-compiler-macro (name arglist &body body)
   "Define a compiler macro for Prolog."
@@ -373,7 +383,13 @@
   (compile-body (append (args goal) body) cont bindings))
 
 (def-prolog-compiler-macro or (goal body cont bindings)
-  (let ((disjuncts (args goal)))
+  ;; The disjuncts share one continuation FN, so a binding made in a disjunct
+  ;; must be visible to FN at RUNTIME -- compile-time aliasing (= optimizing a
+  ;; fresh var to a no-op) would be lost across the shared continuation.  Seed
+  ;; the or's fresh variables as self-bound so = compiles to a runtime UNIFY
+  ;; (trail-backed) rather than a compile-time alias.
+  (let* ((bindings (bind-new-variables bindings goal))
+         (disjuncts (args goal)))
     (case (length disjuncts)
       (0 +fail+)
       (1 (compile-body (cons (first disjuncts) body) cont bindings))
@@ -382,6 +398,141 @@
 	      .,(maybe-add-undo-bindings
 		 (loop for g in disjuncts collect
 		      (compile-body (list g) `#',fn bindings)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Control-flow core (#45 Phase 0).
+;;;
+;;; not/\+, if (->), once and forall are compiled inline through COMPILE-BODY so
+;;; they thread the continuation and compose with conjunction and cut, instead
+;;; of routing through the runtime call/1 functors (which cannot see the
+;;; compiler's continuations or cut barriers).  A sub-goal that is not statically
+;;; compilable (a meta-call variable, e.g. (not ?G)) is declined with :PASS, so
+;;; COMPILE-BODY falls back to the runtime functor and today's behavior is
+;;; preserved for that case.
+;;;
+;;; Binding threading: the controlled goal and everything that depends on its
+;;; bindings (Then, the tail of the body) are compiled in a SINGLE COMPILE-BODY
+;;; walk, so = and other binders propagate to the continuation exactly as they
+;;; do in an ordinary conjunction.  Pre-compiling the continuation separately
+;;; would drop compile-time variable aliases (e.g. (if (= ?x 5) (foo ?x) ...)).
+;;;
+;;; Cut scoping: a fresh barrier BLOCK wraps the controlled goal so the commit
+;;; (return-from BARRIER) discards its remaining choice points.  The controlled
+;;; goal is compiled with *FUNCTOR* bound to the barrier, so a cut inside it is
+;;; opaque (local to the construct).  The %COMMIT helper restores *FUNCTOR* to
+;;; the enclosing clause while compiling Then/Else and the body tail, so a cut
+;;; there still cuts the clause (returns from the real functor block, pruning
+;;; sibling clauses) -- not merely the barrier.
+;;; ---------------------------------------------------------------------------
+
+(defun static-goal-p (goal)
+  "True when GOAL is a goal COMPILE-BODY can expand inline: a compound whose
+head is a non-variable symbol.  A bare variable (meta-call) is not static."
+  (and (consp goal)
+       (symbolp (first goal))
+       (not (variable-p (first goal)))))
+
+(def-prolog-compiler-macro %commit (goal body cont bindings)
+  "Internal control-macro helper -- not for use in user queries.
+(%commit BARRIER OUTER) compiles the remaining body under OUTER's cut scope (so
+a cut in a Then/Else or tail goal cuts the enclosing clause), then returns from
+BARRIER, committing the preceding goal to its first solution."
+  (destructuring-bind (barrier outer) (args goal)
+    `(progn
+       ,(let ((*functor* outer)) (compile-body body cont bindings))
+       (return-from ,barrier nil))))
+
+(def-prolog-compiler-macro not (goal body cont bindings)
+  "Negation as failure.  (not G) continues with the rest of the body exactly
+when G has no solution; G is an opaque cut barrier and leaves no bindings (the
+rest of the body does not depend on G's bindings)."
+  (let ((args (args goal)))
+    (if (or (/= 1 (length args)) (not (static-goal-p (first args))))
+        :pass
+        ;; FOUND and TRAIL are gensyms: nested nots (e.g. forall's expansion)
+        ;; would otherwise capture a shared FOUND, and an inner continuation's
+        ;; (setf found t) would hit the wrong binding.
+        (let* ((barrier (prolog-gensym "NOT"))
+               (found (prolog-gensym "FOUND"))
+               (trail (prolog-gensym "TRAIL"))
+               ;; rest compiled under the clause's *FUNCTOR* (cut after a not
+               ;; cuts the clause); G compiled under the barrier (opaque).
+               (rest-code (compile-body body cont bindings))
+               (g-code (let ((*functor* barrier))
+                         (compile-body (list (first args))
+                                       `(lambda ()
+                                          (setf ,found t)
+                                          (return-from ,barrier))
+                                       bindings))))
+          `(let ((,trail (fill-pointer *trail*))
+                 (,found nil))
+             (block ,barrier ,g-code)
+             (undo-bindings ,trail)
+             (unless ,found ,rest-code))))))
+
+(def-prolog-compiler-macro once (goal body cont bindings)
+  "(once G): commit to G's first solution, then continue with the rest of the
+body (which sees G's bindings).  G is an opaque cut barrier."
+  (let ((args (args goal)))
+    (if (or (/= 1 (length args)) (not (static-goal-p (first args))))
+        :pass
+        (let ((barrier (prolog-gensym "ONCE"))
+              (outer *functor*))
+          `(block ,barrier
+             ,(let ((*functor* barrier))
+                (compile-body (list* (first args)
+                                     (list '%commit barrier outer)
+                                     body)
+                              cont bindings)))))))
+
+(def-prolog-compiler-macro if (goal body cont bindings)
+  "(if Test Then) and (if Test Then Else): ISO soft cut.  Commit to the first
+solution of Test; if Test has a solution run Then (seeing Test's bindings),
+otherwise run Else (or fail, for the two-argument form).  Test is an opaque cut
+barrier; a cut in Then or Else cuts the enclosing clause."
+  (let* ((args (args goal))
+         (n (length args)))
+    (if (or (not (<= 2 n 3)) (notevery #'static-goal-p args))
+        :pass
+        (destructuring-bind (test then &optional else) args
+          (let ((barrier (prolog-gensym "IF"))
+                (trail (prolog-gensym "TRAIL"))
+                (outer *functor*))
+            ;; The Test->commit->Then->tail path is one walk so Test's bindings
+            ;; thread into Then.  %commit returns from BARRIER after the first
+            ;; Test solution; if Test never succeeds the block falls through.
+            (if (= n 2)
+                `(block ,barrier
+                   ,(let ((*functor* barrier))
+                      (compile-body
+                       (list* test (list '%commit barrier outer) then body)
+                       cont bindings)))
+                `(let ((,trail (fill-pointer *trail*)))
+                   ;; BLOCK yields NIL when Test succeeded (return-from in
+                   ;; %commit), or :TEST-FAILED when it fell through -- the
+                   ;; latter is the only case in which Else runs.
+                   (if (block ,barrier
+                         ,(let ((*functor* barrier))
+                            (compile-body
+                             (list* test (list '%commit barrier outer) then body)
+                             cont bindings))
+                         :test-failed)
+                       (progn
+                         (undo-bindings ,trail)
+                         ,(compile-body (cons else body) cont bindings))))))))))
+
+(def-prolog-compiler-macro forall (goal body cont bindings)
+  "(forall Cond Action): succeed (continuing the body) iff Action succeeds for
+every solution of Cond.  Compiled as (not (and Cond (not Action))), which reuses
+the not/and macros' binding threading and cut scoping; forall leaves no bindings
+and Cond/Action form an opaque barrier."
+  (let ((args (args goal)))
+    (if (or (/= 2 (length args)) (notevery #'static-goal-p args))
+        :pass
+        (destructuring-bind (cond action) args
+          (compile-body
+           (cons (list 'not (list 'and cond (list 'not action))) body)
+           cont bindings)))))
 
 (defmethod clause-body ((list list))
   (rest list))

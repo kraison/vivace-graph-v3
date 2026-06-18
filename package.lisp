@@ -150,6 +150,8 @@
            #:q-
            #:!
            #:cut
+           #:once
+           #:forall
            #:var-deref
            #:undo-bindings
            #:replace-?-vars

@@ -161,11 +161,44 @@ goal's argument count."
   (call/1 ?test #'(lambda () (call/1 ?then cont))))
 
 (def-global-prolog-functor if/3 (?test ?then ?else cont)
+  "(if Test Then Else): ISO soft cut.  Commit to the first solution of Test; if
+Test has a solution run Then, otherwise run Else.  Else runs ONLY when Test has
+no solution -- not when Test succeeds but Then fails.  This is the runtime
+(meta-call) counterpart of the IF compiler macro; the two must agree."
   (when *prolog-trace* (format t "TRACE: IF/3(~A ~A ~A)~%" ?test ?then ?else))
-  (call/1 ?test #'(lambda ()
-		    (call/1 ?then
-			    #'(lambda () (funcall cont) (return-from if/3)))))
-  (call/1 ?else cont))
+  (let ((old-trail (fill-pointer *trail*))
+        (cond-met nil))
+    (block done
+      (call/1 ?test #'(lambda ()
+                        (setf cond-met t)
+                        (call/1 ?then cont)
+                        (return-from done))))
+    (unless cond-met
+      (undo-bindings old-trail)
+      (call/1 ?else cont))))
+
+(def-global-prolog-functor once/1 (goal cont)
+  "(once Goal): succeed at most once -- commit to Goal's first solution.  Runtime
+(meta-call) counterpart of the ONCE compiler macro."
+  (block done
+    (call/1 goal #'(lambda () (funcall cont) (return-from done)))))
+
+(def-global-prolog-functor forall/2 (cond action cont)
+  "(forall Cond Action): succeed iff Action succeeds for every solution of Cond.
+Runtime (meta-call) counterpart of the FORALL compiler macro."
+  (let ((old-trail (fill-pointer *trail*))
+        (ok t))
+    (block done
+      (call/1 cond
+              #'(lambda ()
+                  (let ((inner-trail (fill-pointer *trail*))
+                        (act nil))
+                    (block inner
+                      (call/1 action #'(lambda () (setf act t) (return-from inner))))
+                    (undo-bindings inner-trail)
+                    (unless act (setf ok nil) (return-from done))))))
+    (undo-bindings old-trail)
+    (when ok (funcall cont))))
 
 (let ((date-regex
        "^(19|20)\\d\\d[\-\ \/\.](0[1-9]|1[012])[\-\ \/\.](0[1-9]|[12][0-9]|3[01])$"))

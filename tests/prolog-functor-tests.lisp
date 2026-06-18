@@ -108,3 +108,71 @@
       (is (= 2 (length (select-flat (?a) (g-knows ?a ?b)))))
       ;; unique/1 collapses them to one
       (is (= 1 (length (select-flat (?a) (g-knows ?a ?b) (unique ?a))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Control-flow core (#45 Phase 0).  These exercise the compiler-level control
+;;; constructs -- not, if (->), once, forall -- which expand through
+;;; COMPILE-BODY so they compose with conjunction and cut, rather than routing
+;;; through the runtime call/1 functors.
+;;; ---------------------------------------------------------------------------
+
+(test if-3-else-only-when-test-has-no-solution
+  "if/3 (Test -> Then ; Else) runs ELSE only when Test has ZERO solutions --
+NOT when Test succeeds but Then fails (the pre-fix bug ran Else in that case)."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; Test succeeds, Then fails -> whole if fails; Else must NOT run.
+    (is (null (select-flat (?r) (if (< 1 2) (> 1 2) (= ?r :else)))))
+    ;; Test fails -> Else runs.
+    (is (equal '(:else) (select-flat (?r) (if (< 2 1) (= ?r :then) (= ?r :else)))))
+    ;; Test succeeds, Then succeeds -> Then runs, Else does not.
+    (is (equal '(:then) (select-flat (?r) (if (< 1 2) (= ?r :then) (= ?r :else)))))))
+
+(test if-3-commits-to-first-test-solution
+  "if/3 commits to the first solution of a multi-solution Test (soft cut on the
+condition): the disjunctive test offers ?r=1 then ?r=2, but only the first is
+taken."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(1)
+               (select-flat (?r)
+                            (if (or (= ?r 1) (= ?r 2)) (numberp ?r) (= ?r :none)))))))
+
+(test not-negates-and-composes
+  "not/1 succeeds (continuing the conjunction) exactly when its goal fails, and
+leaves no bindings behind."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; goal fails -> not succeeds, conjunction continues
+    (is (equal '(5) (select-flat (?x) (= ?x 5) (not (> ?x 10)))))
+    ;; goal succeeds -> not fails -> no solutions
+    (is (null (select-flat (?x) (= ?x 5) (not (< ?x 10)))))
+    ;; not over a negative test still binds the rest normally
+    (is (equal '(5) (select-flat (?x) (= ?x 5) (not (= ?x 6)) (numberp ?x))))))
+
+(test once-commits-to-first-solution
+  "once/1 commits to the first solution of a multi-solution goal."
+  (with-test-graph (g)
+    (with-transaction ()
+      (let ((a (make-g-person :name "A")))
+        (make-g-knows :from a :to (make-g-person :name "B"))
+        (make-g-knows :from a :to (make-g-person :name "C"))))
+    ;; without once: two solutions for the source vertex
+    (is (= 2 (length (select-flat (?a) (g-knows ?a ?b)))))
+    ;; with once: committed to the first
+    (is (= 1 (length (select-flat (?a) (once (g-knows ?a ?b))))))))
+
+(test forall-universal-check
+  "forall/2 succeeds iff Action holds for every solution of Cond."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; every disjunctive solution is a number -> forall succeeds
+    (is (equal '(:ok)
+               (select-flat (?r)
+                            (forall (or (= ?x 2) (= ?x 4)) (numberp ?x))
+                            (= ?r :ok))))
+    ;; 2 is not > 3 -> forall fails -> no solution
+    (is (null
+         (select-flat (?r)
+                      (forall (or (= ?x 2) (= ?x 4)) (> ?x 3))
+                      (= ?r :ok))))))

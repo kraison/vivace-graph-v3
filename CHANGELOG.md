@@ -4,7 +4,27 @@ All notable changes to VivaceGraph are recorded here.
 
 ## Unreleased
 
+### Added
+- **Prolog control-flow core (issue #45, Phase 0).** `not`/`\+`, `if` (the
+  two- and three-argument `Cond -> Then [; Else]` soft cut), `once`, and `forall`
+  are now first-class compiler constructs: they expand through `compile-body`, so
+  they thread bindings and compose with conjunction and cut instead of routing
+  through the runtime `call/1` functors.  Each opaque construct (`not`, `once`,
+  the condition of `if`) is a proper cut barrier, while a cut in a `Then`/`Else`
+  branch or in the tail after the construct still cuts the enclosing clause.
+  A non-static (meta-call variable) sub-goal, e.g. `(not ?G)`, transparently
+  falls back to the runtime functor, so existing behavior is preserved.
+
 ### Fixed
+- **Prolog `if/3` else-semantics (issue #45).** `(if Test Then Else)` now runs
+  `Else` only when `Test` has no solution; previously it also ran `Else` when
+  `Test` succeeded but `Then` failed.  The runtime `if/3` functor (the meta-call
+  path) was corrected to match.
+- **Prolog `or` binding propagation.** A variable first bound inside a disjunct
+  (e.g. `(or (= ?x 1) (= ?x 2))`) was lost across the disjunction's shared
+  continuation because `=` had been optimized to a compile-time alias.  The `or`
+  compiler macro now seeds its fresh variables so they bind on the trail at
+  runtime and are visible to the continuation.
 - **ECL spatial-index concurrency (issue #42).** The skip list guarded every
   operation -- reads included -- with one recursive lock on ECL, so concurrent
   spatial queries ran sequentially and timed out under high parallelism.  Replaced
