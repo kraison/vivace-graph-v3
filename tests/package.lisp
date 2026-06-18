@@ -200,6 +200,7 @@
                 #:bagof/3
                 #:setof/3
                 #:findall/3
+                #:repeat/0
                 ;; comparison / arithmetic / type / control built-ins
                 #:=/2
                 #:==/2

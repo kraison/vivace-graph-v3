@@ -53,6 +53,14 @@
              (with-slots (reason) error
                (format stream "Prolog error: ~A." reason)))))
 
+(define-condition prolog-resource-error (prolog-error)
+  ()
+  (:documentation "Signaled when a query exceeds a resource bound -- its
+inference budget (*INFERENCE-BUDGET* / the :MAX-INFERENCES select option) or its
+wall-clock deadline (*QUERY-DEADLINE* / the :TIMEOUT option).  A subclass of
+PROLOG-ERROR, so it aborts the query but is catchable; it lets a runaway or
+cyclic recursion fail cleanly instead of crashing the Lisp control stack."))
+
 (defstruct (var (:constructor ? ())
                 (:print-function print-var))
   (name (incf *var-counter*))
@@ -159,6 +167,7 @@
   (let ((functor (make-functor-symbol predicate arity)))
     `(let ((func (or (get-functor-fn ',functor)
 		     (gethash ',functor *prolog-global-functors*))))
+       (%tick)                          ; account one inference / enforce bounds
        (when *prolog-trace*
 	 (format t "TRACE: ~A/~A~A~%" ',predicate ',arity ',args))
        (if (functionp func)
@@ -788,6 +797,48 @@ inline, composing with cut and the control constructs.  When Goal is a variable
 (defvar *select-flat* nil)
 (defvar *seen-table* nil)
 
+;;; ---------------------------------------------------------------------------
+;;; Query resource bounds (#45 Phase 0.4 / Phase 1).
+;;;
+;;; Opt-in safety for untrusted or possibly-runaway queries (the #44 web surface
+;;; is the motivating case): bound a query by a maximum number of inferences and
+;;; a wall-clock deadline, so a non-terminating or cyclic-recursive query fails
+;;; with a catchable PROLOG-RESOURCE-ERROR instead of looping forever or crashing
+;;; the Lisp control stack.  Both default to nil (unlimited), so trusted queries
+;;; keep their current behavior; per-query :MAX-INFERENCES / :TIMEOUT options (or
+;;; the *DEFAULT-* globals) turn them on.
+;;; ---------------------------------------------------------------------------
+
+(defvar *inference-budget* nil
+  "Maximum number of inferences (compiled goal calls / meta-call steps) allowed
+for the current query, or nil for unlimited.")
+(defvar *inference-count* 0
+  "Inferences accounted so far in the current query.")
+(defvar *query-deadline* nil
+  "INTERNAL-REAL-TIME after which the current query aborts, or nil for none.")
+(defvar *default-inference-budget* nil
+  "Inference budget applied to queries that don't specify :MAX-INFERENCES.")
+(defvar *default-query-timeout* nil
+  "Default query timeout in seconds for queries that don't specify :TIMEOUT.")
+
+(defun %deadline (seconds)
+  "Translate a timeout in SECONDS into an INTERNAL-REAL-TIME deadline (or nil)."
+  (when seconds
+    (+ (get-internal-real-time)
+       (round (* seconds internal-time-units-per-second)))))
+
+(declaim (inline %tick))
+(defun %tick ()
+  "Account one inference and abort the query (PROLOG-RESOURCE-ERROR) if a
+resource bound is exceeded.  A no-op when no bound is in effect."
+  (when *inference-budget*
+    (when (> (incf *inference-count*) *inference-budget*)
+      (error 'prolog-resource-error
+             :reason (format nil "inference budget exceeded (~D)"
+                             *inference-budget*))))
+  (when (and *query-deadline* (>= (get-internal-real-time) *query-deadline*))
+    (error 'prolog-resource-error :reason "query timeout exceeded")))
+
 (defun plist-alist (plist)
   "Transform a plist into an alist."
   (iterate:iter (iterate:for k iterate:in plist iterate::by 'cddr)
@@ -801,7 +852,11 @@ VARS is a list of ?-variables (e.g. (?a ?b)).  GOALS are query goals such as
 (is-a ?u user), an edge functor (follows ?a ?b), (node-slot-value ?n slot ?v),
 or (lisp ?x form).  OPTIONS is a plist; the most useful are :FLAT (return a
 flat list of the single var's values rather than a list of tuples), :LIMIT,
-and :SKIP.  Returns a list of solutions.
+and :SKIP.  :MAX-INFERENCES bounds the number of inference steps and :TIMEOUT
+bounds the wall-clock seconds; exceeding either aborts the query with a
+PROLOG-RESOURCE-ERROR (both default to the *DEFAULT-INFERENCE-BUDGET* /
+*DEFAULT-QUERY-TIMEOUT* globals, which are nil = unlimited).  Returns a list of
+solutions.
 
 A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
 SELECT-FIRST for common shorthands."
@@ -817,6 +872,13 @@ SELECT-FIRST for common shorthands."
             (*select-skip* ,(cdr (assoc :skip options)))
             (*select-current-count* 0)
             (*select-current-skip* 0)
+            (*inference-budget* ,(if (assoc :max-inferences options)
+                                     (cdr (assoc :max-inferences options))
+                                     '*default-inference-budget*))
+            (*inference-count* 0)
+            (*query-deadline* (%deadline ,(if (assoc :timeout options)
+                                              (cdr (assoc :timeout options))
+                                              '*default-query-timeout*)))
             (*seen-table* (make-hash-table)) ;; For unique values
 	    (functor (make-functor :name *functor* :clauses nil)))
        (unwind-protect

@@ -33,7 +33,10 @@ goal's argument count."
   (terpri) (funcall cont))
 
 (def-global-prolog-functor repeat/0 (cont)
-  (loop (funcall cont)))
+  ;; %tick each iteration so an enclosing :timeout / :max-inferences can break
+  ;; an otherwise-unbounded (repeat ... fail) loop, which never re-enters
+  ;; compile-call and so would not otherwise be accounted.
+  (loop (%tick) (funcall cont)))
 
 (def-global-prolog-functor fail/0 (cont)
   (declare (ignore cont))
@@ -180,6 +183,7 @@ between branches).  Unlike the legacy or/2 functor this does not truncate."
 (defun %solve (goal cont)
   "Prove GOAL at run time, invoking CONT once per solution.  GOAL may be atomic,
 compound, or a control construct; its variables are runtime VAR structs."
+  (%tick)                               ; account one inference / enforce bounds
   (setf goal (var-deref goal))
   (cond
     ((var-p goal)

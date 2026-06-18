@@ -31,6 +31,15 @@ All notable changes to VivaceGraph are recorded here.
   a single var or a list) marks variables as existential so they are not treated
   as witnesses.  `setof` sorts each group by the standard order of terms and
   removes duplicates.
+- **Query resource bounds (issue #45, Phase 0.4).** Queries can now be bounded by
+  a maximum inference count (`:max-inferences` select option / `*inference-budget*`
+  / `*default-inference-budget*`) and a wall-clock timeout (`:timeout` seconds /
+  `*default-query-timeout*`).  Exceeding either aborts the query with a catchable
+  `prolog-resource-error`, so a runaway, non-terminating, or cyclic-recursive
+  query fails cleanly instead of hanging or overflowing the Lisp control stack.
+  Both default to nil (unlimited): trusted queries are unchanged, untrusted ones
+  (e.g. the planned #44 web surface) opt in.  Solution count remains bounded by
+  the existing `:limit`.
 
 ### Changed
 - **Unknown Prolog predicates are now noisy.** A goal naming an undefined

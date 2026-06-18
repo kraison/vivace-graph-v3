@@ -166,6 +166,10 @@
            #:compile-clause
            #:show-prolog-vars
            #:prolog-error
+           #:prolog-resource-error
+           #:*inference-budget*
+           #:*default-inference-budget*
+           #:*default-query-timeout*
            #:prolog-ignore
            #:delete-functor
            #:set-functor-fn

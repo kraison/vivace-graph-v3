@@ -330,3 +330,63 @@ removed; bagof over the same goal keeps the duplicate."
                                           ?b))))))))
       (is (equal '(1 2 3) set))          ; sorted, de-duplicated
       (is (= 4 (length bag))))))         ; 3 1 3 2 -- order/dups preserved
+
+;;; ---------------------------------------------------------------------------
+;;; Query resource bounds (#45 Phase 0.4): inference budget + wall-clock timeout
+;;; turn runaway / cyclic recursion into a catchable prolog-resource-error
+;;; instead of a hang or an (uncatchable) control-stack crash.
+;;; ---------------------------------------------------------------------------
+
+(test inference-budget-bounds-recursion
+  "A recursive query that exceeds its inference budget aborts with a catchable
+prolog-resource-error; the same query with an ample budget succeeds normally."
+  (with-test-graph (g)
+    (build-knows-chain 6)               ; acyclic -> 15 reachable pairs
+    (defining-reach
+      (signals graph-db:prolog-resource-error
+        (with-query-timeout (15)
+          (select (:max-inferences 5) (?x ?y) (reach ?x ?y))))
+      (is (= 15 (length
+                 (with-query-timeout (15)
+                   (select (:max-inferences 1000000) (?x ?y) (reach ?x ?y)))))))))
+
+(test cyclic-recursion-fails-gracefully
+  "Recursion over CYCLIC data -- which would otherwise overflow the control
+stack -- fails with a catchable prolog-resource-error once a budget is set."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-transaction ()
+      (let ((a (make-g-person :name "a"))
+            (b (make-g-person :name "b")))
+        (make-g-knows :from a :to b)
+        (make-g-knows :from b :to a)))   ; a <-> b cycle
+    (defining-reach
+      (signals graph-db:prolog-resource-error
+        (with-query-timeout (20)
+          (select (:max-inferences 1000) (?x ?y) (reach ?x ?y)))))))
+
+(test inference-budget-breaks-spin-loop
+  "An inference budget breaks an otherwise-infinite (repeat ... fail) loop,
+which never re-enters compile-call."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-resource-error
+      (in-test-package
+        (with-query-timeout (15)
+          (select (:max-inferences 1000) () (repeat) (fail)))))))
+
+(test query-timeout-breaks-spin-loop
+  "A wall-clock timeout (here 0 s -> the deadline is already past) breaks a
+spin loop with a catchable prolog-resource-error."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-resource-error
+      (in-test-package
+        (with-query-timeout (15)
+          (select (:timeout 0) () (repeat) (fail)))))))
+
+(test unbounded-query-still-runs-by-default
+  "With no bound (the default), an ordinary query is unaffected."
+  (with-test-graph (g)
+    (build-knows-chain 5)
+    (is (= 5 (length (select-flat (?p) (is-a ?p g-person)))))))
