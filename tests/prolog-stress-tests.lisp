@@ -229,3 +229,104 @@ Edges n0->n2, n1->n2, n0->n3 make \"n2\" a duplicate target name."
              (is (= 2 (length set)))                       ; n2 n3
              (is (equal '("n2" "n3") (sort (copy-list set) #'string<)))))
       (drop-rule 'target-name 1))))
+
+;;; ---------------------------------------------------------------------------
+;;; All-solutions aggregation (#45 Phase 0.3): findall, ^, free-var grouping,
+;;; sorted setof.
+;;; ---------------------------------------------------------------------------
+
+(test findall-always-succeeds-empty-on-no-solutions
+  "findall/3 binds the empty list (and still succeeds) when the goal has no
+solutions -- unlike bagof/setof, which fail."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '((()))
+               (in-test-package
+                 (with-query-timeout (15)
+                   (select (:flat nil) (?l)
+                           (findall ?x (is-a ?x g-person) ?l))))))
+    ;; bagof over the same empty goal fails -> no solutions
+    (is (null (in-test-package
+                (with-query-timeout (15)
+                  (select (:flat nil) (?l)
+                          (bagof ?x (is-a ?x g-person) ?l))))))))
+
+(test findall-collects-in-order-with-duplicates
+  "findall keeps every solution, in order, including duplicates."
+  (with-test-graph (g)
+    (make-people 3)
+    (let ((lst (first (first
+                       (in-test-package
+                         (with-query-timeout (15)
+                           (select (:flat nil) (?l)
+                                   (findall ?n
+                                            (and (is-a ?x g-person)
+                                                 (node-slot-value ?x name ?n))
+                                            ?l))))))))
+      (is (= 3 (length lst)))
+      (is (equal '("n0" "n1" "n2") (sort (copy-list lst) #'string<))))))
+
+(test bagof-groups-by-free-variable
+  "bagof groups by the goal's free (witness) variable: one solution per source
+vertex, each bag holding that source's targets."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; n0 -> {n1, n2}, n1 -> {n2}
+    (with-transaction ()
+      (let ((n0 (make-g-person :name "n0"))
+            (n1 (make-g-person :name "n1"))
+            (n2 (make-g-person :name "n2")))
+        (make-g-knows :from n0 :to n1)
+        (make-g-knows :from n0 :to n2)
+        (make-g-knows :from n1 :to n2)))
+    ;; ?x is a free var (witness): one group per source -> two solutions
+    (let ((groups (in-test-package
+                    (with-query-timeout (15)
+                      (select (:flat nil) (?bag)
+                              (bagof ?y (g-knows ?x ?y) ?bag))))))
+      (is (= 2 (length groups)))
+      (is (equal '(1 2) (sort (mapcar (lambda (row) (length (first row))) groups)
+                              #'<))))))
+
+(test bagof-existential-collapses-groups
+  "^-quantifying the free variable removes it as a witness, collapsing all
+solutions into a single bag."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-transaction ()
+      (let ((n0 (make-g-person :name "n0"))
+            (n1 (make-g-person :name "n1"))
+            (n2 (make-g-person :name "n2")))
+        (make-g-knows :from n0 :to n1)
+        (make-g-knows :from n0 :to n2)
+        (make-g-knows :from n1 :to n2)))
+    ;; (^ ?x ...) makes ?x existential -> one group of all three targets
+    (let ((groups (in-test-package
+                    (with-query-timeout (15)
+                      (select (:flat nil) (?bag)
+                              (bagof ?y (^ ?x (g-knows ?x ?y)) ?bag))))))
+      (is (= 1 (length groups)))
+      (is (= 3 (length (first (first groups))))))))
+
+(test setof-sorts-and-dedups-each-group
+  "setof returns each group's list sorted by standard order with duplicates
+removed; bagof over the same goal keeps the duplicate."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; numbers offered out of order, with a duplicate
+    (let ((set (first (first
+                       (in-test-package
+                         (with-query-timeout (15)
+                           (select (:flat nil) (?s)
+                                   (setof ?n
+                                          (or (= ?n 3) (= ?n 1) (= ?n 3) (= ?n 2))
+                                          ?s)))))))
+          (bag (first (first
+                       (in-test-package
+                         (with-query-timeout (15)
+                           (select (:flat nil) (?b)
+                                   (bagof ?n
+                                          (or (= ?n 3) (= ?n 1) (= ?n 3) (= ?n 2))
+                                          ?b))))))))
+      (is (equal '(1 2 3) set))          ; sorted, de-duplicated
+      (is (= 4 (length bag))))))         ; 3 1 3 2 -- order/dups preserved

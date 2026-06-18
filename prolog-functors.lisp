@@ -302,26 +302,135 @@ query."
   (call/1 goal1 #'(lambda () (funcall cont) (return-from or/2 t)))
   (call/1 goal2 #'(lambda () (funcall cont) (return-from or/2 t))))
 
-(def-global-prolog-functor bagof/3 (exp goal result cont)
-  (let ((answers nil))
-    (call/1 goal #'(lambda () (push (deref-exp exp) answers)))
-    (if (and (not (null answers))
-	     (unify result (nreverse answers)))
-	(funcall cont))))
+;;; ---------------------------------------------------------------------------
+;;; All-solutions aggregation (#45 Phase 0.3): findall/3, bagof/3, setof/3.
+;;;
+;;; findall collects every TEMPLATE instance (always succeeds; [] on none, no
+;;; grouping).  bagof/setof additionally fail on no solutions and GROUP by the
+;;; goal's free (witness) variables -- those in Goal but not in Template and not
+;;; existentially quantified by ^ -- producing one solution per witness binding.
+;;; setof sorts each group by the standard order of terms and removes duplicates.
+;;; ---------------------------------------------------------------------------
 
-(def-global-prolog-functor setof/3 (exp goal result cont)
-  "Find all unique solutions to GOAL, and for each solution,
-  collect the value of EXP into the list RESULT."
-  ;; Ex: Assume (p 1) (p 2) (p 3).  Then:
-  ;;     (setof ?x (p ?x) ?l) ==> ?l = (1 2 3)
-  (let ((answers nil))
-    (call/1 goal #'(lambda ()
-                     (push (deref-exp exp) answers)))
-    (if (and (not (null answers))
-             (unify result (delete-duplicates
-                            answers
-                            :test #'deref-equal)))
-        (funcall cont))))
+(defun %term-vars (term &optional acc)
+  "Distinct unbound VAR structs occurring in TERM (post-deref), prepended to ACC."
+  (setf term (var-deref term))
+  (cond ((var-p term) (if (member term acc) acc (cons term acc)))
+        ((consp term) (%term-vars (rest term) (%term-vars (first term) acc)))
+        (t acc)))
+
+(defun %strip-existential (goal)
+  "Strip leading ^ quantifiers.  Returns (values inner-goal existential-vars).
+Supports (^ Var Goal) and (^ (Var...) Goal), nestable."
+  (let ((evars nil))
+    (loop
+      (setf goal (var-deref goal))
+      (if (and (consp goal)
+               (control-head-p (var-deref (first goal)) '^)
+               (= 2 (length (rest goal))))
+          (let ((v (var-deref (second goal))))
+            (dolist (x (if (consp v) v (list v)))
+              (setf evars (%term-vars x evars)))
+            (setf goal (var-deref (third goal))))
+          (return)))
+    (values goal evars)))
+
+(defun %findall-list (template goal)
+  "Run GOAL, snapshotting TEMPLATE per solution; return the snapshots in solution
+order.  Bindings are undone before returning.  DEREF-EXP (not DEREF-COPY)
+resolves bound variables to their values so the snapshot survives the undo --
+DEREF-COPY renames variables apart and would drop the bindings."
+  (let ((acc nil)
+        (old-trail (fill-pointer *trail*)))
+    (%solve goal (lambda () (push (deref-exp template) acc)))
+    (undo-bindings old-trail)
+    (nreverse acc)))
+
+(defun %group-by-witness (pairs)
+  "PAIRS is a list of (Witness . Template) snapshots.  Group by Witness
+(structural equality), preserving first-appearance order; return a list of
+(Witness . list-of-Template)."
+  (let ((groups nil))
+    (dolist (p pairs)
+      (let ((entry (assoc (car p) groups :test #'deref-equal)))
+        (if entry
+            (push (cdr p) (cdr entry))
+            (setf groups (nconc groups (list (list (car p) (cdr p))))))))
+    (mapcar (lambda (g) (cons (car g) (nreverse (cdr g)))) groups)))
+
+(defun %term-rank (x)
+  (cond ((var-p x) 0) ((numberp x) 1) ((characterp x) 2)
+        ((symbolp x) 3) ((stringp x) 4) ((node-p x) 5) ((consp x) 6) (t 7)))
+
+(defun %bytes< (a b)
+  (let ((la (length a)) (lb (length b)))
+    (dotimes (i (min la lb) (< la lb))
+      (let ((x (aref a i)) (y (aref b i)))
+        (when (/= x y) (return (< x y)))))))
+
+(defun %term-< (a b)
+  "A partial standard order of terms: Var < Number < Char < Symbol < String <
+Node < Cons.  Used to sort setof results."
+  (setf a (var-deref a) b (var-deref b))
+  (let ((ra (%term-rank a)) (rb (%term-rank b)))
+    (if (/= ra rb)
+        (< ra rb)
+        (case ra
+          (0 (< (var-name a) (var-name b)))
+          (1 (< a b))
+          (2 (char< a b))
+          (3 (string< (symbol-name a) (symbol-name b)))
+          (4 (string< a b))
+          (5 (%bytes< (id a) (id b)))
+          (6 (cond ((%term-< (car a) (car b)) t)
+                   ((%term-< (car b) (car a)) nil)
+                   (t (%term-< (cdr a) (cdr b)))))
+          (t nil)))))
+
+(defun %sort-unique (items)
+  "Sort ITEMS by the standard order of terms and drop duplicates (deref-equal)."
+  (let ((result nil))
+    (dolist (x (stable-sort (copy-list items) #'%term-<) (nreverse result))
+      (unless (and result (deref-equal (first result) x))
+        (push x result)))))
+
+(def-global-prolog-functor findall/3 (template goal result cont)
+  "findall(Template, Goal, List): List is the list of Template instances, one per
+solution of Goal, in order ([] if none).  Always succeeds and does not bind
+Goal's free variables."
+  (if (unify result (%findall-list template (var-deref goal)))
+      (funcall cont)))
+
+(defun %solve-aggregate (template goal result cont sort-p)
+  "Shared core of bagof/setof: collect Template per solution of GOAL, grouped by
+GOAL's witness variables.  Fails when GOAL has no solutions.  When SORT-P, each
+group's list is sorted and de-duplicated (setof); otherwise order/dups are kept
+(bagof)."
+  (multiple-value-bind (inner evars) (%strip-existential goal)
+    (let* ((tmpl-vars (%term-vars template))
+           (witnesses (remove-if (lambda (v) (or (member v tmpl-vars)
+                                                 (member v evars)))
+                                 (%term-vars inner)))
+           (pairs (%findall-list (cons witnesses template) inner)))
+      (dolist (group (%group-by-witness pairs))
+        (let ((old-trail (fill-pointer *trail*))
+              (items (if sort-p (%sort-unique (cdr group)) (cdr group))))
+          (when (and (unify witnesses (car group))
+                     (unify result items))
+            (funcall cont))
+          (undo-bindings old-trail))))))
+
+(def-global-prolog-functor bagof/3 (template goal result cont)
+  "bagof(Template, Goal, Bag): Bag is the list of Template instances for one
+binding of Goal's witness variables (free vars not in Template, not bound by ^),
+backtracking over witness bindings.  Fails when Goal has no solutions; keeps
+order and duplicates."
+  (%solve-aggregate template goal result cont nil))
+
+(def-global-prolog-functor setof/3 (template goal result cont)
+  "setof(Template, Goal, Set): like bagof, but each Set is sorted by the standard
+order of terms with duplicates removed."
+  (%solve-aggregate template goal result cont t))
 
 (def-global-prolog-functor show-prolog-vars/2 (var-names vars cont)
   (if (null vars)

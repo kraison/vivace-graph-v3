@@ -199,6 +199,7 @@
                 #:not/1
                 #:bagof/3
                 #:setof/3
+                #:findall/3
                 ;; comparison / arithmetic / type / control built-ins
                 #:=/2
                 #:==/2

@@ -22,6 +22,15 @@ All notable changes to VivaceGraph are recorded here.
   new `%solve` runtime solver proves it -- handling conjunction, disjunction,
   call/N and atomic/compound goals.  `call/1` and the control runtime functors
   (`not`/`if`/`once`/`forall`) route through `%solve`.
+- **All-solutions aggregation (issue #45, Phase 0.3).** New `findall/3` (collects
+  every template instance in order, always succeeds, `[]` on no solutions).
+  `bagof/3` and `setof/3` now **group by the goal's free (witness) variables** --
+  the variables in the goal but not in the template and not existentially
+  quantified -- yielding one solution per witness binding (and still failing when
+  the goal has no solutions).  The `^` operator (`(^ Var Goal)`, nestable, accepts
+  a single var or a list) marks variables as existential so they are not treated
+  as witnesses.  `setof` sorts each group by the standard order of terms and
+  removes duplicates.
 
 ### Changed
 - **Unknown Prolog predicates are now noisy.** A goal naming an undefined
