@@ -92,8 +92,29 @@ All notable changes to VivaceGraph are recorded here.
   a forbidden effect a 403, and an unknown query a 404.  Parameter values are
   injected through a new pure `param/2` functor (and `*query-params*`), so
   injection works under the read-only policy.
+- **Constrained JSON pattern queries (issue #44, tier 2).** Clients may POST an
+  ad-hoc, read-only query as a JSON object to `POST /graph/:graph/query` -- no
+  server-authored template and no client Lisp.  The body is a
+  `{match, where, select, limit, skip}` document of typed pattern objects
+  (`{vertex,type}`, `{edge,from,to}`, `{slot,name,bind|value}`,
+  `{compare,args}`) compiled to a bounded `select`.  Type/edge names are
+  resolved against the live schema (an unknown one is a 400), which also
+  determines the package the query compiles in; only a fixed set of safe pattern
+  kinds is expressible (no arbitrary predicate naming).  The query runs read-only
+  (`:effects nil`), under one MVCC snapshot, with the client `:limit` capped at
+  `*query-default-limit*` and the inference/time budgets applied; a malformed
+  query or a bound breach is a 400.  Results use the same JSON array-of-objects
+  shape as `def-query`.
 
 ### Fixed
+- **REST procedure/query POST routes never worked over HTTP.** Their ningle
+  handlers were quoted lambdas (`'(lambda (params) ...)`) -- a *list*, not a
+  function -- so the server returned the list verbatim and the response was
+  malformed, and the handler also referenced the route capture
+  (`procedure-name`) as an unbound free variable instead of reading it from the
+  params.  Replaced with real closures that pull the capture via
+  `(get-param params :procedure-name)` / `:query-name`.  Surfaced by the new
+  end-to-end HTTP tests (the existing tests exercised handlers in-process).
 - **REST procedures were broken on ECL.** `*rest-procedures*` had `#+sbcl`/
   `#+ccl`/`#+lispworks` initforms but no `#+ecl` branch, so on ECL the variable
   was declared special but left unbound; `def-rest-procedure` and

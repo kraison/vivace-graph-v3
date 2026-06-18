@@ -192,6 +192,7 @@
                 #:select-count
                 #:do-query
                 #:def-query
+                #:def-rest-procedure
                 #:is-a/2
                 #:select/2
                 #:param/2

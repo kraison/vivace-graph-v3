@@ -407,6 +407,169 @@ the declared parameters."
               (cons :error
                     (format nil "Unknown query '~A'" name)))))))))
 
+;;; ---------------------------------------------------------------------------
+;;; Constrained JSON pattern queries (#44, tier 2).
+;;;
+;;; A client may POST an ad-hoc, read-only query as a JSON object compiled to a
+;;; bounded SELECT -- no server-authored template, no client Lisp.  The shape:
+;;;
+;;;   {"match":  [ {"vertex":"?p","type":"gPerson"},
+;;;                {"edge":"gKnows","from":"?p","to":"?f"} ],
+;;;    "where":  [ {"slot":"?f","name":"name","bind":"?fname"},
+;;;                {"slot":"?p","name":"name","value":"Alice"},
+;;;                {"compare":"<","args":["?age",30]} ],
+;;;    "select": ["?fname"],
+;;;    "limit":  50, "skip": 0}
+;;;
+;;; Each goal is built from a fixed set of safe pattern kinds (no arbitrary
+;;; predicate naming).  Type/edge names are resolved against the live schema (an
+;;; unknown one is a 400), which also yields the schema package the query is
+;;; compiled in.  The query runs read-only (:effects nil), under one MVCC
+;;; snapshot, capped by the *QUERY-DEFAULT-* bounds; a breach is a 400.
+;;; ---------------------------------------------------------------------------
+
+(defun %dsl-var-or-literal (v)
+  "Map a decoded JSON value to a Prolog term: a \"?x\" string becomes a query
+variable symbol (variables are matched by name, so the package is irrelevant);
+any other value is a literal (string/number/boolean) used as-is."
+  (if (and (stringp v) (plusp (length v)) (char= (char v 0) #\?))
+      (intern (string-upcase v) :graph-db)
+      v))
+
+(defun %dsl-keyword (name)
+  "A client field name (camelCase string) as a lisp keyword: \"minAge\" -> :MIN-AGE."
+  (intern (string-upcase (json:camel-case-to-lisp name)) :keyword))
+
+(defun %dsl-resolve-type (name parent graph)
+  "Resolve a vertex/edge type NAME to its canonical class symbol via GRAPH's
+schema (PARENT is :vertex or :edge).  Returns (values symbol schema-package).
+Signals QUERY-PARAM-ERROR for an unknown type."
+  (unless (stringp name)
+    (error 'query-param-error :reason (format nil "~(~A~) type must be a string" parent)))
+  (let ((meta (lookup-node-type-by-name (%dsl-keyword name) parent :graph graph)))
+    (unless meta
+      (error 'query-param-error
+             :reason (format nil "unknown ~(~A~) type '~A'" parent name)))
+    (values (node-type-name meta)
+            (or (find-package (node-type-package meta)) (find-package :graph-db)))))
+
+(defparameter *dsl-compare-ops*
+  '(("<" . <) (">" . >) ("<=" . <=) (">=" . >=) ("=" . =) ("==" . ==) ("/=" . /=))
+  "Comparison operators a pattern query may use, mapped to their Prolog functors.")
+
+(defun %compile-match-pattern (pat graph)
+  "Compile one MATCH pattern object (an alist) to a goal; second value is the
+schema package (or NIL)."
+  (cond
+    ((assoc :vertex pat)
+     (multiple-value-bind (sym pkg)
+         (%dsl-resolve-type (cdr (assoc :type pat)) :vertex graph)
+       (values (list 'is-a (%dsl-var-or-literal (cdr (assoc :vertex pat))) sym) pkg)))
+    ((assoc :edge pat)
+     (multiple-value-bind (sym pkg)
+         (%dsl-resolve-type (cdr (assoc :edge pat)) :edge graph)
+       (values (list sym
+                     (%dsl-var-or-literal (cdr (assoc :from pat)))
+                     (%dsl-var-or-literal (cdr (assoc :to pat))))
+               pkg)))
+    (t (error 'query-param-error
+              :reason (format nil "unrecognized match pattern ~S" pat)))))
+
+(defun %compile-where-constraint (con)
+  "Compile one WHERE constraint object (an alist) to a goal."
+  (cond
+    ((assoc :slot con)
+     (let ((var (%dsl-var-or-literal (cdr (assoc :slot con))))
+           (name (cdr (assoc :name con)))
+           (bind (assoc :bind con))
+           (value (assoc :value con)))
+       (unless (stringp name)
+         (error 'query-param-error :reason "slot constraint needs a string \"name\""))
+       (cond (bind  (list 'node-slot-value var (%dsl-keyword name)
+                          (%dsl-var-or-literal (cdr bind))))
+             (value (list 'node-slot-value var (%dsl-keyword name) (cdr value)))
+             (t (error 'query-param-error
+                       :reason "slot constraint needs \"bind\" or \"value\"")))))
+    ((assoc :compare con)
+     (let ((op (cdr (assoc (cdr (assoc :compare con)) *dsl-compare-ops* :test #'equal)))
+           (args (cdr (assoc :args con))))
+       (unless op
+         (error 'query-param-error
+                :reason (format nil "unsupported comparison '~A'" (cdr (assoc :compare con)))))
+       (unless (and (listp args) (= 2 (length args)))
+         (error 'query-param-error :reason "compare needs exactly two \"args\""))
+       (cons op (mapcar #'%dsl-var-or-literal args))))
+    (t (error 'query-param-error
+              :reason (format nil "unrecognized where constraint ~S" con)))))
+
+(defun compile-pattern-query (dsl graph)
+  "Compile a decoded JSON pattern query DSL (an alist) for GRAPH.  Returns
+(values select-vars goals limit skip schema-package).  Signals
+QUERY-PARAM-ERROR on malformed input."
+  (let ((pkg nil) (goals nil))
+    (dolist (pat (cdr (assoc :match dsl)))
+      (multiple-value-bind (goal p) (%compile-match-pattern pat graph)
+        (when (and p (null pkg)) (setf pkg p))
+        (push goal goals)))
+    (dolist (con (cdr (assoc :where dsl)))
+      (push (%compile-where-constraint con) goals))
+    (let ((select (cdr (assoc :select dsl))))
+      (unless (and (listp select) select)
+        (error 'query-param-error
+               :reason "query must specify a non-empty \"select\" list"))
+      (values (mapcar #'%dsl-var-or-literal select)
+              (nreverse goals)
+              (cdr (assoc :limit dsl))
+              (cdr (assoc :skip dsl))
+              (or pkg (find-package :graph-db))))))
+
+(defun run-pattern-query (dsl graph)
+  "Compile and run a decoded JSON pattern query DSL against GRAPH, returning the
+JSON result string.  Read-only, snapshot-isolated, and bounded; the client
+:limit is capped at *QUERY-DEFAULT-LIMIT*."
+  (multiple-value-bind (vars goals limit skip pkg) (compile-pattern-query dsl graph)
+    (let* ((*package* pkg)
+           (cap (if (and (integerp limit) (plusp limit))
+                    (min limit *query-default-limit*)
+                    *query-default-limit*)))
+      (query-results->json
+       vars
+       (eval `(select (:effects nil :snapshot t
+                       :limit ,cap
+                       :skip ,(when (integerp skip) skip)
+                       :max-inferences ,*query-default-max-inferences*
+                       :timeout ,*query-default-timeout*)
+                      ,vars ,@goals))))))
+
+(defun %request-query-dsl ()
+  "Decode the JSON request body of an ad-hoc pattern query into a DSL alist.
+The HTTP integration seam for the /query route."
+  (json:decode-json-from-string
+   (flexi-streams:octets-to-string
+    (lack/request:request-content ningle:*request*)
+    :external-format :utf-8)))
+
+(defun call-rest-pattern-query (dsl params)
+  "Auth + graph-scope an ad-hoc pattern query (DSL = the decoded JSON body).
+A malformed query or a resource-bound breach is a 400, a forbidden effect a 403."
+  (with-rest-auth ((get-param params "username") (get-param params "password"))
+    (with-rest-graph ((get-param params :graph-name))
+      (handler-case (run-pattern-query dsl *graph*)
+        (query-param-error (c)
+          (setf (lack.response:response-status ningle:*response*) 400)
+          (json:encode-json-to-string
+           (list (cons :error (query-param-error-reason c)))))
+        (prolog-resource-error (c)
+          (declare (ignore c))
+          (setf (lack.response:response-status ningle:*response*) 400)
+          (json:encode-json-to-string
+           (list (cons :error "query exceeded its resource limits"))))
+        (prolog-permission-error (c)
+          (declare (ignore c))
+          (setf (lack.response:response-status ningle:*response*) 403)
+          (json:encode-json-to-string
+           (list (cons :error "query attempted a forbidden operation"))))))))
+
 (defun rest-get-graph (params)
   (with-rest-auth ((get-param params "username") (get-param params "password"))
     (with-rest-graph ((get-param params :graph-name))
@@ -584,13 +747,27 @@ the declared parameters."
           (ningle:route *rest-app* "/graph/:graph-name/edge/:node-id" :method :put)
           'rest-put-edge
 
+          ;; NB: ningle route handlers must be FUNCTIONS (or symbols naming one);
+          ;; a quoted (lambda ...) is a list, not a function -- ningle returns it
+          ;; verbatim and the response breaks.  Route captures (:procedure-name,
+          ;; :query-name) arrive in PARAMS as keyword keys, like :node-id above.
           (ningle:route *rest-app* "/graph/:graph-name/procedure/:procedure-name" :method :post)
-          '(lambda (params)
-            (call-rest-procedure procedure-name params))
+          (lambda (params)
+            (call-rest-procedure (get-param params :procedure-name) params))
 
           (ningle:route *rest-app* "/graph/:graph-name/query/:query-name" :method :post)
-          '(lambda (params)
-            (call-rest-query query-name params)))
+          (lambda (params)
+            (call-rest-query (get-param params :query-name) params))
+
+          (ningle:route *rest-app* "/graph/:graph-name/query" :method :post)
+          (lambda (params)
+            (let ((dsl (handler-case (%request-query-dsl) (error () :%malformed))))
+              (if (eq dsl :%malformed)
+                  (progn
+                    (setf (lack.response:response-status ningle:*response*) 400)
+                    (json:encode-json-to-string
+                     (list (cons :error "malformed JSON request body"))))
+                  (call-rest-pattern-query dsl params)))))
 
     (setq *clack-app* (clack:clackup *rest-app* :port port))))
 

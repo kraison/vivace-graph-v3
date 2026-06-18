@@ -367,6 +367,99 @@ persists (the retract flattens into the wrapping with-transaction)."
                        #'string<))
           "the write-enabled query committed its retract"))))
 
+;;; ---------------------------------------------------------------------------
+;;; Ad-hoc JSON pattern queries (#44, tier 2): POST /graph/:g/query with a
+;;; {match, where, select, limit} body, compiled to a bounded read-only select.
+;;; ---------------------------------------------------------------------------
+
+(defun pattern-query (json-string)
+  "Run an ad-hoc pattern query given its JSON body (decoded as the route would),
+returning the decoded JSON response."
+  (rest-decode
+   (graph-db::call-rest-pattern-query (json:decode-json-from-string json-string)
+                                      (rest-params))))
+
+(test pattern-query-vertex-and-slot
+  "A vertex pattern + slot bind returns each match as an object keyed by the
+result var."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (make-g-person :name "A") (make-g-person :name "B") (make-g-person :name "C"))
+      (let* ((j (pattern-query
+                 "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                   \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                   \"select\":[\"?n\"]}"))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :n row))) j) #'string<)))
+        (is (= 3 (length j)))
+        (is (equal '("A" "B" "C") names))))))
+
+(test pattern-query-edge-join-and-value-filter
+  "An edge pattern joins vertices; a slot value filters the source."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)            ; A knows B, A knows C
+      (let* ((j (pattern-query
+                 "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"},
+                              {\"edge\":\"gKnows\",\"from\":\"?p\",\"to\":\"?f\"}],
+                   \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"value\":\"A\"},
+                              {\"slot\":\"?f\",\"name\":\"name\",\"bind\":\"?fn\"}],
+                   \"select\":[\"?fn\"]}"))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :fn row))) j) #'string<)))
+        (is (equal '("B" "C") names))))))
+
+(test pattern-query-compare-constraint
+  "A compare constraint filters by a numeric slot."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (make-g-person :name "young" :age 20)
+        (make-g-person :name "old" :age 40))
+      (let ((j (pattern-query
+                "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                  \"where\":[{\"slot\":\"?p\",\"name\":\"age\",\"bind\":\"?age\"},
+                             {\"compare\":\">\",\"args\":[\"?age\",30]},
+                             {\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                  \"select\":[\"?n\"]}")))
+        (is (= 1 (length j)))
+        (is (string= "old" (cdr (assoc :n (first j)))))))))
+
+(test pattern-query-limit-caps-results
+  "A client-supplied :limit bounds the result count."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (dotimes (i 5) (make-g-person :name (format nil "n~d" i))))
+      (is (= 2 (length (pattern-query
+                        "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                          \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                          \"select\":[\"?n\"],\"limit\":2}")))))))
+
+(test pattern-query-unknown-type-is-400
+  "Referencing an unknown vertex/edge type is a 400."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (pattern-query
+                "{\"match\":[{\"vertex\":\"?p\",\"type\":\"noSuchType\"}],
+                  \"select\":[\"?p\"]}")))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
+(test pattern-query-malformed-pattern-is-400
+  "A pattern object that isn't a recognized kind is a 400."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (pattern-query
+                "{\"match\":[{\"bogus\":\"?p\"}],\"select\":[\"?p\"]}")))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
 (test def-query-unknown-name-is-404
   "An unknown query name yields a 404."
   (with-test-graph (g)
