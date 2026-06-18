@@ -162,7 +162,12 @@
        (when *prolog-trace*
 	 (format t "TRACE: ~A/~A~A~%" ',predicate ',arity ',args))
        (if (functionp func)
-	   (funcall func ,@args ,cont)))))
+	   (funcall func ,@args ,cont)
+           ;; Unknown predicate: stay noisy so a mistyped goal surfaces rather
+           ;; than silently yielding no answers (see #45 -- a future catch/3 +
+           ;; existence_error will make this recoverable).
+           (error 'prolog-error
+                  :reason (format nil "unknown Prolog functor ~A" ',functor))))))
 
 (defun prolog-compiler-macro (name)
   "Fetch the compiler macro for a Prolog predicate."
@@ -533,6 +538,30 @@ and Cond/Action form an opaque barrier."
           (compile-body
            (cons (list 'not (list 'and cond (list 'not action))) body)
            cont bindings)))))
+
+(def-prolog-compiler-macro call (goal body cont bindings)
+  "(call Goal Extra...): meta-call.  When Goal is a static goal template the
+extra arguments are appended to it (compiled call/N) and the result is compiled
+inline, composing with cut and the control constructs.  When Goal is a variable
+(dynamic meta-call) it is solved at run time by %SOLVE-CALL."
+  (let* ((cargs (args goal))
+         (g (first cargs))
+         (extra (rest cargs)))
+    (cond
+      ((null cargs) :pass)
+      ;; (call (pred a b) x y) => compile (pred a b x y) directly.
+      ((static-goal-p g)
+       (compile-body (cons (append g extra) body) cont bindings))
+      ;; Dynamic: resolve Goal at run time, appending the (compiled) extra args.
+      (t
+       (let ((k (if (null body)
+                    cont
+                    `(lambda ()
+                       ,(compile-body body cont
+                                      (bind-new-variables bindings goal))))))
+         `(%solve-call ,(compile-arg g bindings)
+                       (list ,@(mapcar (lambda (e) (compile-arg e bindings)) extra))
+                       ,k))))))
 
 (defmethod clause-body ((list list))
   (rest list))

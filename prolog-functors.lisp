@@ -139,22 +139,94 @@ goal's argument count."
 	   (unify var (eval (deref-exp exp))))
       (funcall cont)))
 
+;;; ---------------------------------------------------------------------------
+;;; Runtime meta-call solver (#45 Phase 0.2).
+;;;
+;;; %SOLVE is the runtime counterpart of COMPILE-BODY: it proves a goal whose
+;;; structure (and possibly whose functor) is only known at run time -- the
+;;; dynamic meta-call case, (call ?G).  Statically-known meta-calls compile
+;;; inline via the CALL compiler macro and never reach here.
+;;;
+;;; It handles conjunction, disjunction, call/N (argument appending) and the
+;;; true/fail atoms directly; not/if/once/forall and ordinary predicates resolve
+;;; through the functor tables (their runtime functors route their sub-goals back
+;;; through here via call/1).  An UNKNOWN predicate (or an uninstantiated goal)
+;;; signals a PROLOG-ERROR -- deliberately noisy, so a mistyped predicate surfaces
+;;; rather than silently yielding no answers.  (A future catch/3 + ISO
+;;; existence_error/instantiation_error will make this recoverable; see #45.)
+;;; ---------------------------------------------------------------------------
+
+(defun control-head-p (head name)
+  "True when symbol HEAD names the control construct NAME, regardless of package
+(goal heads are read in the caller's package)."
+  (and (symbolp head)
+       (string-equal (symbol-name head) (symbol-name name))))
+
+(defun %solve-conj (goals cont)
+  "Prove a conjunction of GOALS, threading the continuation."
+  (if (null goals)
+      (funcall cont)
+      (%solve (first goals)
+              (lambda () (%solve-conj (rest goals) cont)))))
+
+(defun %solve-disj (goals cont)
+  "Prove a disjunction of GOALS, enumerating every branch (undoing bindings
+between branches).  Unlike the legacy or/2 functor this does not truncate."
+  (dolist (g goals)
+    (let ((old-trail (fill-pointer *trail*)))
+      (%solve g cont)
+      (undo-bindings old-trail))))
+
+(defun %solve (goal cont)
+  "Prove GOAL at run time, invoking CONT once per solution.  GOAL may be atomic,
+compound, or a control construct; its variables are runtime VAR structs."
+  (setf goal (var-deref goal))
+  (cond
+    ((var-p goal)
+     (error 'prolog-error :reason "meta-call of an uninstantiated goal"))
+    ((null goal) nil)
+    ((symbolp goal) (%solve (list goal) cont)) ; bare atom goal -> 0-arity form
+    ((consp goal)
+     (let ((head (var-deref (first goal)))
+           (gargs (rest goal)))
+       (cond
+         ((not (symbolp head))
+          (error 'prolog-error
+                 :reason (format nil "meta-call goal with non-symbol head ~S" head)))
+         ((control-head-p head 'true) (funcall cont))
+         ((control-head-p head 'fail) nil)
+         ;; cut inside a *dynamic* meta-call is opaque and not honored (call is
+         ;; a cut barrier); it simply succeeds.  Static call honors cut.
+         ((or (control-head-p head '!) (control-head-p head 'cut)) (funcall cont))
+         ((control-head-p head 'and) (%solve-conj gargs cont))
+         ((control-head-p head 'or) (%solve-disj gargs cont))
+         ((control-head-p head 'call) (%solve-call (first gargs) (rest gargs) cont))
+         (t
+          (let* ((functor (make-functor-symbol head (length gargs)))
+                 (fn (or (get-functor-fn functor)
+                         (gethash functor *prolog-global-functors*))))
+            (if (functionp fn)
+                (apply fn (append gargs (list cont)))
+                ;; Unknown predicate: stay noisy so typos surface (see #45 /
+                ;; the future catch/3 + existence_error note).
+                (error 'prolog-error
+                       :reason (format nil "unknown Prolog functor ~A" functor))))))))
+    (t nil)))
+
+(defun %solve-call (goal extra cont)
+  "Prove (call GOAL . EXTRA): append the EXTRA arguments to GOAL's argument list
+(call/N), then solve.  GOAL is dereferenced first."
+  (setf goal (var-deref goal))
+  (%solve (cond ((null extra) goal)
+                ((consp goal) (append goal extra))
+                (t (cons goal extra)))
+          cont))
+
 (def-global-prolog-functor call/1 (goal cont)
-  "Call a prolog form."
-  (var-deref goal)
-  (let* ((functor (make-functor-symbol (first goal) (length (args goal)))))
-    ;; *user-functors* holds FUNCTOR structs, not functions, so we must pull
-    ;; out the compiled fn (via get-functor-fn).  Reading the struct directly
-    ;; made (functionp ...) false, so call/1 -- and thus not/bagof/setof/if --
-    ;; could never invoke a user-defined (<-) predicate.
-    (let ((fn (or (get-functor-fn functor)
-		  (gethash functor *prolog-global-functors*))))
-      (if (functionp fn)
-	  (apply fn (append (args goal) (list cont)))
-	  (error 'prolog-error
-		 :reason
-		 (format nil "Unknown Prolog functor in call/1 ~A"
-                         functor))))))
+  "Meta-call GOAL -- atomic, compound, or a control construct.  An unknown
+predicate signals a PROLOG-ERROR (deliberately noisy).  Delegates to %SOLVE, the
+shared runtime solver."
+  (%solve goal cont))
 
 (def-global-prolog-functor if/2 (?test ?then cont)
   (when *prolog-trace* (format t "TRACE: IF/2(~A ~A)~%" ?test ?then))

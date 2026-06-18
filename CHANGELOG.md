@@ -14,6 +14,23 @@ All notable changes to VivaceGraph are recorded here.
   branch or in the tail after the construct still cuts the enclosing clause.
   A non-static (meta-call variable) sub-goal, e.g. `(not ?G)`, transparently
   falls back to the runtime functor, so existing behavior is preserved.
+- **Compiled `call/N` and a runtime meta-call solver (issue #45, Phase 0.2).**
+  `(call Goal Extra...)` now appends the extra arguments to `Goal` (call/N).
+  When `Goal` is a static template the call compiles inline through
+  `compile-body`, so it composes with cut and the control constructs (e.g.
+  `(call (or ...))`, `(call (g-knows ?a) ?b)`).  When `Goal` is a variable, the
+  new `%solve` runtime solver proves it -- handling conjunction, disjunction,
+  call/N and atomic/compound goals.  `call/1` and the control runtime functors
+  (`not`/`if`/`once`/`forall`) route through `%solve`.
+
+### Changed
+- **Unknown Prolog predicates are now noisy.** A goal naming an undefined
+  predicate signals a `prolog-error` -- on both the compiled query path and the
+  dynamic meta-call path -- instead of silently yielding no answers (the
+  compiled path) or aborting with an opaque message (the old `call/1`).  This
+  surfaces mistyped predicate names instead of letting them masquerade as empty
+  results.  (A future `catch/3` + ISO `existence_error` will make this
+  recoverable; see #45.)
 
 ### Fixed
 - **Prolog `if/3` else-semantics (issue #45).** `(if Test Then Else)` now runs

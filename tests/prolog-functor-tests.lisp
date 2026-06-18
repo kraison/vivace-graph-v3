@@ -176,3 +176,66 @@ leaves no bindings behind."
          (select-flat (?r)
                       (forall (or (= ?x 2) (= ?x 4)) (> ?x 3))
                       (= ?r :ok))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Meta-call: compiled call/N (#45 Phase 0.2).
+;;; ---------------------------------------------------------------------------
+
+(test call-n-appends-extra-arguments
+  "Compiled call/N appends the extra arguments to a static goal template:
+(call (g-knows ?a) ?b) == (g-knows ?a ?b)."
+  (with-test-graph (g)
+    (let (aid bid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A"))
+              (b (make-g-person :name "B")))
+          (setq aid (id a) bid (id b))
+          (make-g-knows :from a :to b)))
+      (let ((pairs (select (:flat nil) (?a ?b) (call (g-knows ?a) ?b))))
+        (is (= 1 (length pairs)))
+        (destructuring-bind (a b) (first pairs)
+          (is (equalp aid (id a)))
+          (is (equalp bid (id b))))))))
+
+(test call-of-compound-and-control-goals
+  "A static call of a compound/control goal compiles inline and composes:
+call of a disjunction enumerates both branches; call of a conjunction joins."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(1 2)
+               (sort (select-flat (?x) (call (or (= ?x 1) (= ?x 2)))) #'<)))
+    (is (equal '(7) (select-flat (?x) (call (and (= ?x 7) (numberp ?x))))))))
+
+(test call-dynamic-meta-call
+  "A call whose goal is a variable is solved at run time, including call/N
+argument appending."
+  (with-test-graph (g)
+    (let (aid bid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A"))
+              (b (make-g-person :name "B")))
+          (setq aid (id a) bid (id b))
+          (make-g-knows :from a :to b)))
+      ;; ?g bound to a goal term, then meta-called
+      (is (equal '(:ok)
+                 (select-flat (?r) (= ?g (< 1 2)) (call ?g) (= ?r :ok))))
+      (is (null (select-flat (?r) (= ?g (< 2 1)) (call ?g) (= ?r :ok))))
+      ;; dynamic call/N: extra argument appended at run time
+      (let ((pairs (select (:flat nil) (?a ?b)
+                           (= ?g (g-knows ?a)) (call ?g ?b))))
+        (is (= 1 (length pairs)))
+        (is (equalp aid (id (first (first pairs)))))
+        (is (equalp bid (id (second (first pairs)))))))))
+
+(test unknown-predicate-signals-error
+  "An unknown predicate is deliberately noisy: it signals a prolog-error rather
+than silently yielding no answers -- both on the compiled path and through a
+dynamic meta-call."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; compiled path: a mistyped goal in a query body
+    (signals graph-db:prolog-error
+      (select-flat (?x) (no-such-predicate-xyz ?x)))
+    ;; dynamic meta-call path (via %solve)
+    (signals graph-db:prolog-error
+      (select-flat (?r) (= ?g (no-such-predicate-xyz ?r)) (call ?g)))))

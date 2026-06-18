@@ -152,6 +152,7 @@
            #:cut
            #:once
            #:forall
+           #:call
            #:var-deref
            #:undo-bindings
            #:replace-?-vars
