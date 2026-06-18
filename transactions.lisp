@@ -1863,6 +1863,31 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
       (setf (state tx) :active)
       tx)))
 
+(defun call-with-read-snapshot (thunk &optional (graph *graph*))
+  "Run THUNK with *TRANSACTION* bound to a fresh, read-only MVCC snapshot of
+GRAPH, so every read THUNK performs resolves at one consistent epoch (a node
+committed after the snapshot started is invisible).  The snapshot transaction is
+registered active for THUNK's dynamic extent -- which holds the reaper's floor
+so the observed versions are retained -- and is simply discarded on exit, never
+validated or committed (a query writes nothing).  If a transaction is already
+active, THUNK runs under it unchanged so an enclosing snapshot is inherited.  A
+no-op (THUNK runs directly) when GRAPH has no transaction manager yet."
+  (let ((tm (and graph
+                 (slot-boundp graph 'transaction-manager)
+                 (transaction-manager graph))))
+    (if (or *transaction* (null tm))
+        (funcall thunk)
+        (let ((txn (create-transaction tm)))
+          (unwind-protect
+               (let ((*transaction* txn))
+                 (funcall thunk))
+            (remove-transaction txn tm))))))
+
+(defmacro with-read-snapshot ((&optional (graph '*graph*)) &body body)
+  "Evaluate BODY with reads pinned to a single consistent MVCC snapshot of GRAPH.
+See CALL-WITH-READ-SNAPSHOT."
+  `(call-with-read-snapshot (lambda () ,@body) ,graph))
+
 ;;; Commit sequence
 
 (defvar *delete-committed-transaction-files* t)

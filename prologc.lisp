@@ -919,7 +919,10 @@ from (:write :eval :io); a disallowed effect aborts with a
 PROLOG-PERMISSION-ERROR.  Reads and pure logic are always allowed, so
 :EFFECTS nil yields a safe read-only query.  :COUNT t returns the integer number
 of solutions instead of the list, consing nothing per solution (see
-SELECT-COUNT).  Returns a list of solutions (or, with :COUNT, a count).
+SELECT-COUNT).  :SNAPSHOT t runs the query under one consistent MVCC read
+snapshot, so all of its reads resolve at a single epoch -- stable against
+concurrent writers (it inherits an enclosing transaction if one is active).
+Returns a list of solutions (or, with :COUNT, a count).
 
 A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
 SELECT-FIRST for common shorthands."
@@ -969,7 +972,14 @@ SELECT-FIRST for common shorthands."
                        (undefined-function (condition)
                          (error 'prolog-error :reason condition))))))
 	      (set-functor-fn *functor* func)
-	      (funcall func #'prolog-ignore))
+              ,(if (cdr (assoc :snapshot options))
+                   ;; Run the query under one consistent MVCC read snapshot:
+                   ;; all reads resolve at a single epoch (lock-free, stable
+                   ;; against concurrent writers).  Inherits an enclosing
+                   ;; transaction if one is already active.
+                   `(call-with-read-snapshot
+                     (lambda () (funcall func #'prolog-ignore)) *graph*)
+                   `(funcall func #'prolog-ignore)))
          (progn
            (delete-functor functor)
            (release-prolog-symbol top-level-query)))

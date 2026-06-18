@@ -50,6 +50,16 @@ All notable changes to VivaceGraph are recorded here.
   always allowed, so `:effects nil` is a safe read-only query mode (the basis for
   exposing queries to untrusted callers).  The check is transitive -- an effect
   reached through a user rule or meta-call is gated the same way.
+- **Snapshot query mode (issue #45, Phase 1).** `select` accepts `:snapshot t`,
+  which runs the query under a single consistent MVCC read snapshot: every read
+  resolves at one epoch, so the result is stable against concurrent writers (a
+  vertex committed after the query started is invisible to it).  Implemented as
+  a lightweight read transaction (`with-read-snapshot` / `call-with-read-snapshot`)
+  that registers active for the query's extent -- holding the reaper's retention
+  floor -- and is discarded without commit or validation.  It inherits an
+  enclosing transaction if one is already active.  Together with the resource
+  bounds, the effect policy, and `:limit`/`:skip`, this gives a query surface
+  safe to expose to untrusted callers.
 
 ### Changed
 - **Unknown Prolog predicates are now noisy.** A goal naming an undefined

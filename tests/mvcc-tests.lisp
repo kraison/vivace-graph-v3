@@ -348,3 +348,41 @@ invisible to a lookup in our transaction (no phantom)."
                  (is (null (lookup-vertex zid))
                      "node committed after snapshot start is invisible to lookup")))
           (ignore-errors (graph-db::remove-transaction txn-a tm)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Snapshot query mode (#45 Phase 1): SELECT :snapshot t runs a query under a
+;;; single consistent MVCC read snapshot.
+;;; ---------------------------------------------------------------------------
+
+(test snapshot-option-establishes-a-read-transaction
+  "SELECT :snapshot t runs the query inside a read transaction (so reads resolve
+at one epoch); a plain query has no transaction bound."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; the lisp escape reports whether a transaction is active during the query
+    (is (equal '(:yes)
+               (select (:flat t :snapshot t) (?b)
+                       (lisp ?b (if graph-db:*transaction* :yes :no)))))
+    (is (equal '(:no)
+               (select (:flat t) (?b)
+                       (lisp ?b (if graph-db:*transaction* :yes :no)))))))
+
+(test snapshot-query-is-stable-across-a-concurrent-commit
+  "A query bound to a snapshot keeps seeing that snapshot's data even though
+another transaction commits a new vertex partway through -- the count taken
+before and after the interleaved insert is identical."
+  (with-test-graph (g)
+    (let ((tm (graph-db::transaction-manager g)))
+      (with-transaction () (make-g-person :name "seed"))   ; advance epoch
+      (let ((txn (graph-db::create-transaction tm)))
+        (unwind-protect
+             (let ((graph-db:*transaction* txn))            ; pin the query snapshot
+               (let ((before (select-count (?p) (is-a ?p g-person))))
+                 (is (= 1 before))
+                 ;; a concurrent transaction commits a new person AFTER our snapshot
+                 (with-transaction () (make-g-person :name "later"))
+                 (is (= before (select-count (?p) (is-a ?p g-person)))
+                     "snapshot query does not see the post-snapshot insert")))
+          (ignore-errors (graph-db::remove-transaction txn tm)))))
+    ;; outside the snapshot, the new vertex is of course visible
+    (is (= 2 (select-count (?p) (is-a ?p g-person))))))

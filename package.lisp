@@ -59,6 +59,8 @@
            #:*rest-procedures*
 
            #:with-transaction
+           #:with-read-snapshot
+           #:call-with-read-snapshot
            #:lookup-object
            #:update-node
            #:delete-node
