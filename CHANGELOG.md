@@ -5,6 +5,14 @@ All notable changes to VivaceGraph are recorded here.
 ## Unreleased
 
 ### Added
+- **Streaming results: `select` `:callback` + NDJSON web responses (issue #44).**
+  `select` accepts `:callback FN`, which hands each result row to `FN` as it is
+  produced -- consing nothing onto a result list -- and returns the row count.
+  An embedded consumer can stream an unbounded result set with constant memory.
+  The web layer uses it: a query with `format=ndjson` (a parameter for
+  `def-query`, a body field for the pattern query) streams each row as its own
+  JSON object on its own line (`application/x-ndjson`) instead of buffering a
+  JSON array.
 - **ISO exceptions: `catch/3` + `throw/1` (issue #45).** `throw(Ball)` raises a
   ball and `catch(Goal, Catcher, Recovery)` recovers from one that unifies with
   `Catcher`, propagating others to an outer catch.  Only `Goal` is protected --

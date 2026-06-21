@@ -139,6 +139,27 @@ exercises the request-body reader the in-process tests bypass."
         (is (equal '("B" "C")
                    (sort (mapcar (lambda (row) (cdr (assoc :fn row))) j) #'string<)))))))
 
+(test http-pattern-query-ndjson
+  "A pattern query with format=ndjson streams newline-delimited JSON over HTTP."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (make-a-knows-b-and-c)              ; A, B, C
+    (with-http-rest ()
+      (multiple-value-bind (body status)
+          (drakma:http-request
+           (http-url (graph-path "/query?username=u&password=p"))
+           :method :post :content-type "application/json"
+           :content "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                      \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                      \"select\":[\"?n\"],\"format\":\"ndjson\"}")
+        (is (= 200 status))
+        (let* ((string (if (stringp body) body
+                           (flexi-streams:octets-to-string body :external-format :utf-8)))
+               (lines (remove "" (uiop:split-string string :separator '(#\Newline))
+                              :test #'string=)))
+          (is (= 3 (length lines)) "one JSON object per result row")
+          (is (every (lambda (l) (assoc :n (json:decode-json-from-string l))) lines)))))))
+
 (test http-bad-credentials-401
   "Wrong credentials yield 401 over HTTP."
   (with-test-graph (g)

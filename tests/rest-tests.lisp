@@ -439,6 +439,46 @@ result var."
                           \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
                           \"select\":[\"?n\"],\"limit\":2}")))))))
 
+(defun ndjson-lines (body)
+  "Split an NDJSON response BODY into decoded objects (one per non-blank line)."
+  (mapcar #'json:decode-json-from-string
+          (remove "" (uiop:split-string body :separator '(#\Newline)) :test #'string=)))
+
+(test def-query-ndjson-streams-one-object-per-line
+  "format=ndjson streams each result row as its own JSON line with the
+application/x-ndjson content type."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (let* ((body (graph-db::call-rest-query
+                    "friendsOf"
+                    (rest-params (cons "name" "A") (cons "format" "ndjson"))))
+             (objs (ndjson-lines body)))
+        (is (string= "application/x-ndjson"
+                     (getf (lack/response:response-headers ningle:*response*) :content-type)))
+        (is (= 2 (length objs)))
+        (is (equal '("B" "C")
+                   (sort (mapcar (lambda (o) (cdr (assoc :friend-name o))) objs)
+                         #'string<)))))))
+
+(test pattern-query-ndjson-format
+  "An ad-hoc pattern query with \"format\":\"ndjson\" streams NDJSON rows."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)              ; A, B, C
+      (let* ((body (graph-db::call-rest-pattern-query
+                    (json:decode-json-from-string
+                     "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                       \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                       \"select\":[\"?n\"],\"format\":\"ndjson\"}")
+                    (rest-params)))
+             (objs (ndjson-lines body)))
+        (is (= 3 (length objs)))
+        (is (equal '("A" "B" "C")
+                   (sort (mapcar (lambda (o) (cdr (assoc :n o))) objs) #'string<)))))))
+
 (test pattern-query-unknown-type-is-400
   "Referencing an unknown vertex/edge type is a 400."
   (with-test-graph (g)

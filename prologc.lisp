@@ -838,6 +838,11 @@ without projecting or consing their bindings.")
 PARAM/2 functor.  Bound by DEF-QUERY (and bindable around any SELECT) to inject
 runtime values into a query without an arbitrary-eval functor.")
 
+(defvar *select-callback* nil
+  "When set (SELECT :CALLBACK), each result row is passed to this function as it
+is produced -- streaming -- instead of being consed into *SELECT-LIST*.  SELECT
+then returns the number of rows streamed.  Honors :LIMIT and :SKIP.")
+
 (defun %count-tick (cont)
   "Account one solution under the active :SKIP/:LIMIT window without consing any
 bindings, then continue (or stop once :LIMIT is reached).  The :COUNT-mode
@@ -962,7 +967,10 @@ of solutions instead of the list, consing nothing per solution (see
 SELECT-COUNT).  :SNAPSHOT t runs the query under one consistent MVCC read
 snapshot, so all of its reads resolve at a single epoch -- stable against
 concurrent writers (it inherits an enclosing transaction if one is active).
-Returns a list of solutions (or, with :COUNT, a count).
+:CALLBACK FN streams each result row to FN as it is produced (consing nothing
+onto a result list) and returns the number of rows -- for unbounded or very
+large result sets.  Returns a list of solutions (or, with :COUNT or :CALLBACK, a
+count).
 
 A query runs against the current *GRAPH*.  See SELECT-FLAT, SELECT-ONE and
 SELECT-FIRST for common shorthands."
@@ -989,6 +997,7 @@ SELECT-FIRST for common shorthands."
                                     `',(cdr (assoc :effects options))
                                     '*default-allowed-effects*))
             (*select-count-only* ,(cdr (assoc :count options)))
+            (*select-callback* ,(cdr (assoc :callback options)))
             (*seen-table* (make-hash-table)) ;; For unique values
 	    (functor (make-functor :name *functor* :clauses nil)))
        (unwind-protect
@@ -1023,7 +1032,7 @@ SELECT-FIRST for common shorthands."
          (progn
            (delete-functor functor)
            (release-prolog-symbol top-level-query)))
-       (if *select-count-only*
+       (if (or *select-count-only* *select-callback*)
            *select-current-count*
            (nreverse *select-list*)))))
 

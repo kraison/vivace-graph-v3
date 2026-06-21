@@ -35,6 +35,10 @@
 (defvar *query-default-timeout* 30
   "Wall-clock seconds a DEF-QUERY may run unless it overrides :TIMEOUT.")
 
+(defvar *pattern-query-callback* nil
+  "Per-row callback for an EVAL'd ad-hoc pattern query (which has no lexical
+environment to capture one); RUN-PATTERN-QUERY binds it around the SELECT.")
+
 (define-condition query-param-error (error)
   ((reason :initarg :reason :reader query-param-error-reason))
   (:report (lambda (c s)
@@ -102,15 +106,44 @@ string, a non-keyword symbol its name; scalars pass through."
         ((symbolp v) (symbol-name v))
         (t v)))
 
+(defun query-row->alist (return-vars row)
+  "One result ROW (a list of values aligned with RETURN-VARS) as a JSON object
+alist keyed by the camelCase result-variable names."
+  (mapcar (lambda (var val) (cons (%query-var-field var) (%query-value->json val)))
+          return-vars row))
+
 (defun query-results->json (return-vars tuples)
-  "Encode TUPLES (one list of values per solution, aligned with RETURN-VARS) as a
-JSON array of objects keyed by the camelCase result-variable names."
+  "Encode TUPLES (one row per solution) as a JSON array of objects."
   (json:encode-json-to-string
-   (mapcar (lambda (tuple)
-             (mapcar (lambda (var val)
-                       (cons (%query-var-field var) (%query-value->json val)))
-                     return-vars tuple))
-           tuples)))
+   (mapcar (lambda (row) (query-row->alist return-vars row)) tuples)))
+
+(defun query-format (params)
+  "The requested response format: :NDJSON when the \"format\" parameter is
+\"ndjson\" (newline-delimited JSON, one object per line), else :JSON (an array)."
+  (if (string-equal "ndjson" (or (get-param params "format") ""))
+      :ndjson
+      :json))
+
+(defun emit-query-results (return-vars format run)
+  "Render a query's results.  RUN is a function of one argument -- a per-row
+callback -- that runs the query, invoking the callback for each result row as it
+is produced (via SELECT :callback, so no intermediate result list is built).
+With FORMAT :JSON returns a JSON array; with :NDJSON streams each row as its own
+JSON line and sets the application/x-ndjson content type."
+  (ecase format
+    (:json
+     (let ((rows '()))
+       (funcall run (lambda (row) (push row rows)))
+       (query-results->json return-vars (nreverse rows))))
+    (:ndjson
+     (setf (lack.response:response-headers ningle:*response*)
+           (list* :content-type "application/x-ndjson"
+                  (lack.response:response-headers ningle:*response*)))
+     (with-output-to-string (out)
+       (funcall run
+                (lambda (row)
+                  (json:encode-json (query-row->alist return-vars row) out)
+                  (terpri out)))))))
 
 (defun register-query (name fn)
   "Register query handler FN under NAME (both its symbol name and camelCase)."
@@ -360,7 +393,8 @@ POST /graph/:graph/query/<name> (camelCase).
 
 The server author owns the query shape and its bounds; the client supplies only
 the declared parameters."
-  (let* ((param-goals (mapcar (lambda (spec)
+  (let* ((cb (gensym "CB"))
+         (param-goals (mapcar (lambda (spec)
                                 (list 'param (first spec) (%query-var-key (first spec))))
                               params))
          ;; A strictly read-only query gets the lightweight read snapshot; any
@@ -371,14 +405,18 @@ the declared parameters."
                     :snapshot (and read-only-p snapshot)
                     :limit (or limit '*query-default-limit*)
                     :max-inferences (or max-inferences '*query-default-max-inferences*)
-                    :timeout (or timeout '*query-default-timeout*)))
+                    :timeout (or timeout '*query-default-timeout*)
+                    :callback cb))
          (query-form `(select ,opts ,return ,@param-goals ,@where))
          (run-form (if read-only-p query-form `(with-transaction () ,query-form))))
     `(register-query ',name
        (lambda (req-params)
          (handler-case
              (let ((*query-params* (coerce-query-params ',params req-params)))
-               (query-results->json ',return ,run-form))
+               ;; stream rows through the callback; :json buffers an array,
+               ;; :ndjson writes one JSON object per line
+               (emit-query-results ',return (query-format req-params)
+                                   (lambda (,cb) ,run-form)))
            (query-param-error (c)
              (setf (lack.response:response-status ningle:*response*) 400)
              (json:encode-json-to-string
@@ -525,21 +563,30 @@ QUERY-PARAM-ERROR on malformed input."
 
 (defun run-pattern-query (dsl graph)
   "Compile and run a decoded JSON pattern query DSL against GRAPH, returning the
-JSON result string.  Read-only, snapshot-isolated, and bounded; the client
-:limit is capped at *QUERY-DEFAULT-LIMIT*."
+result string.  Read-only, snapshot-isolated, and bounded; the client :limit is
+capped at *QUERY-DEFAULT-LIMIT*.  A \"format\":\"ndjson\" field streams the rows
+as newline-delimited JSON instead of an array."
   (multiple-value-bind (vars goals limit skip pkg) (compile-pattern-query dsl graph)
     (let* ((*package* pkg)
            (cap (if (and (integerp limit) (plusp limit))
                     (min limit *query-default-limit*)
-                    *query-default-limit*)))
-      (query-results->json
-       vars
-       (eval `(select (:effects nil :snapshot t
-                       :limit ,cap
-                       :skip ,(when (integerp skip) skip)
-                       :max-inferences ,*query-default-max-inferences*
-                       :timeout ,*query-default-timeout*)
-                      ,vars ,@goals))))))
+                    *query-default-limit*))
+           (format (if (string-equal "ndjson"
+                                      (princ-to-string (or (cdr (assoc :format dsl)) "")))
+                       :ndjson :json)))
+      (emit-query-results
+       vars format
+       (lambda (cb)
+         ;; the select form is EVAL'd (null lexenv), so pass the callback through
+         ;; a special the form references rather than a lexical.
+         (let ((*pattern-query-callback* cb))
+           (eval `(select (:effects nil :snapshot t
+                           :limit ,cap
+                           :skip ,(when (integerp skip) skip)
+                           :max-inferences ,*query-default-max-inferences*
+                           :timeout ,*query-default-timeout*
+                           :callback *pattern-query-callback*)
+                          ,vars ,@goals))))))))
 
 (defun %request-query-dsl ()
   "Decode the JSON request body of an ad-hoc pattern query into a DSL alist.

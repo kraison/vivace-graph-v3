@@ -50,6 +50,26 @@
           (is (equalp aid (id a)))
           (is (equalp bid (id b))))))))
 
+(test select-callback-streams-each-row
+  "select :callback hands each row to the function as produced (consing no result
+list) and returns the row count; it honors :limit."
+  (with-test-graph (g)
+    (with-transaction ()
+      (make-g-person :name "A") (make-g-person :name "B") (make-g-person :name "C"))
+    (let ((rows '()))
+      (let ((n (select (:callback (lambda (row) (push row rows))) (?n)
+                       (is-a ?p g-person) (node-slot-value ?p name ?n))))
+        (is (= 3 n) "returns the number of rows streamed")
+        (is (= 3 (length rows)))
+        ;; each streamed row is a one-tuple of the name
+        (is (equal '("A" "B" "C")
+                   (sort (mapcar #'first rows) #'string<)))))
+    ;; :limit caps the stream
+    (let ((count 0))
+      (select (:callback (lambda (row) (declare (ignore row)) (incf count)) :limit 2)
+              (?n) (is-a ?p g-person) (node-slot-value ?p name ?n))
+      (is (= 2 count) ":limit bounds the streamed rows"))))
+
 (test select-count-returns-solution-count
   "select-count returns the integer number of solutions (consing no bindings);
 0 when there are none, and it composes with query constraints."

@@ -569,10 +569,13 @@ order of terms with duplicates removed."
           (when (or (null *select-skip*)
                     (> *select-current-skip* *select-skip*))
             (incf *select-current-count*)
-            (if *select-flat*
-                (dolist (i r)
-                  (push i *select-list*))
-                (push r *select-list*))))))
+            (cond (*select-callback*
+                   ;; streaming: hand the row to the callback as it is produced,
+                   ;; consing nothing onto *select-list*
+                   (funcall *select-callback* (if *select-flat* (first r) r)))
+                  (*select-flat*
+                   (dolist (i r) (push i *select-list*)))
+                  (t (push r *select-list*)))))))
     (if (or (null *select-limit*) (< *select-current-count* *select-limit*))
         (funcall cont)
         (throw :prolog-limit-reached nil)))
