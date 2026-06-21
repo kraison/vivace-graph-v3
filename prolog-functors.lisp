@@ -847,14 +847,23 @@ order of terms with duplicates removed."
               (undo-bindings old-trail)))
           *graph* :vertex-type type))
         (t
-         (map-vertices
-          (lambda (vertex)
-            (let ((old-trail (fill-pointer *trail*)))
-              (when (unify node vertex)
-                (when (unify type (type-of vertex))
-                  (funcall cont)))
-              (undo-bindings old-trail)))
-          *graph*))))
+         ;; Both NODE and TYPE unbound: enumerate every vertex.  Rather than a
+         ;; single untyped lhash scan (which reads LIVE versions, bypassing
+         ;; snapshot isolation), delegate to per-type scans -- each goes through
+         ;; LOOKUP-VERTEX, so under a snapshot transaction every vertex resolves
+         ;; at the reader's epoch.  :INCLUDE-SUBCLASSES-P NIL visits each vertex
+         ;; exactly once, under its own type-id (vertex type-ids start at 1, so
+         ;; the 0 sentinel from LIST-VERTEX-TYPES never resolves and is skipped).
+         (dolist (type-id (list-vertex-types *graph*))
+           (when (lookup-node-type-by-id type-id :vertex)
+             (map-vertices
+              (lambda (vertex)
+                (let ((old-trail (fill-pointer *trail*)))
+                  (when (unify node vertex)
+                    (when (unify type (type-of vertex))
+                      (funcall cont)))
+                  (undo-bindings old-trail)))
+              *graph* :vertex-type type-id :include-subclasses-p nil))))))
 
 (def-global-prolog-functor retract/1 (node cont)
   (require-effect :write)

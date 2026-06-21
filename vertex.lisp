@@ -222,8 +222,8 @@ vertex types.  Deleted vertices are skipped unless :INCLUDE-DELETED-P.  With
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))
-  (map-edges (lambda (vertex)
-               (when (deleted-p vertex)
-                 (remove-from-type-index vertex graph)))
-             graph
-             :include-deleted-p t))
+  (map-vertices (lambda (vertex)
+                  (when (deleted-p vertex)
+                    (remove-from-type-index vertex graph)))
+                graph
+                :include-deleted-p t))

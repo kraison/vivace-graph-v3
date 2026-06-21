@@ -462,5 +462,5 @@ soft-deleted edges (excluded by default)."
                  (remove-from-type-index edge graph)
                  (remove-from-ve-index edge graph)
                  (remove-from-vev-index edge graph)))
-             *graph*
+             graph
              :include-deleted-p t))
