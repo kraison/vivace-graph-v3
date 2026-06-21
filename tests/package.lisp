@@ -189,9 +189,15 @@
                 #:select
                 #:select-flat
                 #:select-one
+                #:select-count
                 #:do-query
+                #:def-query
+                #:def-rest-procedure
                 #:is-a/2
                 #:select/2
+                #:param/2
+                #:throw/1
+                #:catch/3
                 #:node-slot-value/3
                 #:retract/1
                 #:retract/3
@@ -199,6 +205,8 @@
                 #:not/1
                 #:bagof/3
                 #:setof/3
+                #:findall/3
+                #:repeat/0
                 ;; comparison / arithmetic / type / control built-ins
                 #:=/2
                 #:==/2

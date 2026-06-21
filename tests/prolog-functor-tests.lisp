@@ -108,3 +108,204 @@
       (is (= 2 (length (select-flat (?a) (g-knows ?a ?b)))))
       ;; unique/1 collapses them to one
       (is (= 1 (length (select-flat (?a) (g-knows ?a ?b) (unique ?a))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Control-flow core (#45 Phase 0).  These exercise the compiler-level control
+;;; constructs -- not, if (->), once, forall -- which expand through
+;;; COMPILE-BODY so they compose with conjunction and cut, rather than routing
+;;; through the runtime call/1 functors.
+;;; ---------------------------------------------------------------------------
+
+(test if-3-else-only-when-test-has-no-solution
+  "if/3 (Test -> Then ; Else) runs ELSE only when Test has ZERO solutions --
+NOT when Test succeeds but Then fails (the pre-fix bug ran Else in that case)."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; Test succeeds, Then fails -> whole if fails; Else must NOT run.
+    (is (null (select-flat (?r) (if (< 1 2) (> 1 2) (= ?r :else)))))
+    ;; Test fails -> Else runs.
+    (is (equal '(:else) (select-flat (?r) (if (< 2 1) (= ?r :then) (= ?r :else)))))
+    ;; Test succeeds, Then succeeds -> Then runs, Else does not.
+    (is (equal '(:then) (select-flat (?r) (if (< 1 2) (= ?r :then) (= ?r :else)))))))
+
+(test if-3-commits-to-first-test-solution
+  "if/3 commits to the first solution of a multi-solution Test (soft cut on the
+condition): the disjunctive test offers ?r=1 then ?r=2, but only the first is
+taken."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(1)
+               (select-flat (?r)
+                            (if (or (= ?r 1) (= ?r 2)) (numberp ?r) (= ?r :none)))))))
+
+(test not-negates-and-composes
+  "not/1 succeeds (continuing the conjunction) exactly when its goal fails, and
+leaves no bindings behind."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; goal fails -> not succeeds, conjunction continues
+    (is (equal '(5) (select-flat (?x) (= ?x 5) (not (> ?x 10)))))
+    ;; goal succeeds -> not fails -> no solutions
+    (is (null (select-flat (?x) (= ?x 5) (not (< ?x 10)))))
+    ;; not over a negative test still binds the rest normally
+    (is (equal '(5) (select-flat (?x) (= ?x 5) (not (= ?x 6)) (numberp ?x))))))
+
+(test once-commits-to-first-solution
+  "once/1 commits to the first solution of a multi-solution goal."
+  (with-test-graph (g)
+    (with-transaction ()
+      (let ((a (make-g-person :name "A")))
+        (make-g-knows :from a :to (make-g-person :name "B"))
+        (make-g-knows :from a :to (make-g-person :name "C"))))
+    ;; without once: two solutions for the source vertex
+    (is (= 2 (length (select-flat (?a) (g-knows ?a ?b)))))
+    ;; with once: committed to the first
+    (is (= 1 (length (select-flat (?a) (once (g-knows ?a ?b))))))))
+
+(test forall-universal-check
+  "forall/2 succeeds iff Action holds for every solution of Cond."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; every disjunctive solution is a number -> forall succeeds
+    (is (equal '(:ok)
+               (select-flat (?r)
+                            (forall (or (= ?x 2) (= ?x 4)) (numberp ?x))
+                            (= ?r :ok))))
+    ;; 2 is not > 3 -> forall fails -> no solution
+    (is (null
+         (select-flat (?r)
+                      (forall (or (= ?x 2) (= ?x 4)) (> ?x 3))
+                      (= ?r :ok))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Meta-call: compiled call/N (#45 Phase 0.2).
+;;; ---------------------------------------------------------------------------
+
+(test call-n-appends-extra-arguments
+  "Compiled call/N appends the extra arguments to a static goal template:
+(call (g-knows ?a) ?b) == (g-knows ?a ?b)."
+  (with-test-graph (g)
+    (let (aid bid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A"))
+              (b (make-g-person :name "B")))
+          (setq aid (id a) bid (id b))
+          (make-g-knows :from a :to b)))
+      (let ((pairs (select (:flat nil) (?a ?b) (call (g-knows ?a) ?b))))
+        (is (= 1 (length pairs)))
+        (destructuring-bind (a b) (first pairs)
+          (is (equalp aid (id a)))
+          (is (equalp bid (id b))))))))
+
+(test call-of-compound-and-control-goals
+  "A static call of a compound/control goal compiles inline and composes:
+call of a disjunction enumerates both branches; call of a conjunction joins."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(1 2)
+               (sort (select-flat (?x) (call (or (= ?x 1) (= ?x 2)))) #'<)))
+    (is (equal '(7) (select-flat (?x) (call (and (= ?x 7) (numberp ?x))))))))
+
+(test call-dynamic-meta-call
+  "A call whose goal is a variable is solved at run time, including call/N
+argument appending."
+  (with-test-graph (g)
+    (let (aid bid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A"))
+              (b (make-g-person :name "B")))
+          (setq aid (id a) bid (id b))
+          (make-g-knows :from a :to b)))
+      ;; ?g bound to a goal term, then meta-called
+      (is (equal '(:ok)
+                 (select-flat (?r) (= ?g (< 1 2)) (call ?g) (= ?r :ok))))
+      (is (null (select-flat (?r) (= ?g (< 2 1)) (call ?g) (= ?r :ok))))
+      ;; dynamic call/N: extra argument appended at run time
+      (let ((pairs (select (:flat nil) (?a ?b)
+                           (= ?g (g-knows ?a)) (call ?g ?b))))
+        (is (= 1 (length pairs)))
+        (is (equalp aid (id (first (first pairs)))))
+        (is (equalp bid (id (second (first pairs)))))))))
+
+(test unknown-predicate-signals-error
+  "An unknown predicate is deliberately noisy: it signals a prolog-error rather
+than silently yielding no answers -- both on the compiled path and through a
+dynamic meta-call."
+  (with-test-graph (g)
+    (declare (ignore g))
+    ;; compiled path: a mistyped goal in a query body
+    (signals graph-db:prolog-error
+      (select-flat (?x) (no-such-predicate-xyz ?x)))
+    ;; dynamic meta-call path (via %solve)
+    (signals graph-db:prolog-error
+      (select-flat (?r) (= ?g (no-such-predicate-xyz ?r)) (call ?g)))))
+
+;;; ---------------------------------------------------------------------------
+;;; ISO exceptions: throw/1 + catch/3 (#45).
+;;; ---------------------------------------------------------------------------
+
+(test catch-recovers-from-a-throw
+  "catch/3 runs the recovery when Goal throws a ball that unifies with Catcher."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:caught)
+               (select-flat (?r) (catch (throw oops) ?ball (= ?r :caught)))))))
+
+(test catch-passes-through-when-goal-succeeds
+  "When Goal succeeds without throwing, its solutions pass through and the
+recovery does not run."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(5) (select-flat (?x) (catch (= ?x 5) ?b (= ?x 99)))))))
+
+(test catch-binds-the-ball
+  "The catcher unifies with the thrown ball, so the recovery can use it."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(my-ball)
+               (select-flat (?b) (catch (throw my-ball) ?b (= 1 1)))))))
+
+(test catch-non-matching-ball-propagates-to-outer
+  "A ball that does not unify with the inner Catcher propagates to an outer
+catch."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:outer)
+               (select-flat (?r)
+                            (catch (catch (throw the-ball) other-ball (= ?r :inner))
+                                   ?any (= ?r :outer)))))))
+
+(test catch-recovers-from-an-existence-error
+  "A built-in error carries an ISO ball: an unknown predicate is an
+existence_error catch/3 can match."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:missing)
+               (select-flat (?r)
+                            (catch (no-such-predicate 1)
+                                   (:error (:existence-error :procedure ?proc) ?ctx)
+                                   (= ?r :missing)))))))
+
+(test catch-does-not-catch-continuation-errors
+  "Only Goal is protected: a throw in the continuation after catch/3 succeeds is
+not caught."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-error
+      (select-flat (?r) (catch (= ?r 1) ?b (= ?r 2)) (throw escaped)))))
+
+(test catch-does-not-catch-resource-errors
+  "Resource errors are not catchable -- a bounded query cannot swallow its own
+budget enforcement."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-resource-error
+      (select (:max-inferences 40) (?r) (catch (repeat) ?b (= ?r :swallowed))))))
+
+(test catch-does-not-catch-permission-errors
+  "Permission errors are not catchable -- a read-only query cannot swallow the
+effect policy."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-permission-error
+      (select (:effects nil) (?r) (catch (retract ?x) ?b (= ?r :swallowed))))))

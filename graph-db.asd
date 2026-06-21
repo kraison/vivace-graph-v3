@@ -208,7 +208,7 @@
 (defsystem graph-db/test
   :name "VivaceGraph test suite"
   :description "FiveAM unit tests for graph-db."
-  :depends-on (:graph-db :fiveam)
+  :depends-on (:graph-db :fiveam :drakma)
   :pathname "tests/"
   :serial t
   :components ((:file "package")
@@ -240,6 +240,7 @@
                (:file "backup-tests")
                (:file "mvcc-tests")
                (:file "rest-tests")
+               (:file "rest-http-tests")
                (:file "prolog-stress-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/test :run-tests)

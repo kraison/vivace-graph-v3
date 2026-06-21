@@ -57,8 +57,17 @@
            #:stop-rest
            #:def-rest-procedure
            #:*rest-procedures*
+           #:def-query
+           #:*rest-queries*
+           #:*query-params*
+           #:*query-default-limit*
+           #:*query-default-max-inferences*
+           #:*query-default-timeout*
+           #:query-param-error
 
            #:with-transaction
+           #:with-read-snapshot
+           #:call-with-read-snapshot
            #:lookup-object
            #:update-node
            #:delete-node
@@ -150,6 +159,9 @@
            #:q-
            #:!
            #:cut
+           #:once
+           #:forall
+           #:call
            #:var-deref
            #:undo-bindings
            #:replace-?-vars
@@ -163,6 +175,16 @@
            #:compile-clause
            #:show-prolog-vars
            #:prolog-error
+           #:prolog-error-ball
+           #:prolog-throw
+           #:prolog-resource-error
+           #:prolog-permission-error
+           #:*inference-budget*
+           #:*default-inference-budget*
+           #:*default-query-timeout*
+           #:*allowed-effects*
+           #:*default-allowed-effects*
+           #:require-effect
            #:prolog-ignore
            #:delete-functor
            #:set-functor-fn
@@ -170,7 +192,6 @@
            #:*select-flat*
            #:*select-list*
            #:select-count
-           #:*select-count*
            #:*select-skip*
            #:*select-current-count*
            #:*select-current-skip*

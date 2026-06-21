@@ -256,3 +256,256 @@ flagged rather than 404 -- this asserts the documented current behavior.)"
                  (rest-params (cons :type "noSuchType") (cons "name" "x"))))))
         (is-true (assoc :error j)
                  "unknown vertex type should yield an :error body")))))
+
+;;; ---------------------------------------------------------------------------
+;;; def-query (#44): named, parameterized, read-only queries over /query/.
+;;; ---------------------------------------------------------------------------
+
+;; A friends-by-name query: read-only and snapshot-isolated by default.
+(def-query friends-of
+  :params ((?name :string))
+  :return (?friend-name)
+  :where ((is-a ?person g-person)
+          (node-slot-value ?person name ?name)
+          (g-knows ?person ?friend)
+          (node-slot-value ?friend name ?friend-name)))
+
+;; Same query, capped at a single result, to exercise an author-set bound.
+(def-query friends-of-capped
+  :params ((?name :string))
+  :return (?friend-name)
+  :limit 1
+  :where ((is-a ?person g-person)
+          (node-slot-value ?person name ?name)
+          (g-knows ?person ?friend)
+          (node-slot-value ?friend name ?friend-name)))
+
+;; A query that attempts a write -- must be refused under the read-only default.
+(def-query try-retract
+  :params ((?name :string))
+  :return (?name)
+  :where ((is-a ?p g-person)
+          (node-slot-value ?p name ?name)
+          (retract ?p)))
+
+;; The same write, explicitly write-enabled: runs in a transaction and commits.
+(def-query delete-person
+  :params ((?name :string))
+  :effects (:write)
+  :return (?name)
+  :where ((is-a ?p g-person)
+          (node-slot-value ?p name ?name)
+          (retract ?p)))
+
+(defun make-a-knows-b-and-c ()
+  "A knows B and C; returns nothing."
+  (with-transaction ()
+    (let ((a (make-g-person :name "A")))
+      (make-g-knows :from a :to (make-g-person :name "B"))
+      (make-g-knows :from a :to (make-g-person :name "C")))))
+
+(test def-query-returns-json-objects
+  "A def-query endpoint returns a JSON array of objects keyed by the camelCase
+result-variable names."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (let* ((j (rest-decode
+                 (graph-db::call-rest-query "friendsOf"
+                                            (rest-params (cons "name" "A")))))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :friend-name row))) j)
+                          #'string<)))
+        (is (= 2 (length j)))
+        (is (equal '("B" "C") names))))))
+
+(test def-query-honors-author-set-limit
+  "An author-set :limit caps the number of results."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (is (= 1 (length (rest-decode
+                        (graph-db::call-rest-query
+                         "friendsOfCapped" (rest-params (cons "name" "A"))))))))))
+
+(test def-query-missing-parameter-is-400
+  "A missing required parameter yields a 400 with an :error body."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "friendsOf" (rest-params)))))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
+(test def-query-write-attempt-is-403
+  "The read-only default refuses a query that tries to mutate the graph (403),
+and nothing is deleted."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "tryRetract"
+                                           (rest-params (cons "name" "A"))))))
+        (is (= 403 (rest-status)))
+        (is-true (assoc :error j)))
+      (is (= 2 (length (select-flat (?p) (is-a ?p g-person))))
+          "the write was refused, so both persons survive"))))
+
+(test def-query-write-enabled-commits
+  "A query whose :effects permit writes runs in a transaction and its mutation
+persists (the retract flattens into the wrapping with-transaction)."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+      (graph-db::call-rest-query "deletePerson" (rest-params (cons "name" "A")))
+      (is (equal '("B")
+                 (sort (select-flat (?n) (is-a ?p g-person) (node-slot-value ?p name ?n))
+                       #'string<))
+          "the write-enabled query committed its retract"))))
+
+;;; ---------------------------------------------------------------------------
+;;; Ad-hoc JSON pattern queries (#44, tier 2): POST /graph/:g/query with a
+;;; {match, where, select, limit} body, compiled to a bounded read-only select.
+;;; ---------------------------------------------------------------------------
+
+(defun pattern-query (json-string)
+  "Run an ad-hoc pattern query given its JSON body (decoded as the route would),
+returning the decoded JSON response."
+  (rest-decode
+   (graph-db::call-rest-pattern-query (json:decode-json-from-string json-string)
+                                      (rest-params))))
+
+(test pattern-query-vertex-and-slot
+  "A vertex pattern + slot bind returns each match as an object keyed by the
+result var."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (make-g-person :name "A") (make-g-person :name "B") (make-g-person :name "C"))
+      (let* ((j (pattern-query
+                 "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                   \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                   \"select\":[\"?n\"]}"))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :n row))) j) #'string<)))
+        (is (= 3 (length j)))
+        (is (equal '("A" "B" "C") names))))))
+
+(test pattern-query-edge-join-and-value-filter
+  "An edge pattern joins vertices; a slot value filters the source."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)            ; A knows B, A knows C
+      (let* ((j (pattern-query
+                 "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"},
+                              {\"edge\":\"gKnows\",\"from\":\"?p\",\"to\":\"?f\"}],
+                   \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"value\":\"A\"},
+                              {\"slot\":\"?f\",\"name\":\"name\",\"bind\":\"?fn\"}],
+                   \"select\":[\"?fn\"]}"))
+             (names (sort (mapcar (lambda (row) (cdr (assoc :fn row))) j) #'string<)))
+        (is (equal '("B" "C") names))))))
+
+(test pattern-query-compare-constraint
+  "A compare constraint filters by a numeric slot."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (make-g-person :name "young" :age 20)
+        (make-g-person :name "old" :age 40))
+      (let ((j (pattern-query
+                "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                  \"where\":[{\"slot\":\"?p\",\"name\":\"age\",\"bind\":\"?age\"},
+                             {\"compare\":\">\",\"args\":[\"?age\",30]},
+                             {\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                  \"select\":[\"?n\"]}")))
+        (is (= 1 (length j)))
+        (is (string= "old" (cdr (assoc :n (first j)))))))))
+
+(test pattern-query-limit-caps-results
+  "A client-supplied :limit bounds the result count."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (with-transaction ()
+        (dotimes (i 5) (make-g-person :name (format nil "n~d" i))))
+      (is (= 2 (length (pattern-query
+                        "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                          \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                          \"select\":[\"?n\"],\"limit\":2}")))))))
+
+(defun ndjson-lines (body)
+  "Split an NDJSON response BODY into decoded objects (one per non-blank line)."
+  (mapcar #'json:decode-json-from-string
+          (remove "" (uiop:split-string body :separator '(#\Newline)) :test #'string=)))
+
+(test def-query-ndjson-streams-one-object-per-line
+  "format=ndjson streams each result row as its own JSON line with the
+application/x-ndjson content type."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)
+      (let* ((body (graph-db::call-rest-query
+                    "friendsOf"
+                    (rest-params (cons "name" "A") (cons "format" "ndjson"))))
+             (objs (ndjson-lines body)))
+        (is (string= "application/x-ndjson"
+                     (getf (lack/response:response-headers ningle:*response*) :content-type)))
+        (is (= 2 (length objs)))
+        (is (equal '("B" "C")
+                   (sort (mapcar (lambda (o) (cdr (assoc :friend-name o))) objs)
+                         #'string<)))))))
+
+(test pattern-query-ndjson-format
+  "An ad-hoc pattern query with \"format\":\"ndjson\" streams NDJSON rows."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (make-a-knows-b-and-c)              ; A, B, C
+      (let* ((body (graph-db::call-rest-pattern-query
+                    (json:decode-json-from-string
+                     "{\"match\":[{\"vertex\":\"?p\",\"type\":\"gPerson\"}],
+                       \"where\":[{\"slot\":\"?p\",\"name\":\"name\",\"bind\":\"?n\"}],
+                       \"select\":[\"?n\"],\"format\":\"ndjson\"}")
+                    (rest-params)))
+             (objs (ndjson-lines body)))
+        (is (= 3 (length objs)))
+        (is (equal '("A" "B" "C")
+                   (sort (mapcar (lambda (o) (cdr (assoc :n o))) objs) #'string<)))))))
+
+(test pattern-query-unknown-type-is-400
+  "Referencing an unknown vertex/edge type is a 400."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (pattern-query
+                "{\"match\":[{\"vertex\":\"?p\",\"type\":\"noSuchType\"}],
+                  \"select\":[\"?p\"]}")))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
+(test pattern-query-malformed-pattern-is-400
+  "A pattern object that isn't a recognized kind is a 400."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (pattern-query
+                "{\"match\":[{\"bogus\":\"?p\"}],\"select\":[\"?p\"]}")))
+        (is (= 400 (rest-status)))
+        (is-true (assoc :error j))))))
+
+(test def-query-unknown-name-is-404
+  "An unknown query name yields a 404."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (with-rest-env ()
+      (let ((j (rest-decode
+                (graph-db::call-rest-query "noSuchQuery" (rest-params)))))
+        (is (= 404 (rest-status)))
+        (is-true (assoc :error j))))))

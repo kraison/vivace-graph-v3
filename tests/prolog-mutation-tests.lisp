@@ -166,3 +166,43 @@ from Prolog (there is no native insert predicate)."
       (is (= 1 (length people)) "trigger should have created exactly one vertex")
       (is (string= "Trig" (slot-value (first people) 'name)))
       (is (= 5 (slot-value (first people) 'age))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Effect partitioning (#45 Phase 1): the :effects query policy gates the
+;;; side-effecting functors (:write retract, :eval lisp/is/trigger, :io).  Reads
+;;; and pure logic are always allowed, so :effects nil is a safe read-only mode.
+;;; ---------------------------------------------------------------------------
+
+(test effects-nil-allows-reads-forbids-write-and-eval
+  "Under :effects nil, reads succeed but a write (retract) or eval (is) aborts
+with a catchable prolog-permission-error and performs no effect."
+  (with-test-graph (g)
+    (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+    ;; reads are always allowed, even under the strictest policy
+    (is (= 2 (length (select (:effects nil :flat t) (?p) (is-a ?p g-person)))))
+    ;; :write denied -> retract signals, nothing is deleted
+    (signals graph-db:prolog-permission-error
+      (select (:effects nil) (?p) (is-a ?p g-person) (retract ?p)))
+    (is (equal '("A" "B") (person-names))
+        "no person deleted when :write was denied")
+    ;; :eval denied -> is/2 signals
+    (signals graph-db:prolog-permission-error
+      (select (:effects nil :flat t) (?x) (is ?x (+ 1 2))))))
+
+(test effects-list-permits-only-named-effects
+  "A specific effect list permits those effects and still denies the others."
+  (with-test-graph (g)
+    (with-transaction () (make-g-person :name "A") (make-g-person :name "B"))
+    ;; :write permitted -> retract runs
+    (select (:effects (:write)) (?p) (is-a ?p g-person) (retract ?p))
+    (is (null (person-names)) "both persons retracted when :write was allowed")
+    ;; ...but :eval is still denied under a :write-only policy
+    (signals graph-db:prolog-permission-error
+      (select (:effects (:write) :flat t) (?x) (is ?x (+ 1 2))))))
+
+(test effects-default-allows-everything
+  "With no :effects option (the default policy) side effects run as before."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(3) (select-flat (?x) (is ?x (+ 1 2)))))                 ; :eval
+    (is (equal '(3) (select (:effects (:eval) :flat t) (?x) (is ?x (+ 1 2)))))))

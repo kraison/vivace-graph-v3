@@ -24,16 +24,22 @@ goal's argument count."
   (gethash symbol *prolog-global-functors*))
 
 (def-global-prolog-functor read/1 (exp cont)
+  (require-effect :io)
   (if (unify exp (read)) (funcall cont)))
 
 (def-global-prolog-functor write/1 (exp cont)
+  (require-effect :io)
   (format t "~A" (deref-exp exp)) (funcall cont))
 
 (def-global-prolog-functor nl/0 (cont)
+  (require-effect :io)
   (terpri) (funcall cont))
 
 (def-global-prolog-functor repeat/0 (cont)
-  (loop (funcall cont)))
+  ;; %tick each iteration so an enclosing :timeout / :max-inferences can break
+  ;; an otherwise-unbounded (repeat ... fail) loop, which never re-enters
+  ;; compile-call and so would not otherwise be accounted.
+  (loop (%tick) (funcall cont)))
 
 (def-global-prolog-functor fail/0 (cont)
   (declare (ignore cont))
@@ -94,6 +100,7 @@ goal's argument count."
  supplied Prolog var.  (lisp ?result (+ 1 2)).  Any lisp variables that you
  wish to access within a prolog query using the lisp functor should be
  declared special."
+  (require-effect :eval)
   (let ((exp (deref-exp exp)))
     (when *prolog-trace* (format t "TRACE: LISP/2 ?result <- ~A~%" exp))
     (cond ((consp exp)
@@ -112,6 +119,7 @@ goal's argument count."
   "Call out to lisp from within a Prolog query and throws away the result.
  Any lisp variables that you wish to access within a prolog query using the
  lisp functor should be declared special."
+  (require-effect :eval)
   (let ((exp (deref-exp exp)))
     (when *prolog-trace* (format t "TRACE: LISPP/1 ~A~%" exp))
     (cond ((consp exp)
@@ -133,39 +141,210 @@ goal's argument count."
 (def-global-prolog-functor var/1 (?arg1 cont)
   (if (unbound-var-p ?arg1) (funcall cont)))
 
+(def-global-prolog-functor param/2 (?var key cont)
+  "Unify ?VAR with the value bound to KEY in *QUERY-PARAMS* (the parameters of a
+DEF-QUERY, or any SELECT run with *QUERY-PARAMS* bound).  A pure read -- it
+injects a runtime value into a query without arbitrary evaluation, so it is
+permitted even under the strictest effect policy (:effects nil)."
+  (setq key (var-deref key))
+  (let ((cell (assoc key *query-params* :test #'equal)))
+    (when (and cell (unify ?var (cdr cell)))
+      (funcall cont))))
+
 (def-global-prolog-functor is/2 (var exp cont)
   "Similar to lisp/2, but unifies instead of assigns the lisp return value."
+  (require-effect :eval)
   (if (and (not (find-if-anywhere #'unbound-var-p exp))
 	   (unify var (eval (deref-exp exp))))
       (funcall cont)))
 
+;;; ---------------------------------------------------------------------------
+;;; Runtime meta-call solver (#45 Phase 0.2).
+;;;
+;;; %SOLVE is the runtime counterpart of COMPILE-BODY: it proves a goal whose
+;;; structure (and possibly whose functor) is only known at run time -- the
+;;; dynamic meta-call case, (call ?G).  Statically-known meta-calls compile
+;;; inline via the CALL compiler macro and never reach here.
+;;;
+;;; It handles conjunction, disjunction, call/N (argument appending) and the
+;;; true/fail atoms directly; not/if/once/forall and ordinary predicates resolve
+;;; through the functor tables (their runtime functors route their sub-goals back
+;;; through here via call/1).  An UNKNOWN predicate (or an uninstantiated goal)
+;;; signals a PROLOG-ERROR -- deliberately noisy, so a mistyped predicate surfaces
+;;; rather than silently yielding no answers.  (A future catch/3 + ISO
+;;; existence_error/instantiation_error will make this recoverable; see #45.)
+;;; ---------------------------------------------------------------------------
+
+(defun control-head-p (head name)
+  "True when symbol HEAD names the control construct NAME, regardless of package
+(goal heads are read in the caller's package)."
+  (and (symbolp head)
+       (string-equal (symbol-name head) (symbol-name name))))
+
+(defun %solve-conj (goals cont)
+  "Prove a conjunction of GOALS, threading the continuation."
+  (if (null goals)
+      (funcall cont)
+      (%solve (first goals)
+              (lambda () (%solve-conj (rest goals) cont)))))
+
+(defun %solve-disj (goals cont)
+  "Prove a disjunction of GOALS, enumerating every branch (undoing bindings
+between branches).  Unlike the legacy or/2 functor this does not truncate."
+  (dolist (g goals)
+    (let ((old-trail (fill-pointer *trail*)))
+      (%solve g cont)
+      (undo-bindings old-trail))))
+
+(defun %solve (goal cont)
+  "Prove GOAL at run time, invoking CONT once per solution.  GOAL may be atomic,
+compound, or a control construct; its variables are runtime VAR structs."
+  (%tick)                               ; account one inference / enforce bounds
+  (setf goal (var-deref goal))
+  (cond
+    ((var-p goal)
+     (error 'prolog-error :reason "meta-call of an uninstantiated goal"
+            :ball (instantiation-error-ball)))
+    ((null goal) nil)
+    ((symbolp goal) (%solve (list goal) cont)) ; bare atom goal -> 0-arity form
+    ((consp goal)
+     (let ((head (var-deref (first goal)))
+           (gargs (rest goal)))
+       (cond
+         ((not (symbolp head))
+          (error 'prolog-error
+                 :reason (format nil "meta-call goal with non-symbol head ~S" head)
+                 :ball (type-error-ball :callable head)))
+         ((control-head-p head 'true) (funcall cont))
+         ((control-head-p head 'fail) nil)
+         ;; cut inside a *dynamic* meta-call is opaque and not honored (call is
+         ;; a cut barrier); it simply succeeds.  Static call honors cut.
+         ((or (control-head-p head '!) (control-head-p head 'cut)) (funcall cont))
+         ((control-head-p head 'and) (%solve-conj gargs cont))
+         ((control-head-p head 'or) (%solve-disj gargs cont))
+         ((control-head-p head 'call) (%solve-call (first gargs) (rest gargs) cont))
+         (t
+          (let* ((functor (make-functor-symbol head (length gargs)))
+                 (fn (or (get-functor-fn functor)
+                         (gethash functor *prolog-global-functors*))))
+            (if (functionp fn)
+                (apply fn (append gargs (list cont)))
+                ;; Unknown predicate: noisy, but with an existence_error ball so
+                ;; catch/3 can recover from it.
+                (error 'prolog-error
+                       :reason (format nil "unknown Prolog functor ~A" functor)
+                       :ball (existence-error-ball :procedure functor))))))))
+    (t nil)))
+
+(defun %solve-call (goal extra cont)
+  "Prove (call GOAL . EXTRA): append the EXTRA arguments to GOAL's argument list
+(call/N), then solve.  GOAL is dereferenced first."
+  (setf goal (var-deref goal))
+  (%solve (cond ((null extra) goal)
+                ((consp goal) (append goal extra))
+                (t (cons goal extra)))
+          cont))
+
 (def-global-prolog-functor call/1 (goal cont)
-  "Call a prolog form."
-  (var-deref goal)
-  (let* ((functor (make-functor-symbol (first goal) (length (args goal)))))
-    ;; *user-functors* holds FUNCTOR structs, not functions, so we must pull
-    ;; out the compiled fn (via get-functor-fn).  Reading the struct directly
-    ;; made (functionp ...) false, so call/1 -- and thus not/bagof/setof/if --
-    ;; could never invoke a user-defined (<-) predicate.
-    (let ((fn (or (get-functor-fn functor)
-		  (gethash functor *prolog-global-functors*))))
-      (if (functionp fn)
-	  (apply fn (append (args goal) (list cont)))
-	  (error 'prolog-error
-		 :reason
-		 (format nil "Unknown Prolog functor in call/1 ~A"
-                         functor))))))
+  "Meta-call GOAL -- atomic, compound, or a control construct.  An unknown
+predicate signals a PROLOG-ERROR (deliberately noisy).  Delegates to %SOLVE, the
+shared runtime solver."
+  (%solve goal cont))
+
+;;; ---------------------------------------------------------------------------
+;;; ISO exceptions: throw/1 and catch/3 (#45).
+;;; ---------------------------------------------------------------------------
+
+(def-global-prolog-functor throw/1 (ball cont)
+  "throw(Ball): raise BALL as a Prolog exception for an enclosing catch/3 whose
+Catcher unifies with it.  An uninstantiated BALL is an instantiation_error."
+  (declare (ignore cont))               ; throw never returns to its continuation
+  (let ((b (var-deref ball)))
+    (if (var-p b)
+        (error 'prolog-error :reason "throw of an uninstantiated ball"
+               :ball (instantiation-error-ball))
+        ;; copy the ball (resolve bindings, rename remaining vars apart) so it
+        ;; survives the trail unwind back to the catching frame
+        (error 'prolog-throw :ball (deref-copy (deref-exp ball))))))
+
+(def-global-prolog-functor catch/3 (goal catcher recovery cont)
+  "catch(Goal, Catcher, Recovery): prove GOAL; if it throws a ball that unifies
+with CATCHER, undo GOAL's bindings and prove RECOVERY instead.  A ball that does
+not unify propagates to an outer catch.  Errors raised by the CONTINUATION after
+GOAL succeeds are not caught here (only GOAL is protected).  Resource and
+permission errors are NOT catchable -- they must abort the query so a bounded,
+untrusted query cannot swallow its own enforcement."
+  (let ((marker (list :catch))
+        (entry (fill-pointer *trail*))
+        (caught nil))
+    (block solve
+      (handler-bind
+          ((prolog-error
+             (lambda (c)
+               (when (and (member marker *active-catches* :test #'eq)
+                          (not (typep c 'prolog-resource-error))
+                          (not (typep c 'prolog-permission-error)))
+                 (let ((ball (or (prolog-error-ball c)
+                                 (iso-ball (list :system-error (princ-to-string c))))))
+                   (undo-bindings entry)
+                   (cond ((unify catcher ball)
+                          (setf caught t)
+                          (return-from solve)) ; unwind, then run recovery below
+                         (t (undo-bindings entry))))))))  ; decline -> propagate
+        (let ((*active-catches* (cons marker *active-catches*)))
+          (%solve goal
+                  (lambda ()
+                    ;; the continuation runs outside this catch's protection
+                    (let ((*active-catches*
+                            (remove marker *active-catches* :test #'eq)))
+                      (funcall cont)))))))
+    ;; reached when GOAL exhausted with no caught throw, or after one unwinds
+    (when caught
+      (%solve recovery cont))))
 
 (def-global-prolog-functor if/2 (?test ?then cont)
   (when *prolog-trace* (format t "TRACE: IF/2(~A ~A)~%" ?test ?then))
   (call/1 ?test #'(lambda () (call/1 ?then cont))))
 
 (def-global-prolog-functor if/3 (?test ?then ?else cont)
+  "(if Test Then Else): ISO soft cut.  Commit to the first solution of Test; if
+Test has a solution run Then, otherwise run Else.  Else runs ONLY when Test has
+no solution -- not when Test succeeds but Then fails.  This is the runtime
+(meta-call) counterpart of the IF compiler macro; the two must agree."
   (when *prolog-trace* (format t "TRACE: IF/3(~A ~A ~A)~%" ?test ?then ?else))
-  (call/1 ?test #'(lambda ()
-		    (call/1 ?then
-			    #'(lambda () (funcall cont) (return-from if/3)))))
-  (call/1 ?else cont))
+  (let ((old-trail (fill-pointer *trail*))
+        (cond-met nil))
+    (block done
+      (call/1 ?test #'(lambda ()
+                        (setf cond-met t)
+                        (call/1 ?then cont)
+                        (return-from done))))
+    (unless cond-met
+      (undo-bindings old-trail)
+      (call/1 ?else cont))))
+
+(def-global-prolog-functor once/1 (goal cont)
+  "(once Goal): succeed at most once -- commit to Goal's first solution.  Runtime
+(meta-call) counterpart of the ONCE compiler macro."
+  (block done
+    (call/1 goal #'(lambda () (funcall cont) (return-from done)))))
+
+(def-global-prolog-functor forall/2 (cond action cont)
+  "(forall Cond Action): succeed iff Action succeeds for every solution of Cond.
+Runtime (meta-call) counterpart of the FORALL compiler macro."
+  (let ((old-trail (fill-pointer *trail*))
+        (ok t))
+    (block done
+      (call/1 cond
+              #'(lambda ()
+                  (let ((inner-trail (fill-pointer *trail*))
+                        (act nil))
+                    (block inner
+                      (call/1 action #'(lambda () (setf act t) (return-from inner))))
+                    (undo-bindings inner-trail)
+                    (unless act (setf ok nil) (return-from done))))))
+    (undo-bindings old-trail)
+    (when ok (funcall cont))))
 
 (let ((date-regex
        "^(19|20)\\d\\d[\-\ \/\.](0[1-9]|1[012])[\-\ \/\.](0[1-9]|[12][0-9]|3[01])$"))
@@ -179,6 +358,7 @@ goal's argument count."
 
 (def-global-prolog-functor trigger/1 (exp cont)
   "Call out to lisp ignoring the return value."
+  (require-effect :eval)
   (eval (deref-exp exp))
   ;;(let ((exp (deref-exp exp)))
     ;;(typecase exp
@@ -197,26 +377,135 @@ query."
   (call/1 goal1 #'(lambda () (funcall cont) (return-from or/2 t)))
   (call/1 goal2 #'(lambda () (funcall cont) (return-from or/2 t))))
 
-(def-global-prolog-functor bagof/3 (exp goal result cont)
-  (let ((answers nil))
-    (call/1 goal #'(lambda () (push (deref-exp exp) answers)))
-    (if (and (not (null answers))
-	     (unify result (nreverse answers)))
-	(funcall cont))))
+;;; ---------------------------------------------------------------------------
+;;; All-solutions aggregation (#45 Phase 0.3): findall/3, bagof/3, setof/3.
+;;;
+;;; findall collects every TEMPLATE instance (always succeeds; [] on none, no
+;;; grouping).  bagof/setof additionally fail on no solutions and GROUP by the
+;;; goal's free (witness) variables -- those in Goal but not in Template and not
+;;; existentially quantified by ^ -- producing one solution per witness binding.
+;;; setof sorts each group by the standard order of terms and removes duplicates.
+;;; ---------------------------------------------------------------------------
 
-(def-global-prolog-functor setof/3 (exp goal result cont)
-  "Find all unique solutions to GOAL, and for each solution,
-  collect the value of EXP into the list RESULT."
-  ;; Ex: Assume (p 1) (p 2) (p 3).  Then:
-  ;;     (setof ?x (p ?x) ?l) ==> ?l = (1 2 3)
-  (let ((answers nil))
-    (call/1 goal #'(lambda ()
-                     (push (deref-exp exp) answers)))
-    (if (and (not (null answers))
-             (unify result (delete-duplicates
-                            answers
-                            :test #'deref-equal)))
-        (funcall cont))))
+(defun %term-vars (term &optional acc)
+  "Distinct unbound VAR structs occurring in TERM (post-deref), prepended to ACC."
+  (setf term (var-deref term))
+  (cond ((var-p term) (if (member term acc) acc (cons term acc)))
+        ((consp term) (%term-vars (rest term) (%term-vars (first term) acc)))
+        (t acc)))
+
+(defun %strip-existential (goal)
+  "Strip leading ^ quantifiers.  Returns (values inner-goal existential-vars).
+Supports (^ Var Goal) and (^ (Var...) Goal), nestable."
+  (let ((evars nil))
+    (loop
+      (setf goal (var-deref goal))
+      (if (and (consp goal)
+               (control-head-p (var-deref (first goal)) '^)
+               (= 2 (length (rest goal))))
+          (let ((v (var-deref (second goal))))
+            (dolist (x (if (consp v) v (list v)))
+              (setf evars (%term-vars x evars)))
+            (setf goal (var-deref (third goal))))
+          (return)))
+    (values goal evars)))
+
+(defun %findall-list (template goal)
+  "Run GOAL, snapshotting TEMPLATE per solution; return the snapshots in solution
+order.  Bindings are undone before returning.  DEREF-EXP (not DEREF-COPY)
+resolves bound variables to their values so the snapshot survives the undo --
+DEREF-COPY renames variables apart and would drop the bindings."
+  (let ((acc nil)
+        (old-trail (fill-pointer *trail*)))
+    (%solve goal (lambda () (push (deref-exp template) acc)))
+    (undo-bindings old-trail)
+    (nreverse acc)))
+
+(defun %group-by-witness (pairs)
+  "PAIRS is a list of (Witness . Template) snapshots.  Group by Witness
+(structural equality), preserving first-appearance order; return a list of
+(Witness . list-of-Template)."
+  (let ((groups nil))
+    (dolist (p pairs)
+      (let ((entry (assoc (car p) groups :test #'deref-equal)))
+        (if entry
+            (push (cdr p) (cdr entry))
+            (setf groups (nconc groups (list (list (car p) (cdr p))))))))
+    (mapcar (lambda (g) (cons (car g) (nreverse (cdr g)))) groups)))
+
+(defun %term-rank (x)
+  (cond ((var-p x) 0) ((numberp x) 1) ((characterp x) 2)
+        ((symbolp x) 3) ((stringp x) 4) ((node-p x) 5) ((consp x) 6) (t 7)))
+
+(defun %bytes< (a b)
+  (let ((la (length a)) (lb (length b)))
+    (dotimes (i (min la lb) (< la lb))
+      (let ((x (aref a i)) (y (aref b i)))
+        (when (/= x y) (return (< x y)))))))
+
+(defun %term-< (a b)
+  "A partial standard order of terms: Var < Number < Char < Symbol < String <
+Node < Cons.  Used to sort setof results."
+  (setf a (var-deref a) b (var-deref b))
+  (let ((ra (%term-rank a)) (rb (%term-rank b)))
+    (if (/= ra rb)
+        (< ra rb)
+        (case ra
+          (0 (< (var-name a) (var-name b)))
+          (1 (< a b))
+          (2 (char< a b))
+          (3 (string< (symbol-name a) (symbol-name b)))
+          (4 (string< a b))
+          (5 (%bytes< (id a) (id b)))
+          (6 (cond ((%term-< (car a) (car b)) t)
+                   ((%term-< (car b) (car a)) nil)
+                   (t (%term-< (cdr a) (cdr b)))))
+          (t nil)))))
+
+(defun %sort-unique (items)
+  "Sort ITEMS by the standard order of terms and drop duplicates (deref-equal)."
+  (let ((result nil))
+    (dolist (x (stable-sort (copy-list items) #'%term-<) (nreverse result))
+      (unless (and result (deref-equal (first result) x))
+        (push x result)))))
+
+(def-global-prolog-functor findall/3 (template goal result cont)
+  "findall(Template, Goal, List): List is the list of Template instances, one per
+solution of Goal, in order ([] if none).  Always succeeds and does not bind
+Goal's free variables."
+  (if (unify result (%findall-list template (var-deref goal)))
+      (funcall cont)))
+
+(defun %solve-aggregate (template goal result cont sort-p)
+  "Shared core of bagof/setof: collect Template per solution of GOAL, grouped by
+GOAL's witness variables.  Fails when GOAL has no solutions.  When SORT-P, each
+group's list is sorted and de-duplicated (setof); otherwise order/dups are kept
+(bagof)."
+  (multiple-value-bind (inner evars) (%strip-existential goal)
+    (let* ((tmpl-vars (%term-vars template))
+           (witnesses (remove-if (lambda (v) (or (member v tmpl-vars)
+                                                 (member v evars)))
+                                 (%term-vars inner)))
+           (pairs (%findall-list (cons witnesses template) inner)))
+      (dolist (group (%group-by-witness pairs))
+        (let ((old-trail (fill-pointer *trail*))
+              (items (if sort-p (%sort-unique (cdr group)) (cdr group))))
+          (when (and (unify witnesses (car group))
+                     (unify result items))
+            (funcall cont))
+          (undo-bindings old-trail))))))
+
+(def-global-prolog-functor bagof/3 (template goal result cont)
+  "bagof(Template, Goal, Bag): Bag is the list of Template instances for one
+binding of Goal's witness variables (free vars not in Template, not bound by ^),
+backtracking over witness bindings.  Fails when Goal has no solutions; keeps
+order and duplicates."
+  (%solve-aggregate template goal result cont nil))
+
+(def-global-prolog-functor setof/3 (template goal result cont)
+  "setof(Template, Goal, Set): like bagof, but each Set is sorted by the standard
+order of terms with duplicates removed."
+  (%solve-aggregate template goal result cont t))
 
 (def-global-prolog-functor show-prolog-vars/2 (var-names vars cont)
   (if (null vars)
@@ -255,6 +544,10 @@ query."
       (dbg "TRACE: SELECT/2(~A ~A)~%" var-names vars)
       (dbg "TRACE: SELECT/2 COUNT: ~A, SKIP: ~A" *select-current-count* *select-current-skip*)
       (dbg "TRACE: SELECT/2 SELECT-LIST: ~{~A~^ ~}" *select-list*))
+    ;; :COUNT mode -- tally solutions (honoring :skip/:limit) without projecting
+    ;; or consing any bindings.
+    (when *select-count-only*
+      (return-from select/2 (%count-tick cont)))
     (when (or (null *select-limit*)
               (< *select-current-count* *select-limit*))
       (when (not (null vars))
@@ -276,10 +569,13 @@ query."
           (when (or (null *select-skip*)
                     (> *select-current-skip* *select-skip*))
             (incf *select-current-count*)
-            (if *select-flat*
-                (dolist (i r)
-                  (push i *select-list*))
-                (push r *select-list*))))))
+            (cond (*select-callback*
+                   ;; streaming: hand the row to the callback as it is produced,
+                   ;; consing nothing onto *select-list*
+                   (funcall *select-callback* (if *select-flat* (first r) r)))
+                  (*select-flat*
+                   (dolist (i r) (push i *select-list*)))
+                  (t (push r *select-list*)))))))
     (if (or (null *select-limit*) (< *select-current-count* *select-limit*))
         (funcall cont)
         (throw :prolog-limit-reached nil)))
@@ -496,12 +792,17 @@ query."
   (setq node (var-deref node)
         slot (var-deref slot)
         var (var-deref var))
-  (handler-case
-      (when (unify var (node-slot-value node slot))
-        (funcall cont))
-    (error (c)
-      (log:error "Problem unifying (node-slot-value ~A ~A): ~A" node slot c)
-      nil)))
+  ;; Guard ONLY the slot read -- not (funcall cont).  The continuation is the
+  ;; rest of the query; wrapping it here would swallow any error a downstream
+  ;; goal signals (e.g. a prolog-permission-error from a denied write, or a
+  ;; prolog-resource-error), silently turning it into a non-match.
+  (let ((value (handler-case (node-slot-value node slot)
+                 (error (c)
+                   (log:error "Problem reading (node-slot-value ~A ~A): ~A"
+                              node slot c)
+                   (return-from node-slot-value/3 nil)))))
+    (when (unify var value)
+      (funcall cont))))
 
 (def-global-prolog-functor weight/2 (edge var cont)
   (setq edge (var-deref edge)
@@ -556,12 +857,14 @@ query."
           *graph*))))
 
 (def-global-prolog-functor retract/1 (node cont)
+  (require-effect :write)
   (setq node (var-deref node))
   (when (node-p node)
     (mark-deleted node)
     (funcall cont)))
 
 (def-global-prolog-functor retract/3 (edge-type from to cont)
+  (require-effect :write)
   (setq edge-type (var-deref edge-type)
         from (var-deref from)
         to (var-deref to))

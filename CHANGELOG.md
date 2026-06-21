@@ -4,7 +4,157 @@ All notable changes to VivaceGraph are recorded here.
 
 ## Unreleased
 
+### Added
+- **Streaming results: `select` `:callback` + NDJSON web responses (issue #44).**
+  `select` accepts `:callback FN`, which hands each result row to `FN` as it is
+  produced -- consing nothing onto a result list -- and returns the row count.
+  An embedded consumer can stream an unbounded result set with constant memory.
+  The web layer uses it: a query with `format=ndjson` (a parameter for
+  `def-query`, a body field for the pattern query) streams each row as its own
+  JSON object on its own line (`application/x-ndjson`) instead of buffering a
+  JSON array.
+- **ISO exceptions: `catch/3` + `throw/1` (issue #45).** `throw(Ball)` raises a
+  ball and `catch(Goal, Catcher, Recovery)` recovers from one that unifies with
+  `Catcher`, propagating others to an outer catch.  Only `Goal` is protected --
+  a throw in the continuation after `catch/3` succeeds is not caught (the
+  continuation-swallowing trap, handled with a per-frame marker).  Built-in
+  errors now carry an ISO-style ball so they are catchable: an unknown predicate
+  is an `existence_error`, an uninstantiated meta-call an `instantiation_error`,
+  a non-callable goal a `type_error`.  The error vocabulary is keywords
+  (`(:error (:existence-error :procedure foo/2) Ctx)`) so a ball unifies
+  regardless of the query's package.  Resource (budget/timeout) and permission
+  (effect-policy) errors are deliberately **not** catchable, so a bounded,
+  untrusted query cannot `catch(Goal, _, true)` to swallow its own enforcement.
+- **Prolog control-flow core (issue #45, Phase 0).** `not`/`\+`, `if` (the
+  two- and three-argument `Cond -> Then [; Else]` soft cut), `once`, and `forall`
+  are now first-class compiler constructs: they expand through `compile-body`, so
+  they thread bindings and compose with conjunction and cut instead of routing
+  through the runtime `call/1` functors.  Each opaque construct (`not`, `once`,
+  the condition of `if`) is a proper cut barrier, while a cut in a `Then`/`Else`
+  branch or in the tail after the construct still cuts the enclosing clause.
+  A non-static (meta-call variable) sub-goal, e.g. `(not ?G)`, transparently
+  falls back to the runtime functor, so existing behavior is preserved.
+- **Compiled `call/N` and a runtime meta-call solver (issue #45, Phase 0.2).**
+  `(call Goal Extra...)` now appends the extra arguments to `Goal` (call/N).
+  When `Goal` is a static template the call compiles inline through
+  `compile-body`, so it composes with cut and the control constructs (e.g.
+  `(call (or ...))`, `(call (g-knows ?a) ?b)`).  When `Goal` is a variable, the
+  new `%solve` runtime solver proves it -- handling conjunction, disjunction,
+  call/N and atomic/compound goals.  `call/1` and the control runtime functors
+  (`not`/`if`/`once`/`forall`) route through `%solve`.
+- **All-solutions aggregation (issue #45, Phase 0.3).** New `findall/3` (collects
+  every template instance in order, always succeeds, `[]` on no solutions).
+  `bagof/3` and `setof/3` now **group by the goal's free (witness) variables** --
+  the variables in the goal but not in the template and not existentially
+  quantified -- yielding one solution per witness binding (and still failing when
+  the goal has no solutions).  The `^` operator (`(^ Var Goal)`, nestable, accepts
+  a single var or a list) marks variables as existential so they are not treated
+  as witnesses.  `setof` sorts each group by the standard order of terms and
+  removes duplicates.
+- **Query resource bounds (issue #45, Phase 0.4).** Queries can now be bounded by
+  a maximum inference count (`:max-inferences` select option / `*inference-budget*`
+  / `*default-inference-budget*`) and a wall-clock timeout (`:timeout` seconds /
+  `*default-query-timeout*`).  Exceeding either aborts the query with a catchable
+  `prolog-resource-error`, so a runaway, non-terminating, or cyclic-recursive
+  query fails cleanly instead of hanging or overflowing the Lisp control stack.
+  Both default to nil (unlimited): trusted queries are unchanged, untrusted ones
+  (e.g. the planned #44 web surface) opt in.  Solution count remains bounded by
+  the existing `:limit`.
+- **Effect partitioning / query effect policy (issue #45, Phase 1).** The
+  side-effecting Prolog functors are now tagged by effect -- `:write` (graph
+  mutation: `retract`), `:eval` (arbitrary Lisp: `lisp`/`lispp`/`is`/`trigger`),
+  `:io` (`read`/`write`/`nl`) -- and check the per-query policy before acting.
+  The `:effects` select option (or `*allowed-effects*` / `*default-allowed-effects*`)
+  is `t` for all (the default) or a list of permitted tags; a disallowed effect
+  aborts with a catchable `prolog-permission-error`.  Reads and pure logic are
+  always allowed, so `:effects nil` is a safe read-only query mode (the basis for
+  exposing queries to untrusted callers).  The check is transitive -- an effect
+  reached through a user rule or meta-call is gated the same way.
+- **Snapshot query mode (issue #45, Phase 1).** `select` accepts `:snapshot t`,
+  which runs the query under a single consistent MVCC read snapshot: every read
+  resolves at one epoch, so the result is stable against concurrent writers (a
+  vertex committed after the query started is invisible to it).  Implemented as
+  a lightweight read transaction (`with-read-snapshot` / `call-with-read-snapshot`)
+  that registers active for the query's extent -- holding the reaper's retention
+  floor -- and is discarded without commit or validation.  It inherits an
+  enclosing transaction if one is already active.  Together with the resource
+  bounds, the effect policy, and `:limit`/`:skip`, this gives a query surface
+  safe to expose to untrusted callers.
+
+### Changed
+- **Unknown Prolog predicates are now noisy.** A goal naming an undefined
+  predicate signals a `prolog-error` -- on both the compiled query path and the
+  dynamic meta-call path -- instead of silently yielding no answers (the
+  compiled path) or aborting with an opaque message (the old `call/1`).  This
+  surfaces mistyped predicate names instead of letting them masquerade as empty
+  results.  (A future `catch/3` + ISO `existence_error` will make this
+  recoverable; see #45.)
+
+- **`select-count` / `select` `:count`.** `select-count` (already exported but
+  never implemented) now returns the integer number of solutions to a query
+  without projecting or consing any per-solution bindings; the underlying
+  `select` `:count t` option does the same and composes with `:limit` and
+  `:skip` (so a capped or offset count counts the rows `select` would return).
+
+- **`def-query` -- named parameterized queries over the web (issue #44).** A new
+  `def-query` registers a server-authored, read-only graph query as a REST
+  endpoint at `POST /graph/:graph/query/<name>`.  The author declares typed,
+  named parameters (`:string`/`:integer`/`:number`/`:boolean`/`:keyword`),
+  result variables, and the query goals; the client supplies only the
+  parameters.  Each query runs through `select` with safe defaults the author
+  may override -- read-only (`:effects nil`), and a result limit, inference
+  budget, and wall-clock timeout.  A read-only query runs under a lightweight
+  MVCC read snapshot; a query whose `:effects` permit side effects instead runs
+  inside a `with-transaction`, so its writes flatten into one transaction that
+  provides the same snapshot and commits on success (or rolls back if a bound or
+  permission error aborts it).  Responses are a JSON array of objects keyed by the camelCase result
+  names; a missing/malformed parameter is a 400, a resource-bound breach a 400,
+  a forbidden effect a 403, and an unknown query a 404.  Parameter values are
+  injected through a new pure `param/2` functor (and `*query-params*`), so
+  injection works under the read-only policy.
+- **Constrained JSON pattern queries (issue #44, tier 2).** Clients may POST an
+  ad-hoc, read-only query as a JSON object to `POST /graph/:graph/query` -- no
+  server-authored template and no client Lisp.  The body is a
+  `{match, where, select, limit, skip}` document of typed pattern objects
+  (`{vertex,type}`, `{edge,from,to}`, `{slot,name,bind|value}`,
+  `{compare,args}`) compiled to a bounded `select`.  Type/edge names are
+  resolved against the live schema (an unknown one is a 400), which also
+  determines the package the query compiles in; only a fixed set of safe pattern
+  kinds is expressible (no arbitrary predicate naming).  The query runs read-only
+  (`:effects nil`), under one MVCC snapshot, with the client `:limit` capped at
+  `*query-default-limit*` and the inference/time budgets applied; a malformed
+  query or a bound breach is a 400.  Results use the same JSON array-of-objects
+  shape as `def-query`.
+
 ### Fixed
+- **REST procedure/query POST routes never worked over HTTP.** Their ningle
+  handlers were quoted lambdas (`'(lambda (params) ...)`) -- a *list*, not a
+  function -- so the server returned the list verbatim and the response was
+  malformed, and the handler also referenced the route capture
+  (`procedure-name`) as an unbound free variable instead of reading it from the
+  params.  Replaced with real closures that pull the capture via
+  `(get-param params :procedure-name)` / `:query-name`.  Surfaced by the new
+  end-to-end HTTP tests (the existing tests exercised handlers in-process).
+- **REST procedures were broken on ECL.** `*rest-procedures*` had `#+sbcl`/
+  `#+ccl`/`#+lispworks` initforms but no `#+ecl` branch, so on ECL the variable
+  was declared special but left unbound; `def-rest-procedure` and
+  `call-rest-procedure` then failed with an `unbound-variable` error.  Added the
+  `#+ecl` branch so REST procedures work on ECL like the other implementations.
+- **`node-slot-value/3` swallowed downstream query errors.** Its `handler-case`
+  wrapped `(funcall cont)` -- the continuation -- so an error raised by any goal
+  *after* a `node-slot-value` (e.g. a `prolog-permission-error` from a denied
+  write, or a `prolog-resource-error`) was caught and silently turned into a
+  non-match.  The guard now wraps only the slot read; the continuation runs
+  outside it so downstream errors propagate.
+- **Prolog `if/3` else-semantics (issue #45).** `(if Test Then Else)` now runs
+  `Else` only when `Test` has no solution; previously it also ran `Else` when
+  `Test` succeeded but `Then` failed.  The runtime `if/3` functor (the meta-call
+  path) was corrected to match.
+- **Prolog `or` binding propagation.** A variable first bound inside a disjunct
+  (e.g. `(or (= ?x 1) (= ?x 2))`) was lost across the disjunction's shared
+  continuation because `=` had been optimized to a compile-time alias.  The `or`
+  compiler macro now seeds its fresh variables so they bind on the trail at
+  runtime and are visible to the continuation.
 - **ECL spatial-index concurrency (issue #42).** The skip list guarded every
   operation -- reads included -- with one recursive lock on ECL, so concurrent
   spatial queries ran sequentially and timed out under high parallelism.  Replaced
