@@ -239,3 +239,73 @@ dynamic meta-call."
     ;; dynamic meta-call path (via %solve)
     (signals graph-db:prolog-error
       (select-flat (?r) (= ?g (no-such-predicate-xyz ?r)) (call ?g)))))
+
+;;; ---------------------------------------------------------------------------
+;;; ISO exceptions: throw/1 + catch/3 (#45).
+;;; ---------------------------------------------------------------------------
+
+(test catch-recovers-from-a-throw
+  "catch/3 runs the recovery when Goal throws a ball that unifies with Catcher."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:caught)
+               (select-flat (?r) (catch (throw oops) ?ball (= ?r :caught)))))))
+
+(test catch-passes-through-when-goal-succeeds
+  "When Goal succeeds without throwing, its solutions pass through and the
+recovery does not run."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(5) (select-flat (?x) (catch (= ?x 5) ?b (= ?x 99)))))))
+
+(test catch-binds-the-ball
+  "The catcher unifies with the thrown ball, so the recovery can use it."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(my-ball)
+               (select-flat (?b) (catch (throw my-ball) ?b (= 1 1)))))))
+
+(test catch-non-matching-ball-propagates-to-outer
+  "A ball that does not unify with the inner Catcher propagates to an outer
+catch."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:outer)
+               (select-flat (?r)
+                            (catch (catch (throw the-ball) other-ball (= ?r :inner))
+                                   ?any (= ?r :outer)))))))
+
+(test catch-recovers-from-an-existence-error
+  "A built-in error carries an ISO ball: an unknown predicate is an
+existence_error catch/3 can match."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (is (equal '(:missing)
+               (select-flat (?r)
+                            (catch (no-such-predicate 1)
+                                   (:error (:existence-error :procedure ?proc) ?ctx)
+                                   (= ?r :missing)))))))
+
+(test catch-does-not-catch-continuation-errors
+  "Only Goal is protected: a throw in the continuation after catch/3 succeeds is
+not caught."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-error
+      (select-flat (?r) (catch (= ?r 1) ?b (= ?r 2)) (throw escaped)))))
+
+(test catch-does-not-catch-resource-errors
+  "Resource errors are not catchable -- a bounded query cannot swallow its own
+budget enforcement."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-resource-error
+      (select (:max-inferences 40) (?r) (catch (repeat) ?b (= ?r :swallowed))))))
+
+(test catch-does-not-catch-permission-errors
+  "Permission errors are not catchable -- a read-only query cannot swallow the
+effect policy."
+  (with-test-graph (g)
+    (declare (ignore g))
+    (signals graph-db:prolog-permission-error
+      (select (:effects nil) (?r) (catch (retract ?x) ?b (= ?r :swallowed))))))

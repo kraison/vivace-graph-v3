@@ -175,6 +175,8 @@
            #:compile-clause
            #:show-prolog-vars
            #:prolog-error
+           #:prolog-error-ball
+           #:prolog-throw
            #:prolog-resource-error
            #:prolog-permission-error
            #:*inference-budget*

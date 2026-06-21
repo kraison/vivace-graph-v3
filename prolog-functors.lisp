@@ -203,7 +203,8 @@ compound, or a control construct; its variables are runtime VAR structs."
   (setf goal (var-deref goal))
   (cond
     ((var-p goal)
-     (error 'prolog-error :reason "meta-call of an uninstantiated goal"))
+     (error 'prolog-error :reason "meta-call of an uninstantiated goal"
+            :ball (instantiation-error-ball)))
     ((null goal) nil)
     ((symbolp goal) (%solve (list goal) cont)) ; bare atom goal -> 0-arity form
     ((consp goal)
@@ -212,7 +213,8 @@ compound, or a control construct; its variables are runtime VAR structs."
        (cond
          ((not (symbolp head))
           (error 'prolog-error
-                 :reason (format nil "meta-call goal with non-symbol head ~S" head)))
+                 :reason (format nil "meta-call goal with non-symbol head ~S" head)
+                 :ball (type-error-ball :callable head)))
          ((control-head-p head 'true) (funcall cont))
          ((control-head-p head 'fail) nil)
          ;; cut inside a *dynamic* meta-call is opaque and not honored (call is
@@ -227,10 +229,11 @@ compound, or a control construct; its variables are runtime VAR structs."
                          (gethash functor *prolog-global-functors*))))
             (if (functionp fn)
                 (apply fn (append gargs (list cont)))
-                ;; Unknown predicate: stay noisy so typos surface (see #45 /
-                ;; the future catch/3 + existence_error note).
+                ;; Unknown predicate: noisy, but with an existence_error ball so
+                ;; catch/3 can recover from it.
                 (error 'prolog-error
-                       :reason (format nil "unknown Prolog functor ~A" functor))))))))
+                       :reason (format nil "unknown Prolog functor ~A" functor)
+                       :ball (existence-error-ball :procedure functor))))))))
     (t nil)))
 
 (defun %solve-call (goal extra cont)
@@ -247,6 +250,57 @@ compound, or a control construct; its variables are runtime VAR structs."
 predicate signals a PROLOG-ERROR (deliberately noisy).  Delegates to %SOLVE, the
 shared runtime solver."
   (%solve goal cont))
+
+;;; ---------------------------------------------------------------------------
+;;; ISO exceptions: throw/1 and catch/3 (#45).
+;;; ---------------------------------------------------------------------------
+
+(def-global-prolog-functor throw/1 (ball cont)
+  "throw(Ball): raise BALL as a Prolog exception for an enclosing catch/3 whose
+Catcher unifies with it.  An uninstantiated BALL is an instantiation_error."
+  (declare (ignore cont))               ; throw never returns to its continuation
+  (let ((b (var-deref ball)))
+    (if (var-p b)
+        (error 'prolog-error :reason "throw of an uninstantiated ball"
+               :ball (instantiation-error-ball))
+        ;; copy the ball (resolve bindings, rename remaining vars apart) so it
+        ;; survives the trail unwind back to the catching frame
+        (error 'prolog-throw :ball (deref-copy (deref-exp ball))))))
+
+(def-global-prolog-functor catch/3 (goal catcher recovery cont)
+  "catch(Goal, Catcher, Recovery): prove GOAL; if it throws a ball that unifies
+with CATCHER, undo GOAL's bindings and prove RECOVERY instead.  A ball that does
+not unify propagates to an outer catch.  Errors raised by the CONTINUATION after
+GOAL succeeds are not caught here (only GOAL is protected).  Resource and
+permission errors are NOT catchable -- they must abort the query so a bounded,
+untrusted query cannot swallow its own enforcement."
+  (let ((marker (list :catch))
+        (entry (fill-pointer *trail*))
+        (caught nil))
+    (block solve
+      (handler-bind
+          ((prolog-error
+             (lambda (c)
+               (when (and (member marker *active-catches* :test #'eq)
+                          (not (typep c 'prolog-resource-error))
+                          (not (typep c 'prolog-permission-error)))
+                 (let ((ball (or (prolog-error-ball c)
+                                 (iso-ball (list :system-error (princ-to-string c))))))
+                   (undo-bindings entry)
+                   (cond ((unify catcher ball)
+                          (setf caught t)
+                          (return-from solve)) ; unwind, then run recovery below
+                         (t (undo-bindings entry))))))))  ; decline -> propagate
+        (let ((*active-catches* (cons marker *active-catches*)))
+          (%solve goal
+                  (lambda ()
+                    ;; the continuation runs outside this catch's protection
+                    (let ((*active-catches*
+                            (remove marker *active-catches* :test #'eq)))
+                      (funcall cont)))))))
+    ;; reached when GOAL exhausted with no caught throw, or after one unwinds
+    (when caught
+      (%solve recovery cont))))
 
 (def-global-prolog-functor if/2 (?test ?then cont)
   (when *prolog-trace* (format t "TRACE: IF/2(~A ~A)~%" ?test ?then))

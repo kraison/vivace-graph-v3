@@ -5,6 +5,18 @@ All notable changes to VivaceGraph are recorded here.
 ## Unreleased
 
 ### Added
+- **ISO exceptions: `catch/3` + `throw/1` (issue #45).** `throw(Ball)` raises a
+  ball and `catch(Goal, Catcher, Recovery)` recovers from one that unifies with
+  `Catcher`, propagating others to an outer catch.  Only `Goal` is protected --
+  a throw in the continuation after `catch/3` succeeds is not caught (the
+  continuation-swallowing trap, handled with a per-frame marker).  Built-in
+  errors now carry an ISO-style ball so they are catchable: an unknown predicate
+  is an `existence_error`, an uninstantiated meta-call an `instantiation_error`,
+  a non-callable goal a `type_error`.  The error vocabulary is keywords
+  (`(:error (:existence-error :procedure foo/2) Ctx)`) so a ball unifies
+  regardless of the query's package.  Resource (budget/timeout) and permission
+  (effect-policy) errors are deliberately **not** catchable, so a bounded,
+  untrusted query cannot `catch(Goal, _, true)` to swallow its own enforcement.
 - **Prolog control-flow core (issue #45, Phase 0).** `not`/`\+`, `if` (the
   two- and three-argument `Cond -> Then [; Else]` soft cut), `once`, and `forall`
   are now first-class compiler constructs: they expand through `compile-body`, so

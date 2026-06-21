@@ -48,10 +48,38 @@
 (defun untrace-prolog () (setq *prolog-trace* nil))
 
 (define-condition prolog-error (error)
-  ((reason :initarg :reason))
+  ((reason :initarg :reason :initform nil)
+   ;; The ISO error term (the "ball") this condition carries, for catch/3 to
+   ;; unify against.  NIL for a bare error (catch/3 then synthesizes one).
+   (ball :initarg :ball :initform nil :reader prolog-error-ball))
   (:report (lambda (error stream)
              (with-slots (reason) error
                (format stream "Prolog error: ~A." reason)))))
+
+;;; ---------------------------------------------------------------------------
+;;; ISO error balls (#45).  Built-in errors carry an ISO-style term so a query
+;;; can catch them with catch/3.  The error vocabulary is KEYWORDS so a ball
+;;; unifies regardless of the query's package: (:error FORMAL CONTEXT), with
+;;; FORMAL e.g. (:existence-error :procedure foo/2) or :instantiation-error.
+;;; ---------------------------------------------------------------------------
+
+(defun iso-ball (formal &optional context)
+  "An ISO-style error ball (:error FORMAL CONTEXT)."
+  (list :error formal context))
+
+(defun existence-error-ball (kind what) (iso-ball (list :existence-error kind what)))
+(defun instantiation-error-ball () (iso-ball :instantiation-error))
+(defun resource-error-ball (resource) (iso-ball (list :resource-error resource)))
+(defun permission-error-ball (operation type culprit)
+  (iso-ball (list :permission-error operation type culprit)))
+(defun type-error-ball (type culprit) (iso-ball (list :type-error type culprit)))
+
+(define-condition prolog-throw (prolog-error)
+  ()
+  (:documentation "A ball thrown by throw/1, to be matched by an enclosing
+catch/3.  A subclass of PROLOG-ERROR, so an uncaught throw aborts the query.")
+  (:report (lambda (c stream)
+             (format stream "Prolog ball thrown: ~S" (prolog-error-ball c)))))
 
 (define-condition prolog-resource-error (prolog-error)
   ()
@@ -60,6 +88,11 @@ inference budget (*INFERENCE-BUDGET* / the :MAX-INFERENCES select option) or its
 wall-clock deadline (*QUERY-DEADLINE* / the :TIMEOUT option).  A subclass of
 PROLOG-ERROR, so it aborts the query but is catchable; it lets a runaway or
 cyclic recursion fail cleanly instead of crashing the Lisp control stack."))
+
+(defvar *active-catches* nil
+  "Markers of the catch/3 frames currently protecting their Goal (not their
+continuation).  catch/3's handler only fires for a throw while its own marker is
+present, so an error from the continuation after Goal succeeds is not caught.")
 
 (defstruct (var (:constructor ? ())
                 (:print-function print-var))
@@ -172,11 +205,11 @@ cyclic recursion fail cleanly instead of crashing the Lisp control stack."))
 	 (format t "TRACE: ~A/~A~A~%" ',predicate ',arity ',args))
        (if (functionp func)
 	   (funcall func ,@args ,cont)
-           ;; Unknown predicate: stay noisy so a mistyped goal surfaces rather
-           ;; than silently yielding no answers (see #45 -- a future catch/3 +
-           ;; existence_error will make this recoverable).
+           ;; Unknown predicate: stay noisy (a mistyped goal surfaces) but carry
+           ;; an existence_error ball so catch/3 can recover from it.
            (error 'prolog-error
-                  :reason (format nil "unknown Prolog functor ~A" ',functor))))))
+                  :reason (format nil "unknown Prolog functor ~A" ',functor)
+                  :ball (existence-error-ball :procedure ',functor))))))
 
 (defun prolog-compiler-macro (name)
   "Fetch the compiler macro for a Prolog predicate."
@@ -855,10 +888,11 @@ resource bound is exceeded.  A no-op when no bound is in effect."
   (when *inference-budget*
     (when (> (incf *inference-count*) *inference-budget*)
       (error 'prolog-resource-error
-             :reason (format nil "inference budget exceeded (~D)"
-                             *inference-budget*))))
+             :reason (format nil "inference budget exceeded (~D)" *inference-budget*)
+             :ball (resource-error-ball :inferences))))
   (when (and *query-deadline* (>= (get-internal-real-time) *query-deadline*))
-    (error 'prolog-resource-error :reason "query timeout exceeded")))
+    (error 'prolog-resource-error :reason "query timeout exceeded"
+           :ball (resource-error-ball :time))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Effect partitioning (#45 Phase 1).
@@ -900,7 +934,8 @@ always allowed and are not tagged.")
   (unless (or (eq *allowed-effects* t)
               (member effect *allowed-effects*))
     (error 'prolog-permission-error
-           :reason (format nil "~A is not permitted in this query" effect))))
+           :reason (format nil "~A is not permitted in this query" effect)
+           :ball (permission-error-ball effect :query nil))))
 
 (defun plist-alist (plist)
   "Transform a plist into an alist."
