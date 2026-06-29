@@ -207,6 +207,7 @@
                (:file "common")
                (:file "shortest-path")
                (:file "structure")
+               (:file "ranking")
                (:file "projection")))
 
 (defsystem graph-db/algorithms-test
@@ -221,6 +222,7 @@
                (:file "fib-heap-tests")
                (:file "shortest-path-tests")
                (:file "structure-tests")
+               (:file "ranking-tests")
                (:file "projection-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test

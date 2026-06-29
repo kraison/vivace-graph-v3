@@ -19,6 +19,8 @@
                 #:out-degree #:in-degree #:degree #:degree-distribution
                 #:distance-map #:connected-components #:spanning-tree
                 #:eccentricity #:graph-center
+                #:page-rank #:page-rank-distribution #:hub-authority-values
+                #:sim-rank
                 #:adjacent-vertices #:all-vertices
                 #:with-algorithm-snapshot #:algorithm-vertex
                 #:with-graph-projection #:build-projection

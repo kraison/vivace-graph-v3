@@ -307,6 +307,11 @@
            #:spanning-tree
            #:eccentricity
            #:graph-center
+           ;; -- ranking (Mode B native)
+           #:page-rank
+           #:page-rank-distribution
+           #:hub-authority-values
+           #:sim-rank
            ;; -- in-memory projection (Mode A)
            #:with-graph-projection
            #:build-projection
