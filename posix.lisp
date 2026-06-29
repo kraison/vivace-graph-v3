@@ -18,12 +18,21 @@
 
 ;;; ---------------------------------------------------------------------------
 ;;; Constants.  open(2) flags, lseek(2) whence, mmap(2) prot/flags, msync flags.
-;;; Several of these differ between Darwin and Linux -- the gated ones are the
-;;; whole reason this shim is platform-aware rather than a blind libc call.
+;;; Several differ between Darwin and Linux/Bionic.  CRUCIAL for cross-compiling:
+;;; these are evaluated at COMPILE time against the HOST's *features*, so a plain
+;;; #+darwin gate would bake Mac values into an Android (Linux) target.  Pick the
+;;; Linux/Bionic values whenever the TARGET is Linux-like: either we're building
+;;; for Android (the build pushes :graph-db-android) or the host itself isn't
+;;; Darwin.  Only a native Darwin build (no android flag) takes the Darwin values.
 ;;; ---------------------------------------------------------------------------
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (when (or (member :graph-db-android *features*)
+            (not (member :darwin *features*)))
+    (pushnew :graph-db-posix-linux *features*)))
+
 (defconstant +o-rdonly+ 0)
 (defconstant +o-rdwr+   2)
-(defconstant +o-creat+  #+darwin #x0200 #-darwin #o100) ; Darwin 0x200, Linux 0100
+(defconstant +o-creat+  #+graph-db-posix-linux #o100 #-graph-db-posix-linux #x0200)
 
 (defconstant +seek-set+ 0)
 (defconstant +seek-end+ 2)
@@ -35,10 +44,10 @@
 (defconstant +map-shared+    #x01)
 (defconstant +map-private+   #x02)
 (defconstant +map-fixed+     #x10)
-(defconstant +map-anonymous+ #+darwin #x1000 #-darwin #x20)
-(defconstant +map-noreserve+ #+darwin #x40   #-darwin #x4000)
+(defconstant +map-anonymous+ #+graph-db-posix-linux #x20   #-graph-db-posix-linux #x1000)
+(defconstant +map-noreserve+ #+graph-db-posix-linux #x4000 #-graph-db-posix-linux #x40)
 
-(defconstant +ms-sync+       #+darwin #x10    #-darwin #x04) ; Darwin 16, Linux 4
+(defconstant +ms-sync+       #+graph-db-posix-linux #x04   #-graph-db-posix-linux #x10) ; Linux 4, Darwin 16
 
 ;; (void *)-1 as an unsigned 64-bit address: mmap's failure sentinel (MAP_FAILED).
 (defconstant +map-failed-address+ (1- (expt 2 64)))
@@ -123,5 +132,5 @@ pointer, signals on MAP_FAILED."
   (cffi:with-foreign-object (tv :uint8 16)
     (cffi:foreign-funcall "gettimeofday" :pointer tv :pointer (cffi:null-pointer) :int)
     (values (cffi:mem-ref tv :int64 0)
-            #+darwin (cffi:mem-ref tv :int32 8)
-            #-darwin (cffi:mem-ref tv :int64 8))))
+            #-graph-db-posix-linux (cffi:mem-ref tv :int32 8)  ; Darwin suseconds_t = 32-bit
+            #+graph-db-posix-linux (cffi:mem-ref tv :int64 8)))) ; LP64 Linux = 64-bit

@@ -17,7 +17,6 @@
   :version "2.0"
   :depends-on (:bordeaux-threads
                :alexandria
-               :trivial-shell
                :iterate
                :cffi
                :cl-ppcre
@@ -31,10 +30,14 @@
                :local-time
                :ieee-floats
                :cl-json
-               :log4cl
+               ;; log4cl's compile-time machinery breaks ECL cross-compilation;
+               ;; the Android core build sets :graph-db-stub-log and uses the
+               ;; no-op log-stub instead.  Desktop/SBCL keeps real log4cl.
+               #-graph-db-stub-log :log4cl
                :md5)
   :components (;;(:file "uuid")
-               (:file "package")
+               #+graph-db-stub-log (:file "log-stub")
+               (:file "package" #+graph-db-stub-log :depends-on #+graph-db-stub-log ("log-stub"))
                (:file "cl-store-ecl" :depends-on ("package"))
                (:file "globals" :depends-on ("package"))
                (:file "conditions" :depends-on ("package"))
@@ -100,7 +103,8 @@
                :hunchentoot
                :ningle
                :clack
-               :usocket)
+               :usocket
+               :trivial-shell)
   :serial t
   :components ((:file "transaction-streaming")
                (:file "rest"))
