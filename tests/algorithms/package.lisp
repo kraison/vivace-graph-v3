@@ -29,5 +29,6 @@
                 #:all-pairs-shortest-paths #:apsp-distance #:apsp-path
                 #:graph-clustering #:minimum-cut
                 #:maximum-flow #:bipartite-p #:maximum-matching
-                #:generate-graph)
+                #:generate-graph
+                #:import-gml #:import-pajek #:graph->dot #:visualize)
   (:export #:run-algorithm-tests))

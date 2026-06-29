@@ -332,4 +332,9 @@
            #:maximum-matching
            ;; -- random graph generation (transactional builders)
            #:generate-graph
+           ;; -- io: import + Graphviz export (optional graph-db/algorithms-io)
+           #:import-gml
+           #:import-pajek
+           #:graph->dot
+           #:visualize
            ))

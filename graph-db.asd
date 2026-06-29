@@ -213,10 +213,22 @@
                (:file "flow")
                (:file "generation")))
 
+;; OPTIONAL io add-on: GML/Pajek import + Graphviz export.  Kept separate so the
+;; parsing deps (yacc, dso-lex, parse-number) stay out of the core algorithm
+;; add-on and the embeddable core.
+(defsystem graph-db/algorithms-io
+  :name "VivaceGraph graph-algorithms IO"
+  :description "Optional GML/Pajek import + Graphviz export for graph-db/algorithms."
+  :depends-on (:graph-db/algorithms :cl-ppcre :yacc :dso-lex :parse-number
+               :trivial-shell)
+  :pathname "algorithms/"
+  :serial t
+  :components ((:file "io")))
+
 (defsystem graph-db/algorithms-test
   :name "VivaceGraph graph-algorithms test suite"
   :description "FiveAM tests for graph-db/algorithms."
-  :depends-on (:graph-db/algorithms :fiveam)
+  :depends-on (:graph-db/algorithms :graph-db/algorithms-io :fiveam)
   :pathname "tests/algorithms/"
   :serial t
   :components ((:file "package")
@@ -229,7 +241,8 @@
                (:file "projection-tests")
                (:file "dense-tests")
                (:file "flow-tests")
-               (:file "generation-tests"))
+               (:file "generation-tests")
+               (:file "io-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test
                                               :run-algorithm-tests)
