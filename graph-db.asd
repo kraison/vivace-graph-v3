@@ -3,8 +3,15 @@
 (defpackage :graph-db-system (:use :cl :asdf))
 (in-package :graph-db-system)
 
-(defsystem graph-db
-  :name "VivaceGraph"
+;; CORE: the embeddable engine -- storage (mmap), graph, spatial index, prolog
+;; query, transactions, on-disk WAL/backup.  NO HTTP server and NO network
+;; replication transport, so it drops :hunchentoot :ningle :clack :usocket.
+;; This is the target for the offline Android field app (cross-compiled under
+;; ECL); the app calls in-process, not over HTTP.  The full :graph-db system
+;; below is core + the two network leaves and stays behaviour-identical for
+;; existing consumers (mine-action, odm).
+(defsystem graph-db/core
+  :name "VivaceGraph (embeddable core)"
   :maintainer "Kevin Raison"
   :author "Kevin Raison <last name @ chatsubo dot net>"
   :version "2.0"
@@ -21,14 +28,11 @@
                #+(or ccl lispworks) :closer-mop
                #+(or ccl lispworks) :trivial-timeout
                :cl-store
+               :cl-fad
                :local-time
                :ieee-floats
                :cl-json
-               :hunchentoot
-               :ningle
-               :clack
                :log4cl
-               :usocket
                :md5)
   :components (;;(:file "uuid")
                (:file "package")
@@ -73,7 +77,6 @@
                (:file "transactions" :depends-on ("graph-class" "type-index" "vev-index" "ve-index" "edge" "vertex" "gc" "spatial-index"))
                (:file "transaction-restore" :depends-on ("transactions"))
                (:file "transaction-log-streaming" :depends-on ("transactions"))
-               (:file "transaction-streaming" :depends-on ("transaction-log-streaming" "mailbox"))
                (:file "backup" :depends-on ("edge"))
                (:file "replication" :depends-on ("backup"))
                (:file "txn-log" :depends-on ("replication"))
@@ -82,8 +85,25 @@
                (:file "prolog-functors" :depends-on ("prologc" "geometry" "geometry-ops"))
                (:file "spatial-query" :depends-on ("prolog-functors" "transactions" "spatial-index" "geometry-ops"))
                (:file "interface" :depends-on ("schema" "edge" "vertex" "views"))
-               (:file "traverse" :depends-on ("interface"))
-               (:file "rest" :depends-on ("traverse")))
+               (:file "traverse" :depends-on ("interface"))))
+
+;; FULL: core + the network layers.  transaction-streaming (usocket master/slave
+;; replication transport) and rest (clack/ningle HTTP API).  graph-db/core has
+;; already compiled+loaded all engine files, so these two need no intra-file
+;; :depends-on -- the system-level dependency guarantees order.
+(defsystem graph-db
+  :name "VivaceGraph"
+  :maintainer "Kevin Raison"
+  :author "Kevin Raison <last name @ chatsubo dot net>"
+  :version "2.0"
+  :depends-on (:graph-db/core
+               :hunchentoot
+               :ningle
+               :clack
+               :usocket)
+  :serial t
+  :components ((:file "transaction-streaming")
+               (:file "rest"))
   :in-order-to ((test-op (test-op :graph-db/test))))
 
 (defsystem graph-db/concurrency-test

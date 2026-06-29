@@ -121,5 +121,19 @@
 (defgeneric start-replication (graph &key package))
 (defgeneric stop-replication (graph))
 
+;; Base no-op methods: a plain (non-replicated) graph has no transport, but
+;; make-graph/open-graph always call these.  They live here in the core so the
+;; embeddable engine (graph-db/core) can open a graph without the network
+;; replication transport.  The real master-graph/slave-graph methods (usocket
+;; listener/slave threads) are in transaction-streaming.lisp (full graph-db).
+(defmethod start-replication ((graph graph) &key package)
+  (declare (ignore package))
+  ;; noop
+  )
+
+(defmethod stop-replication ((graph graph))
+  ;; noop
+  )
+
 (defun lookup-graph (name)
   (gethash name *graphs*))
