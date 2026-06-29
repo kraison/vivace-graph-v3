@@ -20,7 +20,6 @@
                :trivial-shell
                :iterate
                :cffi
-               :osicat
                :cl-ppcre
                :uuid
                :split-sequence
@@ -39,14 +38,15 @@
                (:file "cl-store-ecl" :depends-on ("package"))
                (:file "globals" :depends-on ("package"))
                (:file "conditions" :depends-on ("package"))
+               (:file "posix" :depends-on ("package"))
                (:file "utilities" :depends-on ("globals"))
                (:file "queue" :depends-on ("utilities"))
                (:file "mailbox" :depends-on ("queue"))
                #+(or sbcl lispworks ecl) (:file "rw-lock" :depends-on ("queue"))
-               #+(or sbcl lispworks ecl) (:file "mmap" :depends-on ("rw-lock"))
-               #-(or sbcl lispworks ecl) (:file "mmap" :depends-on ("queue"))
+               #+(or sbcl lispworks ecl) (:file "mmap" :depends-on ("rw-lock" "posix"))
+               #-(or sbcl lispworks ecl) (:file "mmap" :depends-on ("queue" "posix"))
                (:file "pcons" :depends-on ("mmap"))
-               (:file "node-id" :depends-on ("package"))
+               (:file "node-id" :depends-on ("package" "posix"))
                (:file "buffer-pool" :depends-on ("pcons" "node-id"))
                (:file "serialize" :depends-on ("conditions" "buffer-pool" "cl-store-ecl"))
                (:file "geometry" :depends-on ("serialize"))
@@ -74,7 +74,7 @@
                (:file "vertex" :depends-on ("primitive-node"))
                (:file "edge" :depends-on ("vertex"))
                (:file "gc" :depends-on ("edge" "vertex" "views"))
-               (:file "transactions" :depends-on ("graph-class" "type-index" "vev-index" "ve-index" "edge" "vertex" "gc" "spatial-index"))
+               (:file "transactions" :depends-on ("graph-class" "type-index" "vev-index" "ve-index" "edge" "vertex" "gc" "spatial-index" "posix"))
                (:file "transaction-restore" :depends-on ("transactions"))
                (:file "transaction-log-streaming" :depends-on ("transactions"))
                (:file "backup" :depends-on ("edge"))

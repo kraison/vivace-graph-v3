@@ -1509,10 +1509,10 @@ and it reads these patched bytes, never the .txn files)."
   ;; Use POSIX rename(2) (atomic; replaces an existing target) rather than
   ;; cl:rename-file.  SBCL/ECL's rename-file already overwrites per POSIX, but
   ;; CCL's signals "File exists" when the target exists — which intermittently
-  ;; crashed concurrent-stress on CCL.  osicat-posix:rename gives portable,
-  ;; atomic, overwrite-on-rename behavior across all implementations.
-  (osicat-posix:rename (namestring tmp)
-                       (namestring (transaction-pathname transaction)))
+  ;; crashed concurrent-stress on CCL.  %posix-rename gives portable, atomic,
+  ;; overwrite-on-rename behavior across all implementations.
+  (%posix-rename (namestring tmp)
+                 (namestring (transaction-pathname transaction)))
   (let ((tm (transaction-manager transaction)))
     (when (master-graph-p (graph tm))
       (serialize-uint64 (bytes transaction)

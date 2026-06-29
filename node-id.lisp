@@ -8,7 +8,7 @@
     (declare (optimize (speed 3) (safety 0)))
     (multiple-value-bind (sec msec)
         #+sbcl (sb-ext:get-time-of-day)
-        #-sbcl (osicat-posix:gettimeofday)
+        #-sbcl (%posix-gettimeofday)
         (let* ((total-bytes 40)
                (vec (make-array total-bytes :element-type '(unsigned-byte 8)))
                (offset 0))
