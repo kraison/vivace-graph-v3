@@ -330,4 +330,6 @@
            #:maximum-flow
            #:bipartite-p
            #:maximum-matching
+           ;; -- random graph generation (transactional builders)
+           #:generate-graph
            ))

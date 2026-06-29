@@ -28,5 +28,6 @@
                 #:projection-shortest-path
                 #:all-pairs-shortest-paths #:apsp-distance #:apsp-path
                 #:graph-clustering #:minimum-cut
-                #:maximum-flow #:bipartite-p #:maximum-matching)
+                #:maximum-flow #:bipartite-p #:maximum-matching
+                #:generate-graph)
   (:export #:run-algorithm-tests))

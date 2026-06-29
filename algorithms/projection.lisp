@@ -38,6 +38,8 @@
            ;; max flow / matching (methods defined in flow.lisp)
            #:capacity #:find-maximum-flow #:compute-maximum-flow
            #:bipartite? #:compute-maximum-matching
+           ;; random graph generation (methods defined in generation.lisp)
+           #:generate-random-graph #:s-point
            ;; sparse array
            #:make-sparse-array #:saref #:row-count #:col-count))
 
@@ -147,6 +149,7 @@
    (ids :accessor ids :initarg :ids :initform (make-hash-table))
    (last-id :accessor last-id :initarg :id :initform -1)
    (edges :accessor edges :initarg :edges :initform 0)
+   (s-point :accessor s-point :initarg :s-point :initform 0)  ; barabasi saturation
    (degree-table :accessor degree-table :initform (make-hash-table))
    (matrix :accessor matrix :initarg :matrix
            :initform (make-sparse-array '(0 0) :adjustable t :initial-element 0))))
@@ -165,8 +168,9 @@
 
 (defmethod undirected? ((graph graph)) (null (directed? graph)))
 
-(defun make-graph (&key directed? (node-comparator 'equal))
+(defun make-graph (&key directed? (node-comparator 'equal) (saturation-point 0))
   (make-instance (if directed? 'directed-graph 'graph)
+                 :s-point saturation-point
                  :nodes (make-hash-table :test node-comparator)))
 
 (defmethod node-count ((graph graph)) (hash-table-count (nodes graph)))
