@@ -297,6 +297,16 @@
            #:shortest-path
            #:a-star
            #:single-source-shortest-paths
+           ;; -- structure (Mode B native)
+           #:out-degree
+           #:in-degree
+           #:degree
+           #:degree-distribution
+           #:distance-map
+           #:connected-components
+           #:spanning-tree
+           #:eccentricity
+           #:graph-center
            ;; -- in-memory projection (Mode A)
            #:with-graph-projection
            #:build-projection

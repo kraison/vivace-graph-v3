@@ -16,6 +16,9 @@
                 #:weight #:from #:to
                 ;; algorithm API under test
                 #:shortest-path #:a-star #:single-source-shortest-paths
+                #:out-degree #:in-degree #:degree #:degree-distribution
+                #:distance-map #:connected-components #:spanning-tree
+                #:eccentricity #:graph-center
                 #:adjacent-vertices #:all-vertices
                 #:with-algorithm-snapshot #:algorithm-vertex
                 #:with-graph-projection #:build-projection

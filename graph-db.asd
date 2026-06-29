@@ -206,6 +206,7 @@
   :components ((:file "fib-heap")
                (:file "common")
                (:file "shortest-path")
+               (:file "structure")
                (:file "projection")))
 
 (defsystem graph-db/algorithms-test
@@ -219,6 +220,7 @@
                (:file "fixtures")
                (:file "fib-heap-tests")
                (:file "shortest-path-tests")
+               (:file "structure-tests")
                (:file "projection-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test
