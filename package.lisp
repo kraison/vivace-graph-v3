@@ -287,4 +287,21 @@
            #:geo-distance/5
            #:geo-near/5
            #:geo-within/3
+           ;; graph algorithms (optional graph-db/algorithms add-on)
+           ;; -- shared
+           #:with-algorithm-snapshot
+           #:algorithm-vertex
+           #:adjacent-vertices
+           #:all-vertices
+           ;; -- shortest paths (Mode B native)
+           #:shortest-path
+           #:a-star
+           #:single-source-shortest-paths
+           ;; -- in-memory projection (Mode A)
+           #:with-graph-projection
+           #:build-projection
+           #:projection
+           #:projection-index
+           #:projection-vertex
+           #:projection-shortest-path
            ))

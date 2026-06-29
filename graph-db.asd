@@ -193,6 +193,38 @@
   :perform (test-op (op c)
                     (uiop:symbol-call :graph-db/perf-test :run-perf)))
 
+;; OPTIONAL graph-algorithms add-on: analysis algorithms (shortest path,
+;; ranking, components, flow, ...) ported from the standalone graph-utils
+;; library onto VivaceGraph's persistent MVCC model.  Depends only on the
+;; embeddable core (no HTTP), so it is usable from graph-db/core deployments.
+(defsystem graph-db/algorithms
+  :name "VivaceGraph graph algorithms"
+  :description "Graph analysis algorithms (Mode B native + Mode A projection)."
+  :depends-on (:graph-db/core)
+  :pathname "algorithms/"
+  :serial t
+  :components ((:file "fib-heap")
+               (:file "common")
+               (:file "shortest-path")
+               (:file "projection")))
+
+(defsystem graph-db/algorithms-test
+  :name "VivaceGraph graph-algorithms test suite"
+  :description "FiveAM tests for graph-db/algorithms."
+  :depends-on (:graph-db/algorithms :fiveam)
+  :pathname "tests/algorithms/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "fixtures")
+               (:file "fib-heap-tests")
+               (:file "shortest-path-tests")
+               (:file "projection-tests"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call :graph-db/algorithms-test
+                                              :run-algorithm-tests)
+                      (error "graph-db algorithm tests failed."))))
+
 ;; OPTIONAL GEOS add-on: a thin in-house CFFI binding to libgeos_c giving the
 ;; spatial layer exact polygon topology, validity repair, and distance.  Core
 ;; graph-db does NOT depend on this; loading it is what flips *geos-available-p*.
