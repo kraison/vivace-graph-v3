@@ -319,4 +319,11 @@
            #:projection-index
            #:projection-vertex
            #:projection-shortest-path
+           ;; -- dense / matrix family (Mode A projection)
+           #:all-pairs-shortest-paths
+           #:all-pairs-result
+           #:apsp-distance
+           #:apsp-path
+           #:graph-clustering
+           #:minimum-cut
            ))

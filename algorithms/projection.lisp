@@ -30,6 +30,11 @@
            #:add-edge #:edge-weight #:edge-count #:map-edges #:list-edges
            #:neighbors #:outbound-neighbors #:inbound-neighbors
            #:find-shortest-path
+           ;; dense / matrix family (methods defined in dense.lisp)
+           #:all-pairs-shortest-paths #:reconstruct-path-all-pairs
+           #:calculate-shortest-paths #:distance-map #:find-components
+           #:score-edges #:cluster #:minimal-cut #:minimal-cut!
+           #:copy-graph #:delete-edge
            ;; sparse array
            #:make-sparse-array #:saref #:row-count #:col-count))
 

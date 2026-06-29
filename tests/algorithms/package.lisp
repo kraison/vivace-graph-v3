@@ -25,5 +25,7 @@
                 #:with-algorithm-snapshot #:algorithm-vertex
                 #:with-graph-projection #:build-projection
                 #:projection-index #:projection-vertex
-                #:projection-shortest-path)
+                #:projection-shortest-path
+                #:all-pairs-shortest-paths #:apsp-distance #:apsp-path
+                #:graph-clustering #:minimum-cut)
   (:export #:run-algorithm-tests))

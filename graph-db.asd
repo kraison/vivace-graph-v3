@@ -208,7 +208,8 @@
                (:file "shortest-path")
                (:file "structure")
                (:file "ranking")
-               (:file "projection")))
+               (:file "projection")
+               (:file "dense")))
 
 (defsystem graph-db/algorithms-test
   :name "VivaceGraph graph-algorithms test suite"
@@ -223,7 +224,8 @@
                (:file "shortest-path-tests")
                (:file "structure-tests")
                (:file "ranking-tests")
-               (:file "projection-tests"))
+               (:file "projection-tests")
+               (:file "dense-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test
                                               :run-algorithm-tests)
