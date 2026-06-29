@@ -209,7 +209,8 @@
                (:file "structure")
                (:file "ranking")
                (:file "projection")
-               (:file "dense")))
+               (:file "dense")
+               (:file "flow")))
 
 (defsystem graph-db/algorithms-test
   :name "VivaceGraph graph-algorithms test suite"
@@ -225,7 +226,8 @@
                (:file "structure-tests")
                (:file "ranking-tests")
                (:file "projection-tests")
-               (:file "dense-tests"))
+               (:file "dense-tests")
+               (:file "flow-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test
                                               :run-algorithm-tests)

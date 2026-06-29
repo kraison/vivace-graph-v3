@@ -326,4 +326,8 @@
            #:apsp-path
            #:graph-clustering
            #:minimum-cut
+           ;; -- flow family (Mode A projection)
+           #:maximum-flow
+           #:bipartite-p
+           #:maximum-matching
            ))

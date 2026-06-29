@@ -35,6 +35,9 @@
            #:calculate-shortest-paths #:distance-map #:find-components
            #:score-edges #:cluster #:minimal-cut #:minimal-cut!
            #:copy-graph #:delete-edge
+           ;; max flow / matching (methods defined in flow.lisp)
+           #:capacity #:find-maximum-flow #:compute-maximum-flow
+           #:bipartite? #:compute-maximum-matching
            ;; sparse array
            #:make-sparse-array #:saref #:row-count #:col-count))
 

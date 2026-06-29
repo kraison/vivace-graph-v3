@@ -27,5 +27,6 @@
                 #:projection-index #:projection-vertex
                 #:projection-shortest-path
                 #:all-pairs-shortest-paths #:apsp-distance #:apsp-path
-                #:graph-clustering #:minimum-cut)
+                #:graph-clustering #:minimum-cut
+                #:maximum-flow #:bipartite-p #:maximum-matching)
   (:export #:run-algorithm-tests))
