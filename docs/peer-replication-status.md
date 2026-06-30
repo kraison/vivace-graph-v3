@@ -14,8 +14,8 @@ the same state.
 
 ## 1. Where we are
 
-**Milestone M1 (foundation) COMPLETE; M2 (pull MVP) STARTED.** All committed + pushed on
-`peer-replication`:
+**Milestone M1 (foundation) COMPLETE; M2 (pull MVP) COMPLETE.** Committed on `peer-replication`
+(M1 also pushed; the M2 commit `82f5513` is local — push is explicit-only):
 
 | commit | what |
 |---|---|
@@ -25,25 +25,60 @@ the same state.
 | `60949e9` | **WP-2** device journaling (`journals-own-feed-p`) + **WP-3** applied-op-id index |
 | `5bab412` | **WP-0** peer-meta envelope + op-id/lamport minting at authoring |
 | `2f4112d` | **WP-5** authority-scoped closed-subgraph export (`replication.lisp`) |
+| `82f5513` | **WP-4 + WP-6 + WP-8** hub/device pull transport (`peer-streaming.lisp`) + 2-process test |
 
 Net: a `peer-graph` constructs/lifecycles; a device journals its own commits into a push feed with
 a per-transaction peer-meta envelope (origin-id + op-id + lamport + op-class); a durable op-id index
-dedups; and `scope-node-set`/`reconcile-manifest`/`filtered-backup` compute the closed
-authority-scoped subgraph a device should hold. Master/slave/plain graphs are untouched throughout.
-Every commit was verified with a standalone SBCL smoke test.
+dedups; `scope-node-set`/`reconcile-manifest`/`filtered-backup` compute the closed authority-scoped
+subgraph a device should hold; and **`peer-streaming.lisp` ships it over the wire** — a hub serves
+authority-scoped pulls and a device pulls its closed disclosable subgraph and applies it read-only,
+through a single-writer funnel, behind a same-major schema-compat handshake. Master/slave/plain
+graphs are untouched throughout. M2 is verified end-to-end by a two-process loopback test
+(`tests/peer-replication/`, 12/12 green); the existing master/slave test still passes 16/16.
 
-**Working tree:** `docs/peer-replication-status.md` (this file) is new/uncommitted. There are also
-**pre-existing unrelated working-tree edits** (edge.lisp, index-list.lisp, rest.lisp, skip-list*.lisp,
-vertex.lisp, vev-index.lisp, views.lisp) that predate this work — **do not stage or commit them**;
-they are not part of peer-replication. Stage only the specific files you change.
+**What `82f5513` added** (the network half — design §8/§9, plan WP-4/6/8):
+- `peer-streaming.lisp`: peer-protocol v1 wire codec (`#\M` peer-meta for tx-bearing ops, `#\U`
+  self-describing purge packet, `#\p` plist for handshake/control/ack; id lists ride the plist
+  channel as concatenated hex); **WP-6** same-major schema-compat gate (not digest-equality, PT-6);
+  authority-scoped pull (state-creates vertices-before-edges + purges, manifest advances **only on
+  device ack**, PT-4); **WP-8** single-writer apply funnel (socket thread decodes+enqueues, one
+  writer applies, PT-5); `start/stop-replication` specialized on `peer-graph` (hub accept loop /
+  device writer — no `graph.lisp` lifecycle changes).
+- `graph-class.lisp`: `peer-graph` gains `peer-schema-version` (app-settable, default `(1 0)`) +
+  the peer-writer mailbox/thread slots.
+- `tests/peer-replication/`: two-process harness (hub + device, like `tests/replication/`, since
+  process-global `*graphs*`/schema/`*graph*` preclude an in-image two-graph test).
+
+**Working tree:** the M2 work is committed. The **pre-existing unrelated working-tree edits**
+(edge.lisp, index-list.lisp, rest.lisp, skip-list*.lisp, vertex.lisp, vev-index.lisp, views.lisp)
+still predate this work and remain uncommitted — **do not stage or commit them**; they are not part
+of peer-replication. Stage only the specific files you change.
 
 ---
 
-## 2. How to verify (use the Lisp MCP; standalone SBCL is the fallback)
+## 2. How to verify
 
-A Lisp MCP is now attached. Discover it with `ToolSearch` (keywords: `lisp`, `eval`, `swank`,
-`slynk`, `sbcl`, `repl`) and load its eval tool. Use it to keep a **warm graph-db image** so you can
-build a hub + device and watch a sync over loopback in one process (the big win for WP-4).
+**End-to-end peer sync (the primary check):** the two-process loopback harness
+```
+tests/peer-replication/run-peer-test.sh          # SBCL by default
+REPL_LISP_CMD="ecl --load" tests/peer-replication/run-peer-test.sh   # ECL
+```
+Prints each check and `RESULT: PASS`/`FAIL`. It runs the hub and device as **two OS processes**
+(the only faithful setup — process-global `*graphs*`/schema/`*graph*` preclude an in-image
+two-graph test, exactly as for `tests/replication/`). Covers seed = the closed disclosable closure
+(fail-closed omission), scope-exit purge, and schema-compat (minor drift syncs, major bump
+rejected). Don't forget the master/slave regression: `tests/replication/run-replication-test.sh`.
+
+**Single-graph pieces (warm Lisp MCP image):** a Lisp MCP (`cl-mcp-server`) is attached. Discover it
+with `ToolSearch` (keywords: `lisp`, `eval`, `sbcl`) → `mcp__lisp__evaluate-lisp` / `load-system` /
+`load-file`. **NOTE:** pass the package via the tool's `package` arg (e.g. `"GRAPH-DB"`), not an
+`(in-package …)` form — the reader reads all forms in one package. Use it to keep a **warm graph-db
+image** for anything that needs only one graph — the wire codec round-trips, `scope-node-set`
+closure/fail-closed, `apply-peer-purge` — but the actual hub↔device sync must go through the
+two-process harness above (an in-image two-graph sync does NOT work). After editing a `*.lisp`,
+`load-file` it (compile t) to recompile; if you reload `graph-class.lisp` it re-runs the
+`start/stop-replication` `defgeneric`s and drops the `peer-graph` methods, so reload
+`peer-streaming.lisp` after it.
 
 Bring the system up in the image once:
 ```lisp
@@ -73,43 +108,56 @@ Quick live sanity check once the image is up:
 
 ---
 
-## 3. Immediate next task: WP-4 (transport) — the rest of M2
+## 3. WP-4 (transport) — DONE (commit `82f5513`)
 
-Goal: a hub exports an authority-scoped closed subgraph to a device, which applies it (read-only),
-plus an ongoing cursor-resumed pull. This is the shippable read-only field app (app Phase 2).
+M2's network half shipped: a hub serves an authority-scoped closed subgraph to a device, which
+applies it read-only through a single-writer funnel, behind a same-major schema-compat handshake.
+This is the shippable read-only field app (app Phase 2). All in **`peer-streaming.lisp`** (full
+`graph-db` system, after `transaction-streaming.lisp`), built distinct from but reusing the
+master/slave packet primitives. Sub-step status:
 
-New file **`peer-streaming.lisp`** in the FULL `graph-db` system (NOT `graph-db/core`) — add it to
-`graph-db.asd` right after `transaction-streaming.lisp` (the full-system component list, ~line 115),
-since it needs usocket. Model on, but keep DISTINCT from, the master/slave transport in
-`transaction-streaming.lisp` (`make-slave-session-handler` :260, `slave-loop` :413,
-`server-accept-loop` :295, `stream-transaction-to-disk` :349) and the streaming in
-`transaction-log-streaming.lisp`.
+1. **`start-replication`/`stop-replication` on `peer-graph`** — DONE. Hub role → `peer-server-
+   accept-loop` on `replication-port`; device role → starts the single-writer thread; pulls are
+   driven on demand by `peer-sync` (a Branch A device is read-only, so it pulls when it has
+   connectivity rather than holding a live stream). Reuses the existing generics, so make/open/
+   close-graph already call them — no `graph.lisp` changes.
+2. **Handshake** — DONE. Hub announces (`peer-hub-handshake-plist`); device sends `origin-id` +
+   cursors + `schema-major/minor` + key; hub authenticates against `device-registry`. **WP-6**:
+   gate is same-major *compatibility*, not digest-equality (design §14 / PT-6); digest carried as a
+   within-major integrity signal; `peer-schema-version` is an app-settable slot (default `(1 0)`).
+3. **Pull phase** — DONE (membership path). `scope-node-set` (WP-5) → state-creates (vertices before
+   edges, closed rule) + purges (manifest \ scope). This is the design-blessed every-connection
+   full-diff v1 (§13): idempotent creates carry both new-and-updated nodes. Manifest advances **only
+   on device ack** (PT-4). **DEFERRED:** the cursor-resumed in-scope *authored-op* stream (a
+   volume/latency optimization) — see §3a; ongoing changes already converge via reconciliation.
+4. **WP-8** — DONE. The receive side decodes + ENQUEUES (`peer-read-and-enqueue`); a single
+   `peer-writer-loop` applies. No inline apply on the socket thread (PT-5).
+5. **Push phase** — NOT YET (device is read-only in Phase 2); the hub-side re-home apply is
+   **WP-7 / M3**. `apply-peer-authored-op` is present on the device for forward-compat but the hub
+   does not emit authored ops yet.
 
-Reuse verbatim: `read-packet`/`write-packet`/`read-plist-packet`/`write-plist-packet`, the 8-byte
-size framing, and `apply-transaction` for applying. The peer feed entries are
-`[peer-meta packet][tx-header packet][write packets…]` — read the peer-meta first with
-`deserialize-peer-meta` (transactions.lisp), then the standard tx packets.
+### 3a. Immediate next task: the cursor-resumed authored-op stream (rest of WP-4.3)
 
-Sub-steps (each independently testable in the warm image):
-1. **`start-replication`/`stop-replication` methods specialized on `peer-graph`** (they're currently
-   inherited no-ops). Hub role → an accept loop on `replication-port`; device role → a connect loop
-   to `peer-host`:`replication-port`. (Reusing the existing generics means make/open/close-graph
-   already call them — no lifecycle changes needed.)
-2. **Handshake** — reuse the plist handshake; device sends `origin-id`, `pull-cursor`, `push-ack`,
-   `schema-version`; hub authenticates against its `device-registry`, loads the device's scope +
-   `apply-cursor` + manifest. **WP-6**: make the schema check a *compatibility* (same-major) check,
-   not digest-equality (design §14 / PT-6).
-3. **Pull phase** — manifest reconciliation (`reconcile-manifest`, WP-5, done) emitting
-   membership-creates + purges, then the cursor-resumed in-scope authored-op stream. Manifest
-   advances **only on device ack** (PT-4, disclosure-critical).
-4. **WP-8** — the device receive thread ENQUEUES received ops to a single writer (don't apply inline
-   on the socket thread); required for the single-writer funnel on ECL (PT-5).
-5. **Push phase** — wire it (device streams authored ops after `apply-cursor`) but the device is
-   read-only in Phase 2; the hub-side re-home apply is **WP-7 / M3**.
+The one deferred piece of WP-4. Implement the hub-side **in-scope authored-op stream** so live
+edits to *existing* in-scope nodes flow without a full re-pull:
+- A **peer-feed disk reader** over `replication-*.log` (entries are `[peer-meta][tx-header][writes]`
+  for a peer-graph) that, given the device `pull-cursor`, forwards authored ops whose touched
+  node-ids are in the device's scope id-set (computed during reconciliation).
+- The device already has `apply-peer-authored-op` (op-id dedup PT-1, advances `pull-cursor`,
+  `record-applied-op`) — **harden its PT-3 crash-atomicity** by persisting the authored op to a
+  `.txn` first (mirror `stream-transaction-to-disk`) so the op-id-index update commits with the
+  apply.
+- Optional live tailing (broadcast like the slave mailbox) for same-connection streaming.
 
-Then **M3**: WP-7 re-home apply (hub applies a device op as a fresh hub-origin transaction,
-preserving op-id/origin/lamport, re-journaling; `apply-peer-op` generic, simple last-applied-wins —
-merge is Branch B).
+Reuse verbatim: `read-packet`/`write-packet`, the 8-byte framing, `deserialize-peer-meta`. Model the
+log reader on `stream-replication-log`/`stream-all-packets` (`transaction-log-streaming.lisp`) but
+read the peer-meta packet first.
+
+### 3b. Then M3: push + re-home
+
+WP-7 re-home apply (hub applies a device op as a fresh hub-origin transaction, preserving
+op-id/origin/lamport, re-journaling; `apply-peer-op` generic, simple last-applied-wins — merge is
+Branch B). Wire the device→hub push (device streams authored ops after `apply-cursor`).
 
 ---
 
@@ -131,13 +179,16 @@ merge is Branch B).
 
 ---
 
-## 5. Open items / app-side asks (do NOT block WP-4)
+## 5. Open items / app-side asks (do NOT block the next task)
 
-Engine TODO (deferred): Lamport counter persistence (PT-8, Branch B); applied-op-id index pruning;
-manifest reconciliation cost model; origin-id persistence across reopen (currently passed in).
-App-side (parallel): `disclosable-p` signature + multi-tasking/retask fail-closed rule (PT-7.3);
-`find-of-type` modeling fork (lean: vertex reference slot, PT-7.1); edge-removal bucket; IMAS
-`work-stage` value set + danger rank; device-registry schema; `schema-version` major/minor scheme.
+Engine TODO (deferred): the cursor-resumed authored-op stream + its PT-3 crash-atomicity (§3a, the
+immediate next task); **manifest/cursors are in-memory** in the `peer-device` struct — durable
+persistence across hub restart is still a §13 open item; Lamport counter persistence (PT-8,
+Branch B); applied-op-id index pruning; manifest reconciliation cost model; origin-id persistence
+across reopen (currently passed in). App-side (parallel): `disclosable-p` signature + multi-tasking/
+retask fail-closed rule (PT-7.3); `find-of-type` modeling fork (lean: vertex reference slot,
+PT-7.1); edge-removal bucket; IMAS `work-stage` value set + danger rank; device-registry schema;
+`schema-version` major/minor scheme.
 
 ---
 
@@ -157,10 +208,14 @@ App-side (parallel): `disclosable-p` signature + multi-tasking/retask fail-close
 
 > Resume the VivaceGraph peer-replication work on branch `peer-replication`. Read
 > `docs/peer-replication-status.md`, then `docs/peer-replication-design.md` (v2) and
-> `docs/peer-replication-branch-a-plan.md`. M1 (WP-0/1/2/3) and WP-5 are done, committed, and
-> pushed. Next is **WP-4** (the `peer-streaming.lisp` transport: peer-graph start/stop-replication,
-> handshake with schema-compat = WP-6, pull phase via `reconcile-manifest` + cursor-resumed op
-> stream, device apply enqueued to a single writer = WP-8). Use the attached **Lisp MCP** to keep a
-> warm `graph-db` image and test a hub+device sync over loopback (fall back to standalone
-> `sbcl --load` if needed). Honor the diff-before-commit rule and don't touch the pre-existing
+> `docs/peer-replication-branch-a-plan.md`. M1 (WP-0/1/2/3) + WP-5 are done and pushed; **M2 (pull
+> MVP: WP-4 transport + WP-6 schema-compat + WP-8 single-writer apply) is done in `peer-streaming.lisp`,
+> committed locally as `82f5513` (not pushed)** and verified by `tests/peer-replication/run-peer-test.sh`
+> (12/12) with master/slave still 16/16. Next is the **cursor-resumed authored-op stream** (§3a — the
+> one deferred piece of WP-4: a peer-feed disk reader over `replication-*.log` forwarding in-scope
+> authored ops after `pull-cursor`, plus PT-3 crash-atomicity for `apply-peer-authored-op`), then
+> **M3** (WP-7 re-home apply + device→hub push). Use the attached Lisp MCP (`cl-mcp-server`,
+> `mcp__lisp__*` — pass package via the `package` arg, not `in-package`) for single-graph checks;
+> the hub↔device sync goes through the two-process harness (`tests/peer-replication/`), NOT an
+> in-image two-graph test. Honor the diff-before-commit rule and don't touch the pre-existing
 > unrelated working-tree edits.
