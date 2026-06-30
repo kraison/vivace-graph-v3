@@ -16,6 +16,25 @@
 ;;;; Coordination is via flag files under REPL_WORK.
 
 (require :asdf)
+
+;;; Disable the interactive debugger (see device.lisp for the rationale): print
+;;; the condition + a best-effort backtrace, then quit non-zero, so an unhandled
+;;; error surfaces legibly instead of hanging or cascading.  (mine-action item 2.)
+(flet ((bail (condition)
+         (format *error-output* "~&=== UNHANDLED ~S ===~%~A~%"
+                 (type-of condition) condition)
+         (ignore-errors
+           #+sbcl (sb-debug:print-backtrace :stream *error-output* :count 40)
+           #+ecl  (si::tpl-backtrace))
+         (ignore-errors (finish-output *error-output*))
+         #+sbcl (sb-ext:exit :code 70 :abort t)
+         #+ecl  (ext:quit 70)
+         #+ccl  (ccl:quit 70)
+         #-(or sbcl ecl ccl) (uiop:quit 70)))
+  (setf *debugger-hook* (lambda (c hook) (declare (ignore hook)) (bail c)))
+  #+ecl (setf ext:*invoke-debugger-hook*
+              (lambda (c hook) (declare (ignore hook)) (bail c))))
+
 (unless (find-package :ql)
   (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
 (with-open-file (s (merge-pathnames "build.log"

@@ -15,6 +15,28 @@
 ;;;; Exits 0 only if every check passes.
 
 (require :asdf)
+
+;;; Disable the interactive debugger: print the condition (and a best-effort
+;;; backtrace) then quit non-zero.  Without this an unhandled ERROR on ECL --
+;;; especially one raised in a spawned thread, outside the main HANDLER-CASE --
+;;; drops into a debugger with no tty and recurses into a STORAGE-EXHAUSTED
+;;; cascade that buries the real error.  Set as a global (not LET) so spawned
+;;; threads inherit it.  (mine-action item 2.)
+(flet ((bail (condition)
+         (format *error-output* "~&=== UNHANDLED ~S ===~%~A~%"
+                 (type-of condition) condition)
+         (ignore-errors
+           #+sbcl (sb-debug:print-backtrace :stream *error-output* :count 40)
+           #+ecl  (si::tpl-backtrace))
+         (ignore-errors (finish-output *error-output*))
+         #+sbcl (sb-ext:exit :code 70 :abort t)
+         #+ecl  (ext:quit 70)
+         #+ccl  (ccl:quit 70)
+         #-(or sbcl ecl ccl) (uiop:quit 70)))
+  (setf *debugger-hook* (lambda (c hook) (declare (ignore hook)) (bail c)))
+  #+ecl (setf ext:*invoke-debugger-hook*
+              (lambda (c hook) (declare (ignore hook)) (bail c))))
+
 (unless (find-package :ql)
   (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
 (with-open-file (s (merge-pathnames "build.log"

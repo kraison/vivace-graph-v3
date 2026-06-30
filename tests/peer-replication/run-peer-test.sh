@@ -12,9 +12,15 @@
 #   tests/peer-replication/run-peer-test.sh
 #
 # Environment overrides:
-#   REPL_LISP_CMD   how to load+run a Lisp file (default: "sbcl --non-interactive --load")
-#                   e.g. ECL:  REPL_LISP_CMD="ecl --load"
-#   REPL_PORT       TCP port for the hub listener (default: random high port)
+#   REPL_LISP_CMD       how to load+run a Lisp file for BOTH ends
+#                       (default: "sbcl --non-interactive --load"; e.g. "ecl --load")
+#   REPL_HUB_LISP_CMD   override just the hub  (default: REPL_LISP_CMD)
+#   REPL_DEVICE_LISP_CMD override just the device (default: REPL_LISP_CMD)
+#   REPL_PORT           TCP port for the hub listener (default: random high port)
+#
+# The ship-to-Android configuration is an SBCL hub and an ECL device:
+#   REPL_HUB_LISP_CMD="sbcl --non-interactive --load" \
+#   REPL_DEVICE_LISP_CMD="ecl --load" tests/peer-replication/run-peer-test.sh
 #
 # Exits 0 if the device converges to its authority-scoped subgraph on every
 # check (seed + purge + schema-compat), else 1.
@@ -22,6 +28,8 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LISP_CMD="${REPL_LISP_CMD:-sbcl --non-interactive --load}"
+HUB_LISP_CMD="${REPL_HUB_LISP_CMD:-$LISP_CMD}"
+DEVICE_LISP_CMD="${REPL_DEVICE_LISP_CMD:-$LISP_CMD}"
 PORT="${REPL_PORT:-$(( 19000 + RANDOM % 2000 ))}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vg-peer-XXXXXX")"
 
@@ -31,16 +39,16 @@ export REPL_DEVICE_DIR="$WORK/device/"
 export REPL_PORT="$PORT"
 mkdir -p "$REPL_HUB_DIR" "$REPL_DEVICE_DIR"
 
-echo "Peer-replication test: lisp='$LISP_CMD' port=$PORT work=$WORK"
+echo "Peer-replication test: hub='$HUB_LISP_CMD' device='$DEVICE_LISP_CMD' port=$PORT work=$WORK"
 
 # Hub runs in the background: commits phase 1, waits for the device to verify,
 # flips disclosure for phase 2, then exits when the device signals done.
-$LISP_CMD "$HERE/hub.lisp" > "$WORK/hub.out" 2>&1 &
+$HUB_LISP_CMD "$HERE/hub.lisp" > "$WORK/hub.out" 2>&1 &
 HPID=$!
 
 # Device runs in the foreground: waits for the hub's "ready" flag, pulls, and
 # verifies every phase.
-$LISP_CMD "$HERE/device.lisp" > "$WORK/device.out" 2>&1
+$DEVICE_LISP_CMD "$HERE/device.lisp" > "$WORK/device.out" 2>&1
 DEVICE_CODE=$?
 
 wait "$HPID" 2>/dev/null

@@ -69,6 +69,26 @@ list of 16-byte ids."
   (loop for start from 0 below (length string) by 32
         collect (peer-hex->id (subseq string start (+ start 32)))))
 
+(defun peer-portable-string (value)
+  "Coerce a STRING VALUE to a general (CHARACTER) string; pass non-strings through.
+The plist control channel serializes with *PRINT-READABLY* T (via
+WITH-STANDARD-IO-SYNTAX), under which SBCL prints a BASE-STRING -- e.g.
+(SYMBOL-NAME (GRAPH-NAME g)) -- as a specialized-array literal
+#A((n) BASE-CHAR . \"...\"), which ECL's reader cannot parse (it CARs the
+contents).  A (SIMPLE-ARRAY CHARACTER (*)) prints as a plain \"...\" on both, so
+coercing makes the handshake/auth/ack plists cross SBCL<->ECL."
+  (if (stringp value)
+      (coerce value '(simple-array character (*)))
+      value))
+
+(defun peer-write-plist (plist socket)
+  "WRITE-PLIST-PACKET with every string value coerced portable (PEER-PORTABLE-STRING),
+so peer handshake/auth/ack plists survive a cross-implementation hop.  Keys are
+keywords and pass through untouched."
+  (write-plist-packet
+   (loop for (k v) on plist by #'cddr collect k collect (peer-portable-string v))
+   socket))
+
 (alexandria:define-constant +peer-purge-type-code+ (char-code #\U))
 
 (defun serialize-purge-packet (ids)
@@ -244,7 +264,7 @@ to what the device acks -- so a dropped purge re-emits (fail-closed disclosure).
                             unless (gethash id scope-ids) collect id)))
           (when purges
             (write-purge-op socket graph purges))))))
-  (write-plist-packet (list :peer-control :pull-end) socket)
+  (peer-write-plist (list :peer-control :pull-end) socket)
   ;; Advance the manifest to exactly what the device ACKS holding (PT-4): never
   ;; to hub intent.  Over-emitting a purge next time is harmless (idempotent);
   ;; under-emitting would strand undisclosed data, so we only ever trust the ack.
@@ -265,9 +285,9 @@ distinct from it."
       (handler-case
           (unwind-protect
                (progn
-                 (write-plist-packet (peer-hub-handshake-plist graph) socket)
+                 (peer-write-plist (peer-hub-handshake-plist graph) socket)
                  (let ((device (peer-authenticate-device graph (read-plist-packet socket))))
-                   (write-plist-packet (list :peer-control :auth-ok) socket)
+                   (peer-write-plist (list :peer-control :auth-ok) socket)
                    (peer-pull-phase graph socket device)))
             (ignore-errors (usocket:socket-close socket)))
         (error (c)
@@ -477,7 +497,7 @@ pull -- a resync is just another call.  Returns the ack result plist
                (unless (peer-schema-compatible-p hub-version my-version)
                  (error 'peer-schema-incompatible-error
                         :hub-version hub-version :device-version my-version))))
-           (write-plist-packet (peer-device-auth-plist graph) socket)
+           (peer-write-plist (peer-device-auth-plist graph) socket)
            (let ((ctrl (read-plist-packet socket)))
              (unless (eq (getf ctrl :peer-control) :auth-ok)
                (error "peer auth rejected by hub: ~S" ctrl)))
@@ -490,7 +510,7 @@ pull -- a resync is just another call.  Returns the ack result plist
              (let ((reply (make-mailbox)))
                (send-message mailbox (make-peer-op :kind :barrier :reply reply))
                (let ((result (receive-message reply :timeout 30)))
-                 (write-plist-packet
+                 (peer-write-plist
                   (list :manifest-acked (peer-ids->string (getf result :applied))
                         :pull-cursor (load-highest-transaction-id graph))
                   socket)
