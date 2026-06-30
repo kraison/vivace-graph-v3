@@ -103,6 +103,12 @@
                :hunchentoot
                :ningle
                :clack
+               ;; Load Clack's Hunchentoot backend up front instead of relying on
+               ;; clack:clackup's lazy find-package-or-load at runtime: that lazy
+               ;; path re-plans :clack, which can signal ASDF SYSTEM-OUT-OF-DATE on
+               ;; some Quicklisp dists (e.g. clack + a newer lack) and silently
+               ;; leave the handler unregistered -> ":HUNCHENTOOT is unknown handler."
+               :clack-handler-hunchentoot
                :usocket
                :trivial-shell)
   :serial t
