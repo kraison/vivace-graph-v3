@@ -46,7 +46,7 @@ TOLERANCE or MAX-ITERATIONS is reached.  DAMPING is the usual teleport factor.
 Dangling nodes (no out-edges) have their mass redistributed across all nodes, so
 ranks sum to 1.  With USE-WEIGHTS-P, a node's rank is split among its out-edges
 in proportion to edge WEIGHT (otherwise uniformly).  VERTEX-TYPE / EDGE-TYPE
-narrow the population / edges."
+narrow the population / edges; each may be a single type or a list of types."
   (with-algorithm-snapshot (graph)
     (let* ((vertices (all-vertices graph vertex-type))
            (n (length vertices)))

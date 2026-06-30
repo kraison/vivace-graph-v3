@@ -60,31 +60,45 @@ its node id (UUID) vector."
 ;;; Weighted adjacency
 ;;; ------------------------------------------------------------------
 
+(defun %type-args (designator single-key include-key)
+  "Normalize an edge/vertex-type DESIGNATOR -- a single type, a LIST of types, or
+NIL -- into the keyword args to forward to the core mappers / OUTGOING-EDGES /
+INCOMING-EDGES.  A single type uses SINGLE-KEY (:edge-type / :vertex-type); a list
+uses INCLUDE-KEY (:include-edge-types / :include-vertex-types); NIL selects all.
+This is what lets the algorithm-layer EDGE-TYPE arguments accept a list."
+  (cond ((null designator) nil)
+        ((listp designator) (list include-key designator))
+        (t (list single-key designator))))
+
 (defun adjacent-vertices (vertex &key (graph *graph*) (direction :out) edge-type
                                    (weight-fn #'weight) unweighted)
   "Return a list of (NEIGHBOR-VERTEX . WEIGHT) cells adjacent to VERTEX in GRAPH.
 
 DIRECTION is :OUT (follow edges whose FROM is VERTEX -- the default), :IN (edges
-whose TO is VERTEX), or :BOTH (treat the graph as undirected).  EDGE-TYPE
-restricts to a single edge type.  WEIGHT is taken from each edge via WEIGHT-FN
-\(default #'WEIGHT); with UNWEIGHTED, every edge contributes weight 1.
+whose TO is VERTEX), or :BOTH (treat the graph as undirected).  EDGE-TYPE may be a
+single edge type OR a list of edge types (their union); NIL means all types.
+WEIGHT is taken from each edge via WEIGHT-FN (default #'WEIGHT); with UNWEIGHTED,
+every edge contributes weight 1.
 
 Runs against the live ve/vev indexes via OUTGOING-EDGES / INCOMING-EDGES, so it
 must be called inside a snapshot for a consistent view (see
 WITH-ALGORITHM-SNAPSHOT)."
-  (let ((result nil))
+  (let ((result nil)
+        (type-args (%type-args edge-type :edge-type :include-edge-types)))
     (when (or (eq direction :out) (eq direction :both))
-      (dolist (e (outgoing-edges vertex :graph graph :edge-type edge-type))
+      (dolist (e (apply #'outgoing-edges vertex :graph graph type-args))
         (let ((nv (lookup-vertex (to e) :graph graph)))
           (when nv
             (push (cons nv (if unweighted 1 (funcall weight-fn e))) result)))))
     (when (or (eq direction :in) (eq direction :both))
-      (dolist (e (incoming-edges vertex :graph graph :edge-type edge-type))
+      (dolist (e (apply #'incoming-edges vertex :graph graph type-args))
         (let ((nv (lookup-vertex (from e) :graph graph)))
           (when nv
             (push (cons nv (if unweighted 1 (funcall weight-fn e))) result)))))
     (nreverse result)))
 
 (defun all-vertices (&optional (graph *graph*) vertex-type)
-  "Collect every (live) vertex of GRAPH, optionally restricted to VERTEX-TYPE."
-  (map-vertices 'identity graph :collect-p t :vertex-type vertex-type))
+  "Collect every (live) vertex of GRAPH, optionally restricted to VERTEX-TYPE (a
+single type or a list of types)."
+  (apply #'map-vertices 'identity graph :collect-p t
+         (%type-args vertex-type :vertex-type :include-vertex-types)))

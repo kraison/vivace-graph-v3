@@ -16,24 +16,29 @@
 ;;; ------------------------------------------------------------------
 
 (defun %out-degree (vertex graph edge-type)
-  (length (outgoing-edges vertex :graph graph :edge-type edge-type)))
+  (length (apply #'outgoing-edges vertex :graph graph
+                 (%type-args edge-type :edge-type :include-edge-types))))
 
 (defun %in-degree (vertex graph edge-type)
-  (length (incoming-edges vertex :graph graph :edge-type edge-type)))
+  (length (apply #'incoming-edges vertex :graph graph
+                 (%type-args edge-type :edge-type :include-edge-types))))
 
 (defun out-degree (vertex &key (graph *graph*) edge-type)
-  "Number of edges directed out of VERTEX (optionally restricted to EDGE-TYPE)."
+  "Number of edges directed out of VERTEX (optionally restricted to EDGE-TYPE, a
+single edge type or a list of edge types)."
   (with-algorithm-snapshot (graph)
     (%out-degree (algorithm-vertex vertex graph) graph edge-type)))
 
 (defun in-degree (vertex &key (graph *graph*) edge-type)
-  "Number of edges directed into VERTEX (optionally restricted to EDGE-TYPE)."
+  "Number of edges directed into VERTEX (optionally restricted to EDGE-TYPE, a
+single edge type or a list of edge types)."
   (with-algorithm-snapshot (graph)
     (%in-degree (algorithm-vertex vertex graph) graph edge-type)))
 
 (defun degree (vertex &key (graph *graph*) edge-type)
   "Total number of edges incident to VERTEX (in-degree + out-degree).  Edges are
-directed in VivaceGraph, so this is the natural undirected-degree analog."
+directed in VivaceGraph, so this is the natural undirected-degree analog.
+EDGE-TYPE may be a single edge type or a list of edge types."
   (with-algorithm-snapshot (graph)
     (let ((v (algorithm-vertex vertex graph)))
       (+ (%out-degree v graph edge-type) (%in-degree v graph edge-type)))))
@@ -42,10 +47,10 @@ directed in VivaceGraph, so this is the natural undirected-degree analog."
                                  vertex-type)
   "Degree distribution of GRAPH as a sorted alist of (DEGREE . COUNT).  WHICH
 selects :TOTAL (default; in+out), :OUT, or :IN.  VERTEX-TYPE / EDGE-TYPE narrow
-the population / edges considered."
+the population / edges considered; EDGE-TYPE may be a single type or a list."
   (with-algorithm-snapshot (graph)
     (let ((dist (make-hash-table)))
-      (map-vertices
+      (apply #'map-vertices
        (lambda (v)
          (let ((d (ecase which
                     (:total (+ (%out-degree v graph edge-type)
@@ -53,7 +58,7 @@ the population / edges considered."
                     (:out (%out-degree v graph edge-type))
                     (:in (%in-degree v graph edge-type)))))
            (incf (gethash d dist 0))))
-       graph :vertex-type vertex-type)
+       graph (%type-args vertex-type :vertex-type :include-vertex-types))
       (sort (loop for d being the hash-keys in dist using (hash-value c)
                   collect (cons d c))
             #'< :key #'car))))

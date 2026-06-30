@@ -76,3 +76,22 @@
       (is (= 3.0 (cdr (assoc "D" by-name :test #'string=))))
       ;; sorted ascending
       (is (equal '(0 1.0 2.0 3.0) (mapcar #'cdr cells))))))
+
+(test shortest-path-edge-type-as-list
+  "EDGE-TYPE accepts a single type or a list of types.  With A -ae-> B -ae2-> C,
+only the union {ae,ae2} (or no filter) reaches C; ae alone does not."
+  (with-algo-graph (g)
+    (let (a b c)
+      (with-transaction ()
+        (setf a (make-an :name "A") b (make-an :name "B") c (make-an :name "C"))
+        (make-ae  :from a :to b :weight 1.0)
+        (make-ae2 :from b :to c :weight 1.0))
+      ;; only ae: C is unreachable (the B->C edge is ae2)
+      (is (null (shortest-path a c :graph g :edge-type 'ae)))
+      ;; the list of both types reaches C
+      (multiple-value-bind (path cost)
+          (shortest-path a c :graph g :edge-type '(ae ae2))
+        (is (equal '("A" "B" "C") (path-names path)))
+        (is (= 2.0 cost)))
+      ;; no filter (all types) reaches C too
+      (is (= 2.0 (nth-value 1 (shortest-path a c :graph g)))))))
