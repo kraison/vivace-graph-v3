@@ -108,6 +108,15 @@ makes the hub miss the device's 60s `wait-flag "ready"`): `sbcl --non-interactiv
 `tests/replication/run-replication-test.sh`. The fix in `59f52b1` touches core
 (`maybe-init-node-data`), so also run the full suite: `(graph-db/test::run-tests)` on SBCL and ECL.
 
+**Multi-device (3-process: 1 hub + 2 devices) — `tests/peer-replication-multi/run-multi-peer-test.sh`.**
+Same impl overrides as above (`REPL_HUB_LISP_CMD` / `REPL_DEVICE_LISP_CMD`, both devices share the
+latter); it warms the fasl caches itself. Two devices with DISTINCT scopes ("alpha"/"bravo") rooted
+at a shared site, over 4 phases: **scope isolation** (A holds data B doesn't, and vice versa),
+**overlap** (a node both hold; a hub update fans out to both), **per-device re-task purge** (a node
+leaves one device's scope → purged there, never leaked to the other through an undisclosed survey),
+and **purge → re-entry** (PT-2). Green on SBCL×3, **SBCL hub + 2 ECL devices** (concurrent pulls),
+and all-ECL. This is still Branch-A read-only (no two-writer conflicts — that's Branch B).
+
 **Single-graph pieces (warm Lisp MCP image):** a Lisp MCP (`cl-mcp-server`) is attached. Discover it
 with `ToolSearch` (keywords: `lisp`, `eval`, `sbcl`) → `mcp__lisp__evaluate-lisp` / `load-system` /
 `load-file`. **NOTE:** pass the package via the tool's `package` arg (e.g. `"GRAPH-DB"`), not an
