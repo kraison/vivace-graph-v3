@@ -217,22 +217,24 @@ constructor contract."
 (defun graph->dot (&key (graph *graph*) (stream *standard-output*) label-fn
                         edge-type vertex-type)
   "Write GRAPH to STREAM in Graphviz DOT format (a digraph).  LABEL-FN maps a
-vertex to its node label (default: its id string); edge labels are edge weights."
+vertex to its node label (default: its id string); edge labels are edge weights.
+EDGE-TYPE / VERTEX-TYPE may each be a single type or a list of types."
   (let ((label (or label-fn (lambda (v) (string-id (id v))))))
     (format stream "digraph graphdb {~%")
-    (map-vertices (lambda (v) (format stream "  ~S;~%" (funcall label v)))
-                  graph :vertex-type vertex-type)
-    (map-edges (lambda (e)
-                 (let ((from (lookup-vertex (from e) :graph graph))
-                       (to (lookup-vertex (to e) :graph graph)))
-                   (when (and from to)
-                     ;; Quote + ~F the weight: edge weights round-trip as
-                     ;; double-floats, and ~A would emit Lisp syntax like
-                     ;; "1.0d0", which Graphviz rejects.
-                     (format stream "  ~S -> ~S [label=~S];~%"
-                             (funcall label from) (funcall label to)
-                             (format nil "~F" (weight e))))))
-               graph :edge-type edge-type)
+    (apply #'map-vertices (lambda (v) (format stream "  ~S;~%" (funcall label v)))
+           graph (%type-args vertex-type :vertex-type :include-vertex-types))
+    (apply #'map-edges
+           (lambda (e)
+             (let ((from (lookup-vertex (from e) :graph graph))
+                   (to (lookup-vertex (to e) :graph graph)))
+               (when (and from to)
+                 ;; Quote + ~F the weight: edge weights round-trip as
+                 ;; double-floats, and ~A would emit Lisp syntax like "1.0d0",
+                 ;; which Graphviz rejects.
+                 (format stream "  ~S -> ~S [label=~S];~%"
+                         (funcall label from) (funcall label to)
+                         (format nil "~F" (weight e))))))
+           graph (%type-args edge-type :edge-type :include-edge-types))
     (format stream "}~%")
     (values)))
 
@@ -241,7 +243,8 @@ vertex to its node label (default: its id string); edge labels are edge weights.
   "Write GRAPH to FILE as DOT.  When RENDER is non-nil, run Graphviz to produce a
 FORMAT (e.g. \"svg\"/\"png\") rendering and return its path; RENDER selects the
 layout engine: :hierarchical (dot), :circular (circo), :radial (twopi), :spring
-\(fdp), or T (dot).  Without RENDER, returns the DOT file path."
+\(fdp), or T (dot).  EDGE-TYPE / VERTEX-TYPE may each be a single type or a list
+of types.  Without RENDER, returns the DOT file path."
   (with-open-file (out file :direction :output :if-exists :supersede
                             :if-does-not-exist :create)
     (graph->dot :graph graph :stream out :label-fn label-fn

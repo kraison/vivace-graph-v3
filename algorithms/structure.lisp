@@ -92,7 +92,8 @@ node-key -> vertex.  Assumes an active snapshot."
 (defun distance-map (source &key (graph *graph*) (direction :out) edge-type)
   "Breadth-first hop distances from SOURCE to every reachable node in GRAPH, as a
 list of (VERTEX . DISTANCE) sorted by ascending distance (SOURCE first, at 0).
-DIRECTION is :OUT (default), :IN, or :BOTH (undirected)."
+DIRECTION is :OUT (default), :IN, or :BOTH (undirected).  EDGE-TYPE may be a
+single type or a list of types."
   (with-algorithm-snapshot (graph)
     (let ((sv (algorithm-vertex source graph)))
       (unless sv (error "distance-map: unknown node ~S" source))
@@ -110,8 +111,9 @@ DIRECTION is :OUT (default), :IN, or :BOTH (undirected)."
                                   vertex-type)
   "All connected components of GRAPH as a list of vertex lists, largest first.
 With the default DIRECTION :BOTH these are weakly-connected components (edge
-direction ignored); :OUT/:IN reach only along that direction.  (Strongly-
-connected components -- Tarjan -- are a future addition.)"
+direction ignored); :OUT/:IN reach only along that direction.  EDGE-TYPE /
+VERTEX-TYPE may each be a single type or a list of types.  (Strongly-connected
+components -- Tarjan -- are a future addition.)"
   (with-algorithm-snapshot (graph)
     (let ((seen (make-hash-table :test 'equalp))
           (components nil))
@@ -137,7 +139,8 @@ connected components -- Tarjan -- are a future addition.)"
   "A DFS spanning tree of the component containing ROOT (a random vertex if ROOT
 is omitted).  Returns (values TREE-EDGES ROOT-VERTEX) where TREE-EDGES is a list
 of (PARENT-VERTEX . CHILD-VERTEX) cons cells.  Read-only: the tree is returned as
-data, not built as a new graph.  DIRECTION defaults to :BOTH (undirected)."
+data, not built as a new graph.  DIRECTION defaults to :BOTH (undirected).
+EDGE-TYPE may be a single type or a list of types."
   (with-algorithm-snapshot (graph)
     (let ((root-v (if root
                       (algorithm-vertex root graph)
@@ -174,7 +177,8 @@ reachable set).  Assumes an active snapshot."
 
 (defun eccentricity (vertex &key (graph *graph*) (direction :both) edge-type)
   "The eccentricity of VERTEX: the greatest hop distance to any node reachable
-from it.  DIRECTION defaults to :BOTH (undirected)."
+from it.  DIRECTION defaults to :BOTH (undirected).  EDGE-TYPE may be a single
+type or a list of types."
   (with-algorithm-snapshot (graph)
     (%eccentricity (algorithm-vertex vertex graph) graph direction edge-type)))
 
@@ -184,7 +188,8 @@ CENTER-VERTICES MIN-ECCENTRICITY).  Cost is O(V*(V+E)) -- a BFS per vertex -- th
 honest matrix-free form; for large graphs prefer a scoped VERTEX-TYPE.  In a
 disconnected graph, eccentricity is measured within each vertex's reachable set
 \(so an isolated vertex has eccentricity 0); compute on a connected graph for the
-classical center.  DIRECTION defaults to :BOTH (undirected)."
+classical center.  DIRECTION defaults to :BOTH (undirected).  EDGE-TYPE /
+VERTEX-TYPE may each be a single type or a list of types."
   (with-algorithm-snapshot (graph)
     (let ((centers nil)
           (best most-positive-fixnum))

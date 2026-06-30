@@ -133,7 +133,8 @@ first two being (VERTEX . SCORE) lists descending.
 Each round recomputes authority(v) = sum of hub(u) over in-neighbours u, then
 hub(v) = sum of authority(w) over out-neighbours w, and L2-normalizes both
 vectors (every iteration -- the fix for graph-utils' value blow-up).  Iterates to
-an L1 convergence TOLERANCE or MAX-ITERATIONS."
+an L1 convergence TOLERANCE or MAX-ITERATIONS.  EDGE-TYPE / VERTEX-TYPE may each
+be a single type or a list of types."
   (with-algorithm-snapshot (graph)
     (let* ((vertices (all-vertices graph vertex-type))
            (n (length vertices)))
@@ -194,7 +195,7 @@ materializes the full O(V^2) similarity matrix.
 
 s(a,a)=1; s(a,b)=0 when either has no in-neighbours or at depth 0; otherwise
 s(a,b) = decay/(|In(a)||In(b)|) * sum over in-neighbour pairs of s(.,.).
-Returns a value in [0,1]."
+EDGE-TYPE may be a single type or a list of types.  Returns a value in [0,1]."
   (with-algorithm-snapshot (graph)
     (let ((av (algorithm-vertex a graph))
           (bv (algorithm-vertex b graph))
