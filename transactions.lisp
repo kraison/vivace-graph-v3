@@ -1514,7 +1514,10 @@ and it reads these patched bytes, never the .txn files)."
   (%posix-rename (namestring tmp)
                  (namestring (transaction-pathname transaction)))
   (let ((tm (transaction-manager transaction)))
-    (when (master-graph-p (graph tm))
+    ;; peer-replication WP-2: generalized from MASTER-GRAPH-P so a peer-graph also
+    ;; journals its own committed writes (a device's push feed / a hub's pull feed).
+    ;; The patched-in transaction-id is the per-origin feed sequence (design §3 #3).
+    (when (journals-own-feed-p (graph tm))
       (serialize-uint64 (bytes transaction)
                         (transaction-id transaction)
                         +tx-header-id-offset+)

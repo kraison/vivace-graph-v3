@@ -157,6 +157,18 @@
   (:method ((graph peer-graph)) graph)
   (:method (thing) nil))
 
+(defgeneric journals-own-feed-p (graph)
+  (:documentation "True if GRAPH appends its OWN committed transactions to a
+replication feed that downstream replicas consume.  A master journals for its
+slaves; a peer-graph journals for hub/device sync (a device's feed is its push
+feed, a hub's feed is what devices pull).  A slave does NOT journal (it only
+applies an upstream feed), and a plain graph has no feed.  This is the gate used
+by FINALIZE-TX-PERSISTENCE -- generalizing it from MASTER-GRAPH-P is what makes a
+peer journal its writes (peer-replication WP-2).")
+  (:method ((graph graph)) nil)
+  (:method ((graph master-graph)) t)
+  (:method ((graph peer-graph)) t))
+
 (defgeneric init-schema (graph))
 (defgeneric update-schema (graph-or-name))
 (defgeneric snapshot (graph &key &allow-other-keys))

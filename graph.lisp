@@ -154,7 +154,12 @@ to disk and remove it."
               (origin-id graph) origin-id
               (peer-host graph) peer-host
               (export-predicate graph) export-predicate
-              (device-registry graph) device-registry))
+              (device-registry graph) device-registry
+              ;; WP-3: durable applied-op-id dedup index -- op-id (16-byte uuid key)
+              ;; -> lamport (uint64 value), the make-lhash defaults.
+              (applied-op-ids graph)
+              (make-lhash :location (format nil "~A/applied-ops/" path)
+                          :buckets 8)))
       (setf (transaction-manager graph)
             (make-instance 'transaction-manager
                            :graph graph))
@@ -267,7 +272,14 @@ CLOSE-GRAPH when finished."
               (origin-id graph) origin-id
               (peer-host graph) peer-host
               (export-predicate graph) export-predicate
-              (device-registry graph) device-registry))
+              (device-registry graph) device-registry
+              ;; WP-3: open the applied-op-id index (create it if this peer-graph
+              ;; predates the index, so reopening an older graph upgrades cleanly).
+              (applied-op-ids graph)
+              (let ((loc (format nil "~A/applied-ops/" path)))
+                (if (probe-file (format nil "~Astruct.dat" loc))
+                    (open-lhash loc)
+                    (make-lhash :location loc :buckets 8)))))
       (setf (transaction-manager graph)
             (make-instance 'transaction-manager
                            :graph graph))
@@ -325,3 +337,42 @@ in place, forcing recovery on the next OPEN-GRAPH."
     (close-replication-log graph)
     (setf (graph-open-p graph) nil))
   graph)
+
+;;; ---------------------------------------------------------------------------
+;;; Peer replication (WP-3): applied-op-id dedup index lifecycle + API.
+;;; The index is a durable op-id (16-byte uuid) -> lamport (uint64) lhash, checked
+;;; before apply so a re-homed op bouncing back via the hub feed is not duplicated
+;;; (design §3 #2, §6).  Created/opened in MAKE-GRAPH/OPEN-GRAPH (peer-role branch);
+;;; closed here.
+;;; ---------------------------------------------------------------------------
+
+(defmethod close-graph :after ((graph peer-graph) &key (snapshot-p t))
+  (declare (ignore snapshot-p))
+  (when (and (slot-boundp graph 'applied-op-ids)
+             (lhash-p (applied-op-ids graph)))
+    (close-lhash (applied-op-ids graph))
+    (setf (applied-op-ids graph) nil)))
+
+(defgeneric op-applied-p (graph op-id)
+  (:documentation "True if the authored op identified by OP-ID (a 16-byte uuid) has
+already been applied to GRAPH, so a re-homed op bouncing back is not re-applied.")
+  (:method ((graph peer-graph) op-id)
+    (and (lhash-p (applied-op-ids graph))
+         (lhash-get (applied-op-ids graph) op-id)
+         t)))
+
+(defgeneric record-applied-op (graph op-id lamport)
+  (:documentation "Record that OP-ID has been applied to GRAPH, stamping LAMPORT (NIL
+=> 0).  Idempotent.  WP-3 invariant (design §12 PT-3): callers must record within the
+same committed transaction as the apply, so a crash cannot leave the index and the
+graph disagreeing.")
+  (:method ((graph peer-graph) op-id lamport)
+    (let ((index (applied-op-ids graph))
+          (v (or lamport 0)))
+      ;; Single-writer on the apply path (design §6, PT-5), so check-then-write is
+      ;; race-free here and avoids depending on DUPLICATE-KEY-ERROR (defined later
+      ;; in the load order than this file).
+      (if (lhash-get index op-id)
+          (lhash-update index op-id v)
+          (lhash-insert index op-id v)))
+    op-id))
