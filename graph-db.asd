@@ -113,6 +113,9 @@
                :trivial-shell)
   :serial t
   :components ((:file "transaction-streaming")
+               ;; peer replication transport (hub/device pull); needs usocket and
+               ;; the master/slave packet primitives in transaction-streaming.
+               (:file "peer-streaming")
                (:file "rest"))
   :in-order-to ((test-op (test-op :graph-db/test))))
 

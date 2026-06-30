@@ -137,6 +137,23 @@
                    :documentation "Durable OP-ID -> lamport dedup index (WP-3), checked
                    before apply so a re-homed op bouncing back is not duplicated.  NIL
                    until WP-3 wires it.")
+   (peer-schema-version :accessor peer-schema-version :initarg :peer-schema-version
+                        :initform '(1 0)
+                        :documentation "This replica's (MAJOR MINOR) schema version
+                        for the peer handshake (WP-6).  The peer gate is a same-MAJOR
+                        COMPATIBILITY check, not digest-equality: additive (minor)
+                        drift still syncs degraded-safe, only a MAJOR mismatch rejects
+                        the pull (design §14 / PT-6).  The major/minor bump policy is
+                        app-owned -- the app SETFs this after open; the engine only
+                        compares majors.")
+   (peer-writer-mailbox :accessor peer-writer-mailbox :initarg :peer-writer-mailbox
+                        :initform nil
+                        :documentation "Device role: the single-writer funnel (WP-8).
+                        The socket receive thread ENQUEUES decoded peer ops here; one
+                        writer thread drains and applies them, so all device mutations
+                        go through a single writer and never contend on OCC (PT-5).")
+   (peer-writer-thread :accessor peer-writer-thread :initarg :peer-writer-thread
+                       :initform nil)
    (stop-replication-p :accessor stop-replication-p :initarg :stop-replication-p
                        :initform nil)
    (peer-thread :accessor peer-thread :initarg :peer-thread :initform nil)))
