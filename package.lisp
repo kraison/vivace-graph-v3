@@ -287,4 +287,54 @@
            #:geo-distance/5
            #:geo-near/5
            #:geo-within/3
+           ;; graph algorithms (optional graph-db/algorithms add-on)
+           ;; -- shared
+           #:with-algorithm-snapshot
+           #:algorithm-vertex
+           #:adjacent-vertices
+           #:all-vertices
+           ;; -- shortest paths (Mode B native)
+           #:shortest-path
+           #:a-star
+           #:single-source-shortest-paths
+           ;; -- structure (Mode B native)
+           #:out-degree
+           #:in-degree
+           #:degree
+           #:degree-distribution
+           #:distance-map
+           #:connected-components
+           #:spanning-tree
+           #:eccentricity
+           #:graph-center
+           ;; -- ranking (Mode B native)
+           #:page-rank
+           #:page-rank-distribution
+           #:hub-authority-values
+           #:sim-rank
+           ;; -- in-memory projection (Mode A)
+           #:with-graph-projection
+           #:build-projection
+           #:projection
+           #:projection-index
+           #:projection-vertex
+           #:projection-shortest-path
+           ;; -- dense / matrix family (Mode A projection)
+           #:all-pairs-shortest-paths
+           #:all-pairs-result
+           #:apsp-distance
+           #:apsp-path
+           #:graph-clustering
+           #:minimum-cut
+           ;; -- flow family (Mode A projection)
+           #:maximum-flow
+           #:bipartite-p
+           #:maximum-matching
+           ;; -- random graph generation (transactional builders)
+           #:generate-graph
+           ;; -- io: import + Graphviz export (optional graph-db/algorithms-io)
+           #:import-gml
+           #:import-pajek
+           #:graph->dot
+           #:visualize
            ))

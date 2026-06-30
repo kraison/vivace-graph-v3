@@ -193,6 +193,63 @@
   :perform (test-op (op c)
                     (uiop:symbol-call :graph-db/perf-test :run-perf)))
 
+;; OPTIONAL graph-algorithms add-on: analysis algorithms (shortest path,
+;; ranking, components, flow, ...) ported from the standalone graph-utils
+;; library onto VivaceGraph's persistent MVCC model.  Depends only on the
+;; embeddable core (no HTTP), so it is usable from graph-db/core deployments.
+(defsystem graph-db/algorithms
+  :name "VivaceGraph graph algorithms"
+  :description "Graph analysis algorithms (Mode B native + Mode A projection)."
+  :depends-on (:graph-db/core)
+  :pathname "algorithms/"
+  :serial t
+  :components ((:file "fib-heap")
+               (:file "common")
+               (:file "shortest-path")
+               (:file "structure")
+               (:file "ranking")
+               (:file "projection")
+               (:file "dense")
+               (:file "flow")
+               (:file "generation")
+               (:file "prolog")))
+
+;; OPTIONAL io add-on: GML/Pajek import + Graphviz export.  Kept separate so the
+;; parsing deps (yacc, dso-lex, parse-number) stay out of the core algorithm
+;; add-on and the embeddable core.
+(defsystem graph-db/algorithms-io
+  :name "VivaceGraph graph-algorithms IO"
+  :description "Optional GML/Pajek import + Graphviz export for graph-db/algorithms."
+  :depends-on (:graph-db/algorithms :cl-ppcre :yacc :dso-lex :parse-number
+               :trivial-shell)
+  :pathname "algorithms/"
+  :serial t
+  :components ((:file "io")))
+
+(defsystem graph-db/algorithms-test
+  :name "VivaceGraph graph-algorithms test suite"
+  :description "FiveAM tests for graph-db/algorithms."
+  :depends-on (:graph-db/algorithms :graph-db/algorithms-io :fiveam)
+  :pathname "tests/algorithms/"
+  :serial t
+  :components ((:file "package")
+               (:file "suite")
+               (:file "fixtures")
+               (:file "fib-heap-tests")
+               (:file "shortest-path-tests")
+               (:file "structure-tests")
+               (:file "ranking-tests")
+               (:file "projection-tests")
+               (:file "dense-tests")
+               (:file "flow-tests")
+               (:file "generation-tests")
+               (:file "io-tests")
+               (:file "prolog-tests"))
+  :perform (test-op (op c)
+                    (unless (uiop:symbol-call :graph-db/algorithms-test
+                                              :run-algorithm-tests)
+                      (error "graph-db algorithm tests failed."))))
+
 ;; OPTIONAL GEOS add-on: a thin in-house CFFI binding to libgeos_c giving the
 ;; spatial layer exact polygon topology, validity repair, and distance.  Core
 ;; graph-db does NOT depend on this; loading it is what flips *geos-available-p*.
