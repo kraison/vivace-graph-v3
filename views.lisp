@@ -780,7 +780,7 @@ MAP-VIEW, or MAP-REDUCED-VIEW.  Example:
                                :heap (indexes ,graph)
                                :map-code ,(fully-qualified-expression-string map-code)
                                :reduce-code ,(when reduce-code
-						   (fully-qualified-expression-string reduce-code))
+                                                   (fully-qualified-expression-string reduce-code))
                                :map-fn nil
                                :sort-order ,view-sort-order
                                :reduce-fn nil)))

@@ -15,16 +15,16 @@
 (defgeneric uuid-array-equal (x y &optional offset1 offset2))
 
 (defstruct (lhash
-	     (:conc-name %lhash-)
-	     (:constructor %make-lhash)
-	     (:print-function
+             (:conc-name %lhash-)
+             (:constructor %make-lhash)
+             (:print-function
               (lambda (lhash stream depth)
                 (declare (ignore depth))
                 (format stream
                         "#<LHASH :TEST ~A :LOCATION ~A>"
                         (%lhash-test lhash)
                         (%lhash-location lhash))))
-	     (:predicate lhash-p))
+             (:predicate lhash-p))
   (test 'uuid-array-equal)
   (base-buckets 4)
   (level 0 :type (UNSIGNED-BYTE 64))

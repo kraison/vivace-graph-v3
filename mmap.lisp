@@ -8,8 +8,8 @@
 (deftype uint64 () '(integer 0 18446744073709551615))
 
 (defstruct (mapped-file
-	     (:conc-name m-)
-	     (:predicate mapped-file-p))
+             (:conc-name m-)
+             (:predicate mapped-file-p))
   path pointer fd
   ;; Length, in bytes, of the virtual-address window reserved for this mapping
   ;; (see *mmap-reservation-size*).  POINTER is fixed at the base of that window
@@ -213,18 +213,18 @@ times SIZE (floored at *MMAP-MIN-RESERVATION*); pass RESERVATION to override."
                      fd
                      0)))
       (make-mapped-file :path (truename file)
-			:fd fd
-			:pointer pointer
-			:reserved-size reserved))))
+                        :fd fd
+                        :pointer pointer
+                        :reserved-size reserved))))
 
 (defmethod sync-region ((mapped-file mapped-file) &key addr length
-			(sync +ms-sync+))
+                        (sync +ms-sync+))
   (%posix-msync (or addr (m-pointer mapped-file))
                 (or length (mapped-file-length mapped-file))
                 sync))
 
 (defmethod munmap-file ((mapped-file mapped-file) &key (save-p nil)
-			(sync +ms-sync+))
+                        (sync +ms-sync+))
   (when save-p
     ;;(log:debug "Calling msync on ~S" mapped-file)
     ;; Only the file-backed head is dirty/syncable, not the reserved tail.
