@@ -211,7 +211,8 @@
                (:file "projection")
                (:file "dense")
                (:file "flow")
-               (:file "generation")))
+               (:file "generation")
+               (:file "prolog")))
 
 ;; OPTIONAL io add-on: GML/Pajek import + Graphviz export.  Kept separate so the
 ;; parsing deps (yacc, dso-lex, parse-number) stay out of the core algorithm
@@ -242,7 +243,8 @@
                (:file "dense-tests")
                (:file "flow-tests")
                (:file "generation-tests")
-               (:file "io-tests"))
+               (:file "io-tests")
+               (:file "prolog-tests"))
   :perform (test-op (op c)
                     (unless (uiop:symbol-call :graph-db/algorithms-test
                                               :run-algorithm-tests)

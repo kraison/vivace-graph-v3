@@ -30,5 +30,12 @@
                 #:graph-clustering #:minimum-cut
                 #:maximum-flow #:bipartite-p #:maximum-matching
                 #:generate-graph
-                #:import-gml #:import-pajek #:graph->dot #:visualize)
+                #:import-gml #:import-pajek #:graph->dot #:visualize
+                ;; Prolog query API + functor name/arity symbols (so queries
+                ;; written in this package resolve to the graph-db functors)
+                #:select #:select-flat #:select-one #:do-query
+                #:select/2 #:is-a/2 #:node-slot-value/3
+                #:shortest-path/4 #:distance/3 #:reachable/2
+                #:connected-component/2 #:degree/2 #:page-rank/2
+                #:authority-value/2 #:hub-value/2)
   (:export #:run-algorithm-tests))
