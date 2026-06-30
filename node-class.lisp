@@ -121,6 +121,47 @@
 (defmethod find-all-subclass-names ((class class))
   (mapcar 'class-name (find-all-subclasses class)))
 
+(defun resolve-node-type-ids (designator kind &key (include-subclasses-p t)
+                                                (graph *graph*))
+  "Resolve a node-type DESIGNATOR -- a type name (symbol), a numeric type-id, or
+a LIST of either -- into a deduplicated list of integer type-ids of KIND
+\(:VERTEX or :EDGE) registered in GRAPH.
+
+When INCLUDE-SUBCLASSES-P (the default), each named type is expanded to itself
+PLUS every CLOS subclass of it that is registered as a type of KIND.  This
+expansion is necessary because a node is indexed only under its OWN type-id (the
+type/ve/vev indexes are keyed by exact type-id), so a parent-type query must scan
+each subtype's index explicitly -- this is the same compensation MAP-VERTICES has
+always performed, here factored out so MAP-EDGES can share it.
+
+Designators that resolve to no registered type of KIND are skipped (so the 0
+sentinel and cross-graph subclasses simply drop out).  Order of first appearance
+is preserved."
+  (let ((seen (make-hash-table))
+        (ids nil))
+    (labels ((add-id (id)
+               (when (and id (not (gethash id seen)))
+                 (setf (gethash id seen) t)
+                 (push id ids)))
+             (add-one (d)
+               (let ((meta (if (integerp d)
+                               (lookup-node-type-by-id d kind :graph graph)
+                               (lookup-node-type-by-name d kind :graph graph))))
+                 (when meta
+                   (add-id (node-type-id meta))
+                   (when include-subclasses-p
+                     (let ((class (find-class (node-type-name meta) nil)))
+                       (when class
+                         (dolist (sub (find-all-subclass-names class))
+                           (let ((sub-meta (lookup-node-type-by-name sub kind
+                                                                     :graph graph)))
+                             (when sub-meta
+                               (add-id (node-type-id sub-meta))))))))))))
+      (if (listp designator)
+          (dolist (d designator) (add-one d))
+          (add-one designator)))
+    (nreverse ids)))
+
 (defmethod find-ancestor-classes ((class-name symbol))
   (find-ancestor-classes (find-class class-name)))
 

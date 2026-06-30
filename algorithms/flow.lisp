@@ -316,7 +316,8 @@ ALGORITHM is one of :edmonds-karp, :dinic, :goldberg-tarjan."
   "Maximum flow from SOURCE to SINK in GRAPH, treating edge WEIGHT (via WEIGHT-FN)
 as capacity.  Runs on an in-memory directed projection (Mode A); the persistent
 graph is untouched.  ALGORITHM is :edmonds-karp (default), :dinic, or
-:goldberg-tarjan.
+:goldberg-tarjan.  EDGE-TYPE / VERTEX-TYPE may each be a single type or a list of
+types.
 
 Returns (values FLOW-VALUE FLOW-EDGES) where FLOW-EDGES is a list of
 \(FROM-VERTEX TO-VERTEX FLOW)."
@@ -337,7 +338,8 @@ Returns (values FLOW-VALUE FLOW-EDGES) where FLOW-EDGES is a list of
 
 (defun bipartite-p (&key (graph *graph*) edge-type vertex-type)
   "Is GRAPH bipartite (treating edges as undirected)?  Returns (values BIPARTITE-P
-PARTITION-A PARTITION-B); the partitions are vertex lists, NIL when not bipartite."
+PARTITION-A PARTITION-B); the partitions are vertex lists, NIL when not bipartite.
+EDGE-TYPE / VERTEX-TYPE may each be a single type or a list of types."
   (let ((proj (build-projection :graph graph :directed nil :edge-type edge-type
                                 :vertex-type vertex-type :unweighted t)))
     (if (graph-db.projection:bipartite? (projection-pgraph proj))
@@ -352,8 +354,9 @@ PARTITION-A PARTITION-B); the partitions are vertex lists, NIL when not bipartit
 (defun maximum-matching (&key (graph *graph*) edge-type vertex-type
                               (algorithm :dinic))
   "Maximum matching of a bipartite GRAPH (edges treated as undirected), via
-max-flow on an in-memory projection (Mode A).  Returns a list of (VERTEX1 VERTEX2)
-matched pairs.  Signals an error if GRAPH is not bipartite."
+max-flow on an in-memory projection (Mode A).  EDGE-TYPE / VERTEX-TYPE may each
+be a single type or a list of types.  Returns a list of (VERTEX1 VERTEX2) matched
+pairs.  Signals an error if GRAPH is not bipartite."
   (let ((proj (build-projection :graph graph :directed nil :edge-type edge-type
                                 :vertex-type vertex-type :unweighted t)))
     (multiple-value-bind (a b)

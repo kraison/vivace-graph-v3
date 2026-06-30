@@ -323,26 +323,28 @@ back to the VG vertex."
                               (weight-fn #'weight) unweighted)
   "Materialize GRAPH (under a read snapshot) into an in-memory PROJECTION.  With
 DIRECTED, build a directed projection (otherwise undirected).  VERTEX-TYPE /
-EDGE-TYPE restrict the slice.  Edge weights come from WEIGHT-FN, or 1 each with
-UNWEIGHTED."
+EDGE-TYPE restrict the slice; each may be a single type or a list of types.  Edge
+weights come from WEIGHT-FN, or 1 each with UNWEIGHTED."
   (with-algorithm-snapshot (graph)
     (let ((pg (gproj:make-graph :directed? directed))
           (key->idx (make-hash-table :test 'equalp))
           (idx->vertex (make-hash-table)))
-      (map-vertices
-       (lambda (v)
-         (let ((idx (gproj:add-node pg (string-id (id v)))))
-           (setf (gethash (id v) key->idx) idx
-                 (gethash idx idx->vertex) v)))
-       graph :collect-p nil :vertex-type vertex-type)
-      (map-edges
-       (lambda (e)
-         (let ((fi (gethash (from e) key->idx))
-               (ti (gethash (to e) key->idx)))
-           (when (and fi ti)
-             (gproj:add-edge pg fi ti
-                             :weight (if unweighted 1 (funcall weight-fn e))))))
-       graph :collect-p nil :edge-type edge-type)
+      (apply #'map-vertices
+             (lambda (v)
+               (let ((idx (gproj:add-node pg (string-id (id v)))))
+                 (setf (gethash (id v) key->idx) idx
+                       (gethash idx idx->vertex) v)))
+             graph :collect-p nil
+             (%type-args vertex-type :vertex-type :include-vertex-types))
+      (apply #'map-edges
+             (lambda (e)
+               (let ((fi (gethash (from e) key->idx))
+                     (ti (gethash (to e) key->idx)))
+                 (when (and fi ti)
+                   (gproj:add-edge pg fi ti
+                                   :weight (if unweighted 1 (funcall weight-fn e))))))
+             graph :collect-p nil
+             (%type-args edge-type :edge-type :include-edge-types))
       (%make-projection :pgraph pg :key->idx key->idx :idx->vertex idx->vertex))))
 
 (defmacro with-graph-projection ((proj-var &key (graph '*graph*) directed

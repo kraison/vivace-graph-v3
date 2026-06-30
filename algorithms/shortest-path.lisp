@@ -92,8 +92,9 @@ source, returning the ordered vertex list source..target."
 HEURISTIC is supplied.
 
 FROM and TO are node designators (vertex, id vector, or id string).  DIRECTION is
-:OUT (default), :IN, or :BOTH (undirected).  EDGE-TYPE restricts to one edge
-type.  Distances come from each edge's WEIGHT (WEIGHT-FN), or 1 per edge with
+:OUT (default), :IN, or :BOTH (undirected).  EDGE-TYPE restricts the search to a
+single edge type OR a list of edge types (their union); NIL follows all types.
+Distances come from each edge's WEIGHT (WEIGHT-FN), or 1 per edge with
 :UNWEIGHTED.  HEURISTIC, if given, is a function of (vertex target-vertex)
 returning an admissible (never-overestimating) cost estimate.
 
@@ -132,8 +133,9 @@ over SHORTEST-PATH; see it for arguments and return values."
                                             edge-type (weight-fn #'weight)
                                             unweighted)
   "Shortest distances from FROM to every reachable node in GRAPH (Dijkstra, no
-early termination).  Returns a list of (VERTEX . DISTANCE) cells sorted by
-ascending distance (FROM itself first, at distance 0)."
+early termination).  DIRECTION is :OUT/:IN/:BOTH and EDGE-TYPE may be a single
+edge type or a list of edge types.  Returns a list of (VERTEX . DISTANCE) cells
+sorted by ascending distance (FROM itself first, at distance 0)."
   (with-algorithm-snapshot (graph)
     (let ((from-v (algorithm-vertex from graph)))
       (unless from-v (error "single-source-shortest-paths: unknown node ~S" from))

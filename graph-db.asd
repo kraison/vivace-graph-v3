@@ -311,6 +311,7 @@
                (:file "index-list-tests")
                (:file "type-index-tests")
                (:file "graph-tests")
+               (:file "type-mapping-tests")
                (:file "graph-spatial-tests")
                (:file "spatial-hook-tests")
                (:file "spatial-query-tests")

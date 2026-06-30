@@ -16,6 +16,11 @@
   ()
   :graph-db-algorithms-test)
 
+;; A second, unrelated edge type, for the edge-type-list shortest-path test.
+(def-edge ae2 ()
+  ()
+  :graph-db-algorithms-test)
+
 ;;; ---- scratch graph lifecycle -------------------------------------
 
 (defun make-temp-directory ()

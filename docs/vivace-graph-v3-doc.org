@@ -1696,7 +1696,7 @@ Every algorithm is *read-only* with respect to the stored graph and runs under t
   (single-source-shortest-paths origin)              ; => ((vertex . distance) ...)
 #+END_SRC
 
-~:direction~ is ~:out~ (default), ~:in~, or ~:both~; ~:edge-type~ restricts to one edge type; ~:weight-fn~ overrides how an edge's cost is read. Dijkstra/A* require non-negative weights.
+~:direction~ is ~:out~ (default), ~:in~, or ~:both~; ~:edge-type~ restricts the walk to a single edge type /or a list of edge types/ (their union); ~:weight-fn~ overrides how an edge's cost is read. Dijkstra/A* require non-negative weights. Throughout the algorithm layer, every ~:edge-type~ argument accepts either a single type or a list of types.
 
 *** Structure
 
@@ -1928,17 +1928,17 @@ This chapter provides a categorized reference for the most important exported sy
   Deletes and rebuilds the index for a specific view from scratch. Useful if the view's definition changes.
 
 **** Graph Traversal & Mapping
-- ~map-vertices (function graph &key vertex-type ... )~ ::
-  Applies a Lisp ~function~ to every vertex in the graph. Can be filtered by ~vertex-type~. Avoid using on large graphs without a filter, as it performs a full scan.
+- ~map-vertices (function graph &key vertex-type include-vertex-types exclude-vertex-types include-subclasses-p ... )~ ::
+  Applies a Lisp ~function~ to every vertex.  Filter with ~vertex-type~ (a single type) and/or ~include-vertex-types~ (a list); ~exclude-vertex-types~ removes types; unless ~include-subclasses-p~ is NIL (default T) a named type also matches its subtypes.  The fully-untyped scan is a full lhash scan (and reads live versions -- see the function docstring), so avoid it on large graphs without a filter.
 
-- ~map-edges (function graph &key edge-type vertex direction ... )~ ::
-  Applies a ~function~ to every edge. Can be filtered by ~edge-type~ or constrained to a specific ~vertex~ and ~direction~ (:in or :out).
+- ~map-edges (function graph &key edge-type include-edge-types exclude-edge-types include-subclasses-p vertex direction ... )~ ::
+  Applies a ~function~ to every edge.  Filter with ~edge-type~ (single) and/or ~include-edge-types~ (a list), ~exclude-edge-types~, and ~include-subclasses-p~ (default T, so a parent edge type also matches its subtypes -- mirroring ~map-vertices~); or constrain to a ~vertex~ + ~direction~ (:in/:out) or a ~from-vertex~/~to-vertex~ pair.
 
-- ~outgoing-edges (vertex &key edge-type)~ ::
-  A convenience function that returns a list of all outgoing edges from a given vertex.
+- ~outgoing-edges (vertex &key edge-type include-edge-types include-subclasses-p)~ ::
+  A convenience function that returns a list of a vertex's outgoing edges. ~edge-type~ (single) / ~include-edge-types~ (list) filter by type; subtypes are included unless ~include-subclasses-p~ is NIL.
 
-- ~incoming-edges (vertex &key edge-type)~ ::
-  A convenience function that returns a list of all incoming edges for a given vertex.
+- ~incoming-edges (vertex &key edge-type include-edge-types include-subclasses-p)~ ::
+  As ~outgoing-edges~, for incoming edges.
 
 - ~traverse (vertex &key ... )~ ::
   Performs a breadth-first search traversal starting from a given vertex.
@@ -2029,7 +2029,8 @@ accept a vertex or its id.
 - ~shortest-path (from to &key direction edge-type weight-fn unweighted heuristic graph)~ ::
   Weighted Dijkstra (or A* with ~:heuristic~) shortest path; ~(values path cost)~,
   or ~(values nil nil)~ if unreachable. ~a-star~ and ~single-source-shortest-paths~
-  are companions.
+  are companions. ~:edge-type~ accepts a single type or a list of types (as do all
+  the algorithm-layer ~:edge-type~ arguments).
 
 - ~degree (v &key edge-type graph)~ / ~out-degree~ / ~in-degree~ / ~degree-distribution~ ::
   Vertex degree (in+out) and the sorted degree histogram.

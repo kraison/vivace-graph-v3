@@ -262,8 +262,9 @@ distance/next-hop tables.  Query it with APSP-DISTANCE / APSP-PATH."
   "Floyd-Warshall all-pairs shortest paths over an in-memory projection of GRAPH
 \(Mode A).  Returns an ALL-PAIRS-RESULT; query distances/paths with APSP-DISTANCE
 and APSP-PATH.  WARNING: O(V^2) memory and O(V^3) time -- scope with VERTEX-TYPE
-on large graphs.  With USE-WEIGHTS-P (default) distances are edge-weight sums,
-else hop counts."
+on large graphs.  EDGE-TYPE / VERTEX-TYPE may each be a single type or a list of
+types.  With USE-WEIGHTS-P (default) distances are edge-weight sums, else hop
+counts."
   (let ((proj (build-projection :graph graph :directed directed
                                 :edge-type edge-type :vertex-type vertex-type
                                 :unweighted (not use-weights-p))))
@@ -302,8 +303,9 @@ NIL if unreachable."
 (defun graph-clustering (&key (graph *graph*) directed (method :edge-betweenness)
                               (edge-removal-count 1) edge-type vertex-type)
   "Cluster GRAPH by removing high-scoring edges from an in-memory projection
-\(Mode A).  METHOD is :EDGE-BETWEENNESS (default) or :EDGE-SPAN.  Returns the
-removed edges as (FROM-VERTEX TO-VERTEX SCORE) triples (highest first)."
+\(Mode A).  METHOD is :EDGE-BETWEENNESS (default) or :EDGE-SPAN.  EDGE-TYPE /
+VERTEX-TYPE may each be a single type or a list of types.  Returns the removed
+edges as (FROM-VERTEX TO-VERTEX SCORE) triples (highest first)."
   (let* ((proj (build-projection :graph graph :directed directed
                                  :edge-type edge-type :vertex-type vertex-type
                                  :unweighted t))
@@ -317,7 +319,8 @@ removed edges as (FROM-VERTEX TO-VERTEX SCORE) triples (highest first)."
 
 (defun minimum-cut (&key (graph *graph*) directed edge-type vertex-type)
   "A minimal edge cut of GRAPH (via edge-span clustering on an in-memory
-projection, Mode A).  Returns the cut edges as (FROM-VERTEX TO-VERTEX) pairs."
+projection, Mode A).  EDGE-TYPE / VERTEX-TYPE may each be a single type or a list
+of types.  Returns the cut edges as (FROM-VERTEX TO-VERTEX) pairs."
   (let* ((proj (build-projection :graph graph :directed directed
                                  :edge-type edge-type :vertex-type vertex-type
                                  :unweighted t))
