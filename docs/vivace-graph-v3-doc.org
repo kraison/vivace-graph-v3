@@ -1661,6 +1661,170 @@ The add-on /upgrades/ a set of generic functions in place (no API change). When 
 
 Threading: GEOS's reentrant API forbids sharing a context between concurrent threads, and VivaceGraph runs transactions in the caller's thread. The add-on keeps a process-global **borrow/return context pool** (~with-geos-context~): each operation checks out a context for its duration, so a context is only ever used by one thread at a time, and contexts are reused across threads (bounded by peak concurrency). ~geos-shutdown~ releases the pool. This is validated under a concurrency storm and cross-checked against Python ~shapely~ in =tests/geos/=.
 
+** Chapter 14: Graph Algorithms
+
+VivaceGraph ships an optional *graph-algorithms* add-on — classic analysis algorithms (shortest paths, ranking, components, flow, random-graph generation) that run over a real, persistent graph. It is the ~graph-db/algorithms~ system, and it depends only on the embeddable core (~graph-db/core~), so it is usable from a headless deployment with no HTTP layer:
+
+#+BEGIN_SRC lisp
+  (ql:quickload :graph-db/algorithms)
+#+END_SRC
+
+*** Two execution modes
+
+The algorithms come in two families, chosen by how they relate to scale:
+
+- *Native (streaming).* Algorithms that walk the live adjacency indexes directly, keyed by node id (UUID), under a single consistent read snapshot. They never materialize the whole graph, so they suit large, persistent data. This family covers shortest paths, BFS structure, degree, and the ranking algorithms.
+- *Projection (in-memory).* Algorithms that are inherently global — all-pairs shortest paths, clustering, max-flow — need a compact, freely-mutable working copy. ~with-graph-projection~ materializes (a slice of) the graph into an in-memory copy under a snapshot, runs the algorithm there, and maps results back to vertices. The persistent graph is *never mutated*; clustering and flow disturb only the throwaway projection.
+
+Every algorithm is *read-only* with respect to the stored graph and runs under the MVCC read-snapshot machinery (Chapter 12), so a long analysis sees a stable view even under concurrent writers. Nodes are ordinary vertex objects, exactly as the rest of the API produces and consumes them; a "node designator" argument also accepts a vertex's id (a key vector or its string form).
+
+*** Shortest paths
+
+~shortest-path~ is weighted Dijkstra by default (edge ~weight~ is the cost); pass ~:unweighted t~ for hop counts, or a ~:heuristic~ to turn it into A*. It returns ~(values path cost)~ — the ordered vertex list and its total weight — or ~(values nil nil)~ when the target is unreachable.
+
+#+BEGIN_SRC lisp
+  ;; weighted shortest path between two vertices:
+  (shortest-path origin destination)                 ; => (values (v0 v1 .. vn) cost)
+
+  ;; treat edges as undirected, count hops not weights:
+  (shortest-path a b :direction :both :unweighted t)
+
+  ;; A* with an admissible heuristic h(vertex, target) -> estimated remaining cost:
+  (a-star a b (lambda (v target) (straight-line-km v target)))
+
+  ;; distances from one source to every reachable node, ascending:
+  (single-source-shortest-paths origin)              ; => ((vertex . distance) ...)
+#+END_SRC
+
+~:direction~ is ~:out~ (default), ~:in~, or ~:both~; ~:edge-type~ restricts to one edge type; ~:weight-fn~ overrides how an edge's cost is read. Dijkstra/A* require non-negative weights.
+
+*** Structure
+
+Matrix-free structural queries, all native:
+
+#+BEGIN_SRC lisp
+  (degree v)                 ; total incident edges (in + out); also out-degree / in-degree
+  (degree-distribution)      ; sorted ((degree . count) ...), :which :total|:out|:in
+  (distance-map source)      ; BFS hop distances: ((vertex . hops) ...), ascending
+  (connected-components)     ; list of vertex lists, largest first (weakly connected)
+  (spanning-tree :root v)    ; (values tree-edges root); edges are (parent . child) conses
+  (graph-center)             ; (values center-vertices min-eccentricity)
+#+END_SRC
+
+~connected-components~ and ~graph-center~ default to ~:direction :both~ (undirected semantics). ~graph-center~ is the BFS-eccentricity form — a breadth-first search per vertex, O(V·(V+E)); scope it with ~:vertex-type~ on a large graph, or use the projection all-pairs (below) for the matrix form.
+
+*** Ranking
+
+#+BEGIN_SRC lisp
+  ;; PageRank: (values ranked-list iterations), ranked descending as (vertex . rank).
+  ;; Iterates to an L1 convergence tolerance (not a fixed step count), redistributes
+  ;; dangling-node mass so ranks sum to 1, and caps iterations.
+  (page-rank :damping 0.85d0 :tolerance 1d-6)
+
+  ;; HITS hubs & authorities: (values authorities hubs iterations).
+  ;; Both vectors are L2-normalized every iteration.
+  (hub-authority-values)
+
+  ;; SimRank similarity of two nodes (recursive, depth-bounded, memoized):
+  (sim-rank a b :max-depth 5 :decay 0.8d0)
+#+END_SRC
+
+*** All-pairs, clustering, and cut (projection)
+
+These build an in-memory projection. ~all-pairs-shortest-paths~ (Floyd–Warshall) returns a result object you query, rather than an O(V²) table of vertex pairs:
+
+#+BEGIN_SRC lisp
+  (let ((apsp (all-pairs-shortest-paths :directed t)))
+    (apsp-distance apsp a b)    ; shortest distance, or NIL if unreachable
+    (apsp-path apsp a b))       ; ordered vertex list, or NIL
+
+  ;; edge-betweenness (default) or edge-span clustering; removes the top edges and
+  ;; returns them as (from-vertex to-vertex score):
+  (graph-clustering :method :edge-betweenness :edge-removal-count 1)
+
+  ;; a minimal edge cut, as (from-vertex to-vertex) pairs:
+  (minimum-cut)
+#+END_SRC
+
+All-pairs is O(V²) memory / O(V³) time — it warns you to scope large graphs with ~:vertex-type~. For direct control of the working copy, ~with-graph-projection~ binds a projection you can query with ~projection-index~ / ~projection-vertex~.
+
+*** Maximum flow and matching (projection)
+
+Edge ~weight~ is treated as capacity. Flow runs on a residual copy, so the stored graph is untouched.
+
+#+BEGIN_SRC lisp
+  ;; (values flow-value flow-edges); flow-edges are (from to flow).
+  (maximum-flow source sink :algorithm :dinic)
+
+  ;; is the graph bipartite? -> (values t partition-a partition-b) or (values nil ..):
+  (bipartite-p)
+
+  ;; maximum bipartite matching as (vertex1 vertex2) pairs:
+  (maximum-matching :algorithm :dinic)
+#+END_SRC
+
+Three max-flow algorithms are available — ~:edmonds-karp~ (default), ~:dinic~, and ~:goldberg-tarjan~ (push-relabel) — and all agree on the (unique) maximum-flow value.
+
+*** Generating random graphs
+
+The generators persist a random topology into a real graph in one transaction. They are schema-agnostic: you supply the constructors, the model decides the wiring.
+
+#+BEGIN_SRC lisp
+  ;; an Erdős–Rényi G(n, p) of 100 'city' vertices joined by 'road' edges:
+  (generate-graph :erdos-renyi 100 :p 0.05
+                  :vertex-constructor (lambda (i) (make-city :name (format nil "c~D" i)))
+                  :edge-constructor   (lambda (from to) (make-road :from from :to to)))
+
+  ;; Barabási–Albert preferential attachment:
+  (generate-graph :barabasi-albert 100 :vertex-constructor #'... :edge-constructor #'...)
+#+END_SRC
+
+~:vertex-constructor~ is called with each node index ~(0 … size-1)~ and returns a vertex; ~:edge-constructor~ is called with ~(from-vertex to-vertex)~. Both run inside the builder's transaction.
+
+*** Importing and visualizing (~graph-db/algorithms-io~)
+
+Import from standard graph file formats and export to Graphviz live in a *separate* optional system, ~graph-db/algorithms-io~, so its parsing dependencies (~yacc~, ~dso-lex~, ~parse-number~) stay out of the core add-on:
+
+#+BEGIN_SRC lisp
+  (ql:quickload :graph-db/algorithms-io)
+
+  ;; import a GML or Pajek (.net) file; same schema-agnostic constructor contract
+  ;; as generate-graph, plus a label / weight from the file:
+  (import-gml   "graph.gml"
+                :vertex-constructor (lambda (i label) (make-city :name label))
+                :edge-constructor   (lambda (from to weight)
+                                      (make-road :from from :to to :weight weight)))
+  (import-pajek "graph.net" :vertex-constructor #'... :edge-constructor #'...)
+
+  ;; write a DOT file and render it (needs Graphviz's `dot` on PATH):
+  (visualize :file "/tmp/g.dot" :render :hierarchical :format "svg"
+             :label-fn (lambda (v) (slot-value v 'name)))
+  ;; or just emit DOT to a stream:
+  (graph->dot :stream *standard-output* :label-fn #'...)
+#+END_SRC
+
+*** Prolog predicates
+
+The native algorithms are also exposed as Prolog functors, so analysis composes with the query language (Chapter 6). Like the spatial functors, they /yield/ solutions:
+
+#+BEGIN_SRC lisp
+  ;; the weighted shortest path (and its cost) between two pinned vertices:
+  (select (:flat nil) (?path ?cost)
+    (is-a ?from city) (node-slot-value ?from name "A")
+    (is-a ?to   city) (node-slot-value ?to   name "Z")
+    (shortest-path ?from ?to ?path ?cost))
+
+  ;; every node's PageRank (the node arg may be bound to filter, or unbound to enumerate):
+  (select (:flat nil) (?node ?rank) (page-rank ?node ?rank))
+#+END_SRC
+
+The predicates are ~shortest-path/4~ (From To Path Cost), ~distance/3~, ~reachable/2~, ~connected-component/2~, ~degree/2~, ~page-rank/2~, ~authority-value/2~, and ~hub-value/2~. They are pure reads, so they run even under a read-only ~:effects nil~ query. (As with any functor, a query written in a package other than ~graph-db~ must import the predicate's ~name/arity~ symbol — see Chapter 7.)
+
+*** Caveats
+
+- *Recompute cost.* ~page-rank/2~, ~authority-value/2~, and ~hub-value/2~ recompute the whole ranking on each call; for repeated use, call the Lisp ~page-rank~ / ~hub-authority-values~ once and keep the result.
+- *Not ported (broken upstream).* The Karzanov max-flow algorithm, the Viger–Latapy generator, and node-capacity max-flow were intentionally left out of the port — the source implementations did not satisfy the max-flow invariant, hung, or were otherwise unreliable. Only edge capacities are supported for flow.
+
 ** API Reference
 
 This chapter provides a categorized reference for the most important exported symbols from the ~graph-db~ package. It is not an exhaustive list of every internal function but focuses on the public API you will use most often when building applications.
@@ -1857,4 +2021,50 @@ This chapter provides a categorized reference for the most important exported sy
 
 - ~with-write-lock ((lock) &body body)~ ::
   Executes the body of code after acquiring an exclusive write lock.
+
+**** Graph Algorithms (optional ~graph-db/algorithms~ add-on)
+See Chapter 14. All are read-only over a consistent snapshot; "node" arguments
+accept a vertex or its id.
+
+- ~shortest-path (from to &key direction edge-type weight-fn unweighted heuristic graph)~ ::
+  Weighted Dijkstra (or A* with ~:heuristic~) shortest path; ~(values path cost)~,
+  or ~(values nil nil)~ if unreachable. ~a-star~ and ~single-source-shortest-paths~
+  are companions.
+
+- ~degree (v &key edge-type graph)~ / ~out-degree~ / ~in-degree~ / ~degree-distribution~ ::
+  Vertex degree (in+out) and the sorted degree histogram.
+
+- ~distance-map (source &key direction edge-type graph)~ ::
+  BFS hop distances to every reachable node, as ascending ~(vertex . hops)~.
+
+- ~connected-components (&key direction edge-type vertex-type graph)~ / ~spanning-tree~ / ~graph-center~ / ~eccentricity~ ::
+  Weakly-connected components, a DFS spanning tree, and the BFS-eccentricity center.
+
+- ~page-rank (&key damping max-iterations tolerance use-weights-p graph)~ ::
+  Converging PageRank with dangling-mass redistribution; ~(values ranked iterations)~.
+  ~page-rank-distribution~ bins it.
+
+- ~hub-authority-values (&key max-iterations tolerance graph)~ / ~sim-rank (a b &key max-depth decay graph)~ ::
+  HITS hubs/authorities (L2-normalized each iteration) and pairwise SimRank.
+
+- ~all-pairs-shortest-paths (&key directed use-weights-p vertex-type graph)~ ::
+  Floyd–Warshall (in-memory projection); query the result with ~apsp-distance~ /
+  ~apsp-path~. O(V²) memory — scope large graphs with ~:vertex-type~.
+
+- ~graph-clustering (&key method edge-removal-count directed graph)~ / ~minimum-cut~ ::
+  Edge-betweenness / edge-span clustering and a minimal edge cut (projection).
+
+- ~maximum-flow (source sink &key algorithm edge-type graph)~ ::
+  Max-flow with edge ~weight~ as capacity; ~:edmonds-karp~ / ~:dinic~ /
+  ~:goldberg-tarjan~. ~bipartite-p~ and ~maximum-matching~ build on it.
+
+- ~generate-graph (model size &key vertex-constructor edge-constructor p saturation-point graph)~ ::
+  Persist a random ~:erdos-renyi~ / ~:barabasi-albert~ graph via caller-supplied
+  vertex/edge constructors, in one transaction.
+
+- ~import-gml (file ...)~ / ~import-pajek (file ...)~ / ~graph->dot~ / ~visualize~ ::
+  GML/Pajek import and Graphviz export — the separate ~graph-db/algorithms-io~ system.
+
+- ~(shortest-path ?from ?to ?path ?cost)~ / ~(distance ?from ?to ?d)~ / ~(reachable ?from ?to)~ / ~(connected-component ?node ?member)~ / ~(degree ?node ?d)~ / ~(page-rank ?node ?rank)~ / ~(authority-value ?node ?v)~ / ~(hub-value ?node ?v)~ ::
+  Prolog functors exposing the native algorithms; composable in ~select~ queries.
 
