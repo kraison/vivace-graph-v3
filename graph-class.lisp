@@ -102,6 +102,45 @@
    (replication-filter :accessor replication-filter :initarg :replication-filter
                        :initform nil)))
 
+;; Peer replication (hub-and-spoke, offline-first).  A SIBLING of master/slave --
+;; deliberately NOT a subclass of either -- so the master/slave transport is left
+;; exactly as it is.  A peer-graph is a plain graph with extra peer state; until the
+;; full-system transport file (peer-streaming.lisp) specializes START-REPLICATION /
+;; STOP-REPLICATION on it, it inherits the base no-op methods and behaves like an
+;; ordinary embedded graph.  See docs/peer-replication-design.md (design v2) and
+;; docs/peer-replication-branch-a-plan.md (WP-1).
+(defclass peer-graph (graph)
+  ((peer-role :accessor peer-role :initarg :peer-role :initform :device
+              :documentation "Either :HUB (the system of record many devices sync
+              against) or :DEVICE (an offline-first replica that pulls an
+              authority-scoped subgraph and -- Branch B -- pushes authored changes).")
+   (origin-id :accessor origin-id :initarg :origin-id :initform nil
+              :documentation "This replica's stable 16-byte origin UUID, hub-minted.
+              Stamped onto authored ops and preserved across re-homing (design §3).")
+   (peer-host :accessor peer-host :initarg :peer-host :initform nil
+              :documentation "Device role: the hub host to connect to (the port is
+              REPLICATION-PORT, inherited from GRAPH).  Unused for the hub role.")
+   (export-predicate :accessor export-predicate :initarg :export-predicate :initform nil
+                     :documentation "Hub role: app-supplied DISCLOSABLE-P
+                     (VERTEX GRAPH DEVICE-SCOPE) -> boolean, run under the export read
+                     snapshot to build each device's closed authority-scoped subgraph
+                     (design §7).  The engine never embeds disclosure policy itself.")
+   (device-registry :accessor device-registry :initarg :device-registry :initform nil
+                    :documentation "Hub role: app-owned registry keyed by device
+                    ORIGIN-ID, holding clearance scope + per-device cursors/manifest.
+                    The engine only reads it.")
+   (lamport-counter :accessor lamport-counter :initarg :lamport-counter :initform 0
+                    :documentation "Durable, monotonic logical clock for conflict
+                    ordering (Branch B).  Advanced on every authored op and to
+                    MAX(local,received)+1 on receipt.  Reserved/unused in Branch A.")
+   (applied-op-ids :accessor applied-op-ids :initarg :applied-op-ids :initform nil
+                   :documentation "Durable OP-ID -> lamport dedup index (WP-3), checked
+                   before apply so a re-homed op bouncing back is not duplicated.  NIL
+                   until WP-3 wires it.")
+   (stop-replication-p :accessor stop-replication-p :initarg :stop-replication-p
+                       :initform nil)
+   (peer-thread :accessor peer-thread :initarg :peer-thread :initform nil)))
+
 (defgeneric graph-p (thing)
   (:method ((graph graph)) graph)
   (:method (thing) nil))
@@ -112,6 +151,10 @@
 
 (defgeneric slave-graph-p (thing)
   (:method ((graph slave-graph)) graph)
+  (:method (thing) nil))
+
+(defgeneric peer-graph-p (thing)
+  (:method ((graph peer-graph)) graph)
   (:method (thing) nil))
 
 (defgeneric init-schema (graph))

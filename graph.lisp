@@ -34,7 +34,9 @@ the graph predates the spatial index (backward compatible)."
                                    (index-size *default-index-size*)
                                    (keep-revisions 0)
                                    (spatial-precision 7)
-                                   replication-filter)
+                                   replication-filter
+                                   peer-role origin-id peer-host
+                                   export-predicate device-registry)
   "Create a brand-new graph named NAME with its on-disk files under the
 directory LOCATION, register it (so LOOKUP-GRAPH and *GRAPH* can find it), and
 return it.  The directory is created if necessary and must not already contain
@@ -70,6 +72,13 @@ to disk and remove it."
     (error ":REPLICATION-PORT is required for master and slave graphs"))
   (when (and slave-p (not master-host))
     (error ":MASTER-HOST required for slave graphs"))
+  ;; Peer replication (hub-and-spoke) is a separate transport from master/slave.
+  (when (and peer-role (or master-p slave-p))
+    (error ":PEER-ROLE is mutually exclusive with :MASTER-P / :SLAVE-P"))
+  (when (and peer-role (not (member peer-role '(:hub :device))))
+    (error ":PEER-ROLE must be :HUB or :DEVICE, got ~S" peer-role))
+  (when (and (eq peer-role :device) (null origin-id))
+    (error "a :DEVICE peer-graph requires a hub-minted :ORIGIN-ID"))
   (ensure-directories-exist location)
   (let* ((path (pathname location))
          (dirty-file (format nil "~A/.dirty" location)))
@@ -84,6 +93,7 @@ to disk and remove it."
             (make-instance
              (cond (slave-p 'slave-graph)
                    (master-p 'master-graph)
+                   (peer-role 'peer-graph)
                    (t 'graph))
              :graph-name name
              :location path
@@ -139,6 +149,12 @@ to disk and remove it."
         (when replay-txn-dir
           (let ((*graph* graph))
             (replay graph replay-txn-dir package))))
+      (when peer-role
+        (setf (peer-role graph) peer-role
+              (origin-id graph) origin-id
+              (peer-host graph) peer-host
+              (export-predicate graph) export-predicate
+              (device-registry graph) device-registry))
       (setf (transaction-manager graph)
             (make-instance 'transaction-manager
                            :graph graph))
@@ -152,7 +168,9 @@ to disk and remove it."
                    replication-key package (buffer-pool-p t) (gc-heap-p t)
                    (buffer-pool-size 100000)
                    (accept-versions (list +storage-version+))
-                   keep-revisions)
+                   keep-revisions
+                   peer-role origin-id peer-host
+                   export-predicate device-registry)
   "Open the existing graph named NAME whose files live under directory
 LOCATION, register it, and return it.  Use this to reopen a graph created
 earlier with MAKE-GRAPH; the keyword arguments mirror MAKE-GRAPH's.
@@ -162,6 +180,12 @@ not closed cleanly and must be recovered first (see RECOVER-TRANSACTIONS and
 the backup/recovery chapter).  By default the heap is garbage-collected
 (:GC-HEAP-P) and outstanding transactions are recovered on open.  Always
 CLOSE-GRAPH when finished."
+  (when (and peer-role (or master-p slave-p))
+    (error ":PEER-ROLE is mutually exclusive with :MASTER-P / :SLAVE-P"))
+  (when (and peer-role (not (member peer-role '(:hub :device))))
+    (error ":PEER-ROLE must be :HUB or :DEVICE, got ~S" peer-role))
+  (when (and (eq peer-role :device) (null origin-id))
+    (error "a :DEVICE peer-graph requires a hub-minted :ORIGIN-ID"))
   (ensure-directories-exist location)
   (let ((path (pathname location))
         (dirty-file (format nil "~A/.dirty" location))
@@ -180,6 +204,7 @@ CLOSE-GRAPH when finished."
             (make-instance
              (cond (slave-p 'slave-graph)
                    (master-p 'master-graph)
+                   (peer-role 'peer-graph)
                    (t 'graph))
              :graph-name name
              :location path
@@ -237,6 +262,12 @@ CLOSE-GRAPH when finished."
         (recover-transactions graph))
       (when slave-p
         (setf (master-host graph) master-host))
+      (when peer-role
+        (setf (peer-role graph) peer-role
+              (origin-id graph) origin-id
+              (peer-host graph) peer-host
+              (export-predicate graph) export-predicate
+              (device-registry graph) device-registry))
       (setf (transaction-manager graph)
             (make-instance 'transaction-manager
                            :graph graph))
