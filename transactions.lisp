@@ -1478,6 +1478,61 @@ crash orphans one."
 ;;; header format entirely, or a stable-id scheme) once the rw-lock work lands.
 ;;; -------------------------------------------------------------------------
 
+;;; ---------------------------------------------------------------------------
+;;; Peer replication (WP-0): the peer-meta packet.
+;;;
+;;; A peer-graph prefixes each transaction it journals to its feed with a
+;;; self-size-framed peer-meta packet carrying the authored op's identity and
+;;; logical clock, so the op can be deduped across re-homing (design §3) and
+;;; ordered for conflict resolution (Branch B).  The inner transaction (tx-header
+;;; + tx-writes) follows in the standard format, so the peer transport reads the
+;;; peer-meta packet first, then the ordinary tx packets.  Layout:
+;;;   size(8) flags(1) type(1=#\M) origin-id(16) op-id(16) lamport(8) op-class(1)
+;;; ---------------------------------------------------------------------------
+
+(alexandria:define-constant +peer-meta-type-code+ (char-code #\M))
+(alexandria:define-constant +peer-meta-packet-size+ (+ 8 1 1 16 16 8 1)) ; 51
+(alexandria:define-constant +peer-op-authored+ 0)      ; an authored user/automation op
+(alexandria:define-constant +peer-op-state-create+ 1)  ; hub membership-create (WP-5)
+(alexandria:define-constant +peer-op-purge+ 2)         ; hub scope-exit purge (WP-5)
+(alexandria:define-constant +peer-null-origin+
+    (make-array 16 :element-type '(unsigned-byte 8) :initial-element 0)
+  :test 'equalp)
+
+(defun gen-op-id ()
+  "A fresh 16-byte op-id (random v4 uuid) identifying an authored change event.
+Stable across re-homing -- the hub never re-mints it (design §3 #2)."
+  (uuid:uuid-to-byte-array (uuid:make-v4-uuid)))
+
+(defun peer-next-lamport (graph)
+  "Advance and return GRAPH's logical (Lamport) clock.  Called under the
+replication-log lock, so assignment is serialized + monotonic.  NOTE (PT-8): the
+counter is in-memory in Branch A (lamport is reserved/unconsumed until Branch B);
+persist + recover-monotonic before Branch B's merge relies on it."
+  (incf (lamport-counter graph)))
+
+(defun serialize-peer-meta (origin-id op-id lamport op-class)
+  "Build the 51-byte peer-meta packet (see layout above)."
+  (let ((v (make-byte-vector +peer-meta-packet-size+)) (i 0))
+    (serialize-uint64 v +peer-meta-packet-size+ i) (incf i 8)
+    (setf (aref v i) 0) (incf i)                       ; flags (unused)
+    (setf (aref v i) +peer-meta-type-code+) (incf i)   ; type
+    (replace v origin-id :start1 i :end2 16) (incf i 16)
+    (replace v op-id :start1 i :end2 16) (incf i 16)
+    (serialize-uint64 v (or lamport 0) i) (incf i 8)
+    (setf (aref v i) op-class)
+    v))
+
+(defun deserialize-peer-meta (vector &optional (offset 0))
+  "Parse a peer-meta packet at OFFSET.  Returns (values origin-id op-id lamport
+op-class).  Asserts the packet's type byte."
+  (assert (= (aref vector (+ offset 9)) +peer-meta-type-code+))
+  (let ((i (+ offset 10)))
+    (values (subseq vector i (+ i 16))
+            (subseq vector (+ i 16) (+ i 32))
+            (deserialize-uint64 vector (+ i 32))
+            (aref vector (+ i 40)))))
+
 (defun prepare-tx-persistence (transaction)
   "Serialize TRANSACTION to a temp file and populate its BYTES slot.  Runs BEFORE
 the transaction-manager lock, so the bulk serialization + disk write (and the
@@ -1522,8 +1577,21 @@ and it reads these patched bytes, never the .txn files)."
                         (transaction-id transaction)
                         +tx-header-id-offset+)
       (let ((repl-stream (replication-log tm))
-            (lock (replication-log-lock tm)))
+            (lock (replication-log-lock tm))
+            (gr (graph tm)))
         (with-recursive-lock-held (lock)
+          ;; peer-replication WP-0: a peer-graph prefixes the feed entry with a
+          ;; peer-meta packet (op identity + lamport), then records that it has
+          ;; applied its own authored op so a re-homed bounce-back is deduped
+          ;; (design §6).  A master journals plain tx bytes, unchanged.
+          (when (peer-graph-p gr)
+            (let ((op-id (gen-op-id))
+                  (lamport (peer-next-lamport gr)))
+              (write-sequence
+               (serialize-peer-meta (or (origin-id gr) +peer-null-origin+)
+                                    op-id lamport +peer-op-authored+)
+               repl-stream)
+              (record-applied-op gr op-id lamport)))
           (write-sequence (bytes transaction) repl-stream)
           (finish-output repl-stream))))))
 
