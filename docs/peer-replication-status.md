@@ -14,8 +14,9 @@ the same state.
 
 ## 1. Where we are
 
-**Milestone M1 (foundation) COMPLETE; M2 (pull MVP) COMPLETE.** Committed on `peer-replication`
-(M1 also pushed; the M2 commit `82f5513` is local — push is explicit-only):
+**Milestone M1 (foundation) COMPLETE; M2 (pull MVP) COMPLETE + green on the SBCL-hub ↔ ECL-device
+ship config.** Committed on `peer-replication` (M1 also pushed; the M2 + ECL-fix commits are local —
+push is explicit-only):
 
 | commit | what |
 |---|---|
@@ -26,6 +27,8 @@ the same state.
 | `5bab412` | **WP-0** peer-meta envelope + op-id/lamport minting at authoring |
 | `2f4112d` | **WP-5** authority-scoped closed-subgraph export (`replication.lisp`) |
 | `82f5513` | **WP-4 + WP-6 + WP-8** hub/device pull transport (`peer-streaming.lisp`) + 2-process test |
+| `17e89b9` | docs: status — M2 complete |
+| `59f52b1` | **ECL fix**: SBCL hub ↔ ECL device green (3 cross-impl/ECL gaps + harness) |
 
 Net: a `peer-graph` constructs/lifecycles; a device journals its own commits into a push feed with
 a per-transaction peer-meta envelope (origin-id + op-id + lamport + op-class); a durable op-id index
@@ -34,7 +37,9 @@ subgraph a device should hold; and **`peer-streaming.lisp` ships it over the wir
 authority-scoped pulls and a device pulls its closed disclosable subgraph and applies it read-only,
 through a single-writer funnel, behind a same-major schema-compat handshake. Master/slave/plain
 graphs are untouched throughout. M2 is verified end-to-end by a two-process loopback test
-(`tests/peer-replication/`, 12/12 green); the existing master/slave test still passes 16/16.
+(`tests/peer-replication/`, 12/12 green) on **all four impl combos** (SBCL↔SBCL, ECL↔ECL,
+**SBCL hub ↔ ECL device** = the Android ship config, ECL↔SBCL); the existing master/slave test still
+passes 16/16; and the full FiveAM suite is 0-fail on SBCL (1641) and ECL (1635).
 
 **What `82f5513` added** (the network half — design §8/§9, plan WP-4/6/8):
 - `peer-streaming.lisp`: peer-protocol v1 wire codec (`#\M` peer-meta for tx-bearing ops, `#\U`
@@ -49,6 +54,32 @@ graphs are untouched throughout. M2 is verified end-to-end by a two-process loop
 - `tests/peer-replication/`: two-process harness (hub + device, like `tests/replication/`, since
   process-global `*graphs*`/schema/`*graph*` preclude an in-image two-graph test).
 
+**What `59f52b1` fixed** (the SBCL-hub ↔ ECL-device split — the ship config — crashed; three real
+ECL-path gaps, each masked by the next, **all latent for master/slave too** since no ECL replica was
+ever exercised):
+1. **Cross-impl plist strings** (the `(car "PEER-TEST-APP")` crash). The plist channel serializes
+   under `*print-readably* t`; SBCL's `(symbol-name (graph-name g))` is a BASE-STRING that prints as
+   a `#A((n) BASE-CHAR . "…")` array literal ECL's reader can't parse. `peer-streaming.lisp`:
+   `peer-portable-string` coerces string values to a general `character` string; all peer plist
+   writes go through `peer-write-plist`. The shared master/slave `serialize-packet-plist` is **not**
+   touched.
+2. **`mailbox.lisp` had no `#+ecl` branch** → `make-mailbox`/`send`/`receive` were NIL/no-ops on ECL,
+   silently dropping every op in the WP-8 funnel. ECL now reuses CCL's lock+queue struct mailbox with
+   a poll-based `receive-message` (`trivial-timeout` is CCL/LispWorks-only).
+3. **`maybe-init-node-data` dereferenced a foreign `data-pointer`** (→ `deserialize #(0 0)` →
+   `STORAGE-EXHAUSTED` cascade). A wire/disk node carries the author's `data-pointer` (a heap address
+   meaningless locally); on ECL `change-class` (in `deserialize-vertex/edge-head`) reads a persistent
+   slot during re-init → `node-slot-value` → `maybe-init-node-data` → read THIS heap at the hub's
+   address. `primitive-node.lisp`: `maybe-init-node-data` no-ops while `*initializing-node*` is bound
+   (defvar relocated above it); data is set explicitly afterward (wire path) or materialized lazily
+   later (lhash path). **NB: this also means a real master→ECL-slave was broken the same way and is
+   now fixed — worth a dedicated ECL-slave regression if that path is ever used.**
+
+Harness (mine-action "item 2"): `hub.lisp`/`device.lisp` bind `*debugger-hook*` (+ ECL
+`ext:*invoke-debugger-hook*`) early to print the condition + backtrace then quit, so an ECL error is
+legible instead of a STORAGE-EXHAUSTED recursion cascade. `run-peer-test.sh` gained
+`REPL_HUB_LISP_CMD` / `REPL_DEVICE_LISP_CMD` for the mixed split.
+
 **Working tree:** the M2 work is committed. The **pre-existing unrelated working-tree edits**
 (edge.lisp, index-list.lisp, rest.lisp, skip-list*.lisp, vertex.lisp, vev-index.lisp, views.lisp)
 still predate this work and remain uncommitted — **do not stage or commit them**; they are not part
@@ -60,14 +91,22 @@ of peer-replication. Stage only the specific files you change.
 
 **End-to-end peer sync (the primary check):** the two-process loopback harness
 ```
-tests/peer-replication/run-peer-test.sh          # SBCL by default
-REPL_LISP_CMD="ecl --load" tests/peer-replication/run-peer-test.sh   # ECL
+tests/peer-replication/run-peer-test.sh                              # SBCL ↔ SBCL (default)
+REPL_LISP_CMD="ecl --load" tests/peer-replication/run-peer-test.sh   # ECL ↔ ECL
+# the Android ship config — SBCL hub, ECL device (the one that matters):
+REPL_HUB_LISP_CMD="sbcl --non-interactive --load" \
+REPL_DEVICE_LISP_CMD="ecl --load" tests/peer-replication/run-peer-test.sh
 ```
 Prints each check and `RESULT: PASS`/`FAIL`. It runs the hub and device as **two OS processes**
 (the only faithful setup — process-global `*graphs*`/schema/`*graph*` preclude an in-image
 two-graph test, exactly as for `tests/replication/`). Covers seed = the closed disclosable closure
 (fail-closed omission), scope-exit purge, and schema-compat (minor drift syncs, major bump
-rejected). Don't forget the master/slave regression: `tests/replication/run-replication-test.sh`.
+rejected). **Warm both fasl caches first** when running a mixed split (a cold simultaneous compile
+makes the hub miss the device's 60s `wait-flag "ready"`): `sbcl --non-interactive --eval
+'(ql:quickload :graph-db)'` and `ecl --eval '(require :asdf)' --eval '(ql:quickload :graph-db)'
+--eval '(ext:quit)'`. Don't forget the master/slave regression:
+`tests/replication/run-replication-test.sh`. The fix in `59f52b1` touches core
+(`maybe-init-node-data`), so also run the full suite: `(graph-db/test::run-tests)` on SBCL and ECL.
 
 **Single-graph pieces (warm Lisp MCP image):** a Lisp MCP (`cl-mcp-server`) is attached. Discover it
 with `ToolSearch` (keywords: `lisp`, `eval`, `sbcl`) → `mcp__lisp__evaluate-lisp` / `load-system` /
@@ -209,9 +248,11 @@ PT-7.1); edge-removal bucket; IMAS `work-stage` value set + danger rank; device-
 > Resume the VivaceGraph peer-replication work on branch `peer-replication`. Read
 > `docs/peer-replication-status.md`, then `docs/peer-replication-design.md` (v2) and
 > `docs/peer-replication-branch-a-plan.md`. M1 (WP-0/1/2/3) + WP-5 are done and pushed; **M2 (pull
-> MVP: WP-4 transport + WP-6 schema-compat + WP-8 single-writer apply) is done in `peer-streaming.lisp`,
-> committed locally as `82f5513` (not pushed)** and verified by `tests/peer-replication/run-peer-test.sh`
-> (12/12) with master/slave still 16/16. Next is the **cursor-resumed authored-op stream** (§3a — the
+> MVP: WP-4 transport + WP-6 schema-compat + WP-8 single-writer apply) is done in `peer-streaming.lisp`
+> (`82f5513`), and the SBCL-hub ↔ ECL-device ship config is green after the ECL/cross-impl fixes
+> (`59f52b1`) — both commits LOCAL, not pushed.** Verified by `tests/peer-replication/run-peer-test.sh`
+> 12/12 on all four impl combos, master/slave 16/16, full suite 0-fail SBCL+ECL. Next is the
+> **cursor-resumed authored-op stream** (§3a — the
 > one deferred piece of WP-4: a peer-feed disk reader over `replication-*.log` forwarding in-scope
 > authored ops after `pull-cursor`, plus PT-3 crash-atomicity for `apply-peer-authored-op`), then
 > **M3** (WP-7 re-home apply + device→hub push). Use the attached Lisp MCP (`cl-mcp-server`,
