@@ -1576,6 +1576,36 @@ which the diff would stamp with the wrong lamport for a field the local copy won
             (if (= 8 (read-sequence serialized stream)) (deserialize-uint64 serialized 0) 0))
           0))))
 
+;;; Device push-ack (Branch B): the highest of the device's OWN feed-seqs that the
+;;; hub has confirmed it re-homed.  The push feed's lower bound -- the device streams
+;;; its own authored ops with feed-seq > push-ack.  Its own durable scalar (device
+;;; tx-id space), distinct from the pull-cursor (hub tx-id space) and the own feed-seq.
+;;; Only an optimization: the hub dedups every op by op-id, so a device that loses its
+;;; push-ack merely re-streams already-applied ops (re-deduped), never double-applies.
+(defgeneric peer-push-ack-file (graph)
+  (:method (graph)
+    (make-pathname :name "push-ack" :type "dat" :defaults (location graph))))
+
+(defgeneric persist-peer-push-ack (ack graph)
+  (:method (ack (graph peer-graph))
+    (let ((serialized (make-byte-vector 8)))
+      (serialize-uint64 serialized ack 0)
+      (with-open-file (stream (peer-push-ack-file graph)
+                              :direction :output :element-type '(unsigned-byte 8)
+                              :if-does-not-exist :create :if-exists :overwrite)
+        (write-sequence serialized stream))
+      ack))
+  (:method (ack (graph graph)) (declare (ignore ack)) nil))
+
+(defgeneric load-peer-push-ack (graph)
+  (:method (graph)
+    (let ((file (peer-push-ack-file graph))
+          (serialized (make-byte-vector 8)))
+      (if (probe-file file)
+          (with-open-file (stream file :direction :input :element-type '(unsigned-byte 8))
+            (if (= 8 (read-sequence serialized stream)) (deserialize-uint64 serialized 0) 0))
+          0))))
+
 (defun peer-next-lamport (graph)
   "Advance and return GRAPH's Lamport clock, persisting the new value (PT-8).
 Called under the replication-log lock while journaling an authored op; the
@@ -1595,6 +1625,23 @@ mint).  Persists if it moved.  A NIL/zero RECEIVED is a no-op."
       (when (> received (lamport-counter graph))
         (setf (lamport-counter graph) received)
         (persist-lamport-counter graph))))
+  graph)
+
+(defun peer-observe-epoch (graph epoch)
+  "Advance GRAPH's TX-ID-COUNTER so it STRICTLY EXCEEDS EPOCH -- the MVCC commit
+epoch of an op this peer just APPLIED from a remote origin (a pulled node carries the
+HUB's epoch).  A device seeds its counter from its OWN feed-seq; without this the
+counter can sit at or below the epochs it applied, so a subsequent LOCAL edit
+transaction starts at a START-TX-ID that MVCC-hides the very node it means to edit
+(the node is invisible until the counter passes its epoch).  Under the tm lock, so it
+composes with CREATE-TRANSACTION; idempotent + monotonic; a NIL/zero EPOCH is a no-op.
+The durable side is the pull-cursor, which the barrier advances to the pull frontier T
+(>= every applied epoch) and which TX-ID-COUNTER is re-seeded from on open."
+  (when (and epoch (> epoch 0) (typep graph 'peer-graph))
+    (let ((tm (transaction-manager graph)))
+      (with-recursive-lock-held ((lock tm))
+        (when (>= epoch (tx-id-counter tm))
+          (setf (tx-id-counter tm) (1+ epoch))))))
   graph)
 
 (defun serialize-peer-meta (origin-id op-id lamport op-class)
@@ -1881,7 +1928,14 @@ stops appearing in queries.  MARK-DELETED is the usual entry point.")
 (defmethod initialize-instance :after ((instance transaction-manager)
                                        &key &allow-other-keys)
   (let* ((graph (graph instance))
-         (tx-id-counter (1+ (load-highest-transaction-id graph))))
+         ;; A peer device applies pulled nodes at the HUB's epoch, so its counter
+         ;; must dominate the pull-cursor (the pull frontier T >= every applied
+         ;; epoch) as well as its own feed-seq -- else a local edit transaction
+         ;; opens below a pulled node's epoch and MVCC-hides it (peer-observe-epoch).
+         (tx-id-counter (1+ (max (load-highest-transaction-id graph)
+                                 (if (peer-graph-p graph)
+                                     (load-peer-pull-cursor graph)
+                                     0)))))
     (setf (tx-id-counter instance) tx-id-counter)
     (setf (replication-log-file instance)
           (make-pathname :name (format nil "replication-~16,'0X"

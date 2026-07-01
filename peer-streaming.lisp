@@ -388,8 +388,8 @@ replayed onto the device."
 
 (defun make-peer-session-handler (graph socket)
   "Return a thunk handling one device connection on SOCKET (hub side): announce,
-authenticate, serve one pull, close.  Models MAKE-SLAVE-SESSION-HANDLER but stays
-distinct from it."
+authenticate, serve one pull, then RECEIVE the device's push and re-home it, close.
+Models MAKE-SLAVE-SESSION-HANDLER but stays distinct from it."
   (lambda ()
     (let ((*graph* graph))
       (handler-case
@@ -401,7 +401,10 @@ distinct from it."
                    (peer-write-plist (list :peer-control :auth-ok) socket)
                    (peer-pull-phase graph socket device
                                     :full-resync-p (and (getf auth :full-resync) t)
-                                    :min-cursor (or (getf auth :pull-cursor) 0))))
+                                    :min-cursor (or (getf auth :pull-cursor) 0))
+                   ;; B2d-2b: then receive the device's pushed authored ops and
+                   ;; re-home each (§5), acking the highest device feed-seq applied.
+                   (peer-receive-push graph socket device)))
             (ignore-errors (usocket:socket-close socket)))
         (error (c)
           (log:error "peer hub session error: ~A" c))))))
@@ -505,7 +508,10 @@ safe.  TX-ID is the shipped node's hub commit epoch, used as the MVCC stamp."
     (apply-tx-writes writes graph)
     (apply-tx-writes-to-views writes graph)
     (apply-tx-writes-to-spatial-index writes graph)
-    (reap-old-versions writes graph)))
+    (reap-old-versions writes graph)
+    ;; Keep the device's tx-id-counter above this pulled node's hub epoch so a later
+    ;; LOCAL edit transaction can see (and thus modify) it (B2d-2b).
+    (peer-observe-epoch graph tx-id)))
 
 (defun apply-peer-authored-op (graph op)
   "Apply an AUTHORED op on the device: dedup by op-id (PT-1), apply, advance the
@@ -544,6 +550,7 @@ ops."
             (set-node-field-stamp graph nid slot lam org)))
         (dolist (c conflicts) (record-peer-conflict graph c))
         (persist-peer-pull-cursor (peer-op-tx-id op) graph)
+        (peer-observe-epoch graph (peer-op-tx-id op))
         (record-applied-op graph (peer-op-op-id op) lamport)
         ;; B1/PT-8: advance our Lamport clock past the stamp we just applied.
         (peer-observe-lamport graph lamport)
@@ -641,6 +648,42 @@ op-id/origin/lamport on the re-journaled feed entry (via *PEER-REHOME-OP*, desig
         (peer-observe-lamport graph lamport)
         t)))
 
+(defun peer-receive-push (graph socket device)
+  "Hub push-receive (B2d-2b): read the device's streamed authored ops until its
+:PUSH-END control, RE-HOME each (§5 -- merge + re-journal under a fresh hub-seq
+preserving the author's op-id), and send back the new :PUSH-ACK -- the highest device
+feed-seq the hub saw.  Runs on the session thread (the hub is multi-writer, and
+REHOME-AUTHORED-OP journals + merges under its own transaction).  A dropped op leaves
+PUSH-ACK below it, so the device re-streams it next time (re-deduped by op-id)."
+  (let ((*graph* graph)
+        (high (peer-device-push-ack device)))
+    (loop
+      (let* ((packet (read-packet socket))
+             (type (aref packet 9)))
+        (cond
+          ((= type +peer-meta-type-code+)
+           (multiple-value-bind (origin op-id lamport op-class)
+               (deserialize-peer-meta packet)
+             (let* ((txh (deserialize-tx-header-vector (read-packet socket)))
+                    (writes (loop repeat (write-count txh)
+                                  collect (deserialize-tx-write-vector (read-packet socket))))
+                    (seq (transaction-id txh)))
+               (when (= op-class +peer-op-authored+)
+                 (rehome-authored-op graph
+                                     (make-peer-op :kind :authored :op-id op-id
+                                                   :origin origin :lamport lamport
+                                                   :tx-id seq :writes writes))
+                 (when (> seq high) (setf high seq))))))
+          ((= type +plist-packet-type-code+)
+           (let ((pl (deserialize-plist-packet packet)))
+             (when (eq (getf pl :peer-control) :push-end)
+               (return))))
+          (t (error "Unknown peer push packet type ~A" type)))))
+    (with-recursive-lock-held ((peer-device-lock device))
+      (setf (peer-device-push-ack device) high))
+    (peer-write-plist (list :peer-control :push-ack :push-ack high) socket)
+    high))
+
 (defun peer-purge-node (graph node)
   "Hard-remove NODE from the device: drop it from every index/view (and the
 spatial index for a geometry vertex), then from its lhash table and the cache.
@@ -708,7 +751,10 @@ reports + resets that accumulator, a :shutdown op ends the thread."
              ;; Branch B device that authors locally does not conflate the two spaces.
              (let ((frontier (peer-op-tx-id op)))
                (when (and frontier (> frontier (load-peer-pull-cursor graph)))
-                 (persist-peer-pull-cursor frontier graph)))
+                 (persist-peer-pull-cursor frontier graph))
+               ;; The frontier T dominates every epoch applied this pull; keep the
+               ;; live counter above it so local edits can see all pulled nodes.
+               (peer-observe-epoch graph frontier))
              (send-message (peer-op-reply op)
                            (list :created (copy-list created)
                                  :purged (copy-list purged)))
@@ -766,6 +812,39 @@ the writer (WP-8)."
         :schema-minor (second (peer-schema-version graph))
         :replication-key (replication-key graph)))
 
+(defun peer-push-phase (graph socket)
+  "Device push-send (B2d-2b): stream the device's OWN authored ops with feed-seq >
+PUSH-ACK to the hub, then a :PUSH-END control.  A device journals only its own
+authored commits, so its whole replication feed is pushable -- no held-filter, unlike
+the hub's cursor-resumed pull stream.  Read the hub's :PUSH-ACK reply and persist it
+so the next push resumes after it.  The log is read while the device may be appending
+new commits; a short/torn tail read is treated as end-of-log (that entry pushes next
+time).  Returns the acked feed-seq."
+  (let* ((*graph* graph)
+         (from (load-peer-push-ack graph)))
+    (flet ((safe-read (in) (handler-case (read-stream-packet in) (error () nil))))
+      (dolist (log (applicable-replication-logs (1+ from) graph))
+        (with-open-file (in log :element-type '(unsigned-byte 8))
+          (loop
+            (let ((meta (safe-read in)))
+              (unless meta (return))
+              (let ((txh-vec (safe-read in)))
+                (unless txh-vec (return))
+                (let* ((txh (deserialize-tx-header-vector txh-vec))
+                       (seq (transaction-id txh))
+                       (wpkts (loop repeat (write-count txh)
+                                    for w = (safe-read in) while w collect w)))
+                  (when (and (> seq from) (= (length wpkts) (write-count txh)))
+                    (write-packet meta socket)
+                    (write-packet txh-vec socket)
+                    (dolist (w wpkts) (write-packet w socket))))))))))
+    (peer-write-plist (list :peer-control :push-end) socket)
+    (let* ((ack (read-plist-packet socket))
+           (acked (getf ack :push-ack)))
+      (when (and acked (> acked from))
+        (persist-peer-push-ack acked graph))
+      (or acked from))))
+
 (defun peer-sync (graph &key (attempts 10) full-resync)
   "Device entry point: connect to the hub, handshake (same-major schema gate,
 WP-6/PT-6), receive one authority-scoped DELTA pull, apply it through the single
@@ -809,6 +888,9 @@ re-ship.  Returns the ack result plist (:created / :purged id lists)."
                         :purged  (peer-ids->string (getf result :purged))
                         :pull-cursor (load-peer-pull-cursor graph))
                   socket)
+                 ;; B2d-2b: after the pull ack, push the device's own authored ops to
+                 ;; the hub for re-home (§5).  Same connection, both directions.
+                 (peer-push-phase graph socket)
                  result))))
       (when socket (ignore-errors (usocket:socket-close socket))))))
 
