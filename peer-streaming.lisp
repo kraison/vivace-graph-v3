@@ -562,6 +562,24 @@ ops."
 ;;; so an OCC retry re-reads the local node and re-merges (design §13).
 ;;; ---------------------------------------------------------------------------
 
+(defun edge-multiplicity-conflicts (graph policy edge origin lamport)
+  "B3-2b: if EDGE is a :safety-surface-edge (find-of-type) whose SOURCE already holds a
+live edge of the same type -- a concurrent reclassification -- surface ONE multiplicity
+conflict (keyed on the source find; both edges are kept, since edges union).  Returns a
+list of 0 or 1 peer-conflict.  Runs at re-home only (the hub is where the reclassifi-
+cations converge); a device just pulls both edges via the union, no per-device surface."
+  (when (and policy (typep edge 'edge)
+             (eq :safety-surface-edge (merge-policy-edge-bucket policy (type-of edge))))
+    (let* ((src (lookup-vertex (from edge) :graph graph))
+           (siblings (and src (outgoing-edges src :graph graph :edge-type (type-of edge)
+                                              :include-subclasses-p nil))))
+      (setf siblings (remove-if (lambda (e) (equalp (id e) (id edge))) siblings))
+      (when siblings
+        (list (make-peer-conflict
+               :node-id (from edge) :slot :find-of-type :bucket :safety-surface-edge
+               :kept-value (to (first siblings)) :kept-origin nil
+               :loser-value (to edge) :loser-origin origin :loser-lamport lamport))))))
+
 (defun rehome-one-write (graph policy write lamport origin)
   "Apply one re-homed WRITE inside the CURRENT hub transaction, returning (values
 STAMP-UPDATES CONFLICTS).  A held-vertex update with a policy is merged field-by-
@@ -597,15 +615,22 @@ of (node-id slot lamport origin)."
             (remove-node-field-stamps graph nid)
             (values nil nil)))))
       ((null local)
-       ;; New to the hub -- recreate with the incoming state, stamp every field.
-       (let ((n (make-instance (type-of incoming)
+       ;; New to the hub -- recreate with the incoming state, stamp every field.  For
+       ;; an edge, carry FROM/TO (separate slots, not in DATA) so it indexes correctly.
+       ;; B3-2b: a 2nd concurrent :safety-surface-edge (find-of-type) on the same source
+       ;; SURFACES a multiplicity conflict (both edges kept -- edges union).  Check
+       ;; BEFORE the create so the incoming edge is not its own sibling.
+       (let ((conflicts (edge-multiplicity-conflicts graph policy incoming origin lamport))
+             (n (make-instance (type-of incoming)
                                :id nid :type-id (type-id incoming) :revision 0)))
          (setf (data n) (copy-tree (data incoming))
                (bytes n) (serialize (data incoming)))
-         (create-node n graph))
-       (values (loop for (slot . nil) in (data incoming)
-                     collect (list nid slot lamport origin))
-               nil))
+         (when (typep incoming 'edge)
+           (setf (from n) (from incoming) (to n) (to incoming)))
+         (create-node n graph)
+         (values (loop for (slot . nil) in (data incoming)
+                       collect (list nid slot lamport origin))
+                 conflicts)))
       ((and policy (vertex-p incoming))
        (multiple-value-bind (merged-data stamps conflicts)
            (merge-authored-fields policy (type-of incoming) nid
