@@ -549,6 +549,98 @@ ops."
         (peer-observe-lamport graph lamport)
         t)))
 
+;;; ---------------------------------------------------------------------------
+;;; Branch B: HUB re-home of a device-pushed authored op (B2d-2).
+;;;
+;;; The device pull-apply above (APPLY-PEER-AUTHORED-OP) runs on the single-writer
+;;; funnel and does NOT re-journal -- a device never re-journals ops (design §5).
+;;; The hub is the system of record: when it applies a device push it must RE-JOURNAL
+;;; the result under a fresh hub-seq so every OTHER device pulls it, while preserving
+;;; the ORIGINAL op-id/origin/lamport (so the author dedups its own bounce-back).  So
+;;; re-home goes through a normal journaling WITH-TRANSACTION -- and, because the hub
+;;; is multi-writer, the merge must run read-merge-write INSIDE the transaction body
+;;; so an OCC retry re-reads the local node and re-merges (design §13).
+;;; ---------------------------------------------------------------------------
+
+(defun rehome-one-write (graph policy write lamport origin)
+  "Apply one re-homed WRITE inside the CURRENT hub transaction, returning (values
+STAMP-UPDATES CONFLICTS).  A held-vertex update with a policy is merged field-by-
+field (off the live local node, read here so an OCC retry re-merges); a create,
+delete, edge, or unheld/no-policy update applies verbatim.  STAMP-UPDATES is a list
+of (node-id slot lamport origin)."
+  (let* ((incoming (node write))
+         (nid (id incoming))
+         (local (peer-local-node nid graph)))
+    (cond
+      ((typep write 'tx-delete)
+       (when local (delete-node local graph))
+       (remove-node-field-stamps graph nid)
+       (values nil nil))
+      ((null local)
+       ;; New to the hub -- recreate with the incoming state, stamp every field.
+       (let ((n (make-instance (type-of incoming)
+                               :id nid :type-id (type-id incoming) :revision 0)))
+         (setf (data n) (copy-tree (data incoming))
+               (bytes n) (serialize (data incoming)))
+         (create-node n graph))
+       (values (loop for (slot . nil) in (data incoming)
+                     collect (list nid slot lamport origin))
+               nil))
+      ((and policy (vertex-p incoming))
+       (multiple-value-bind (merged-data stamps conflicts)
+           (merge-authored-fields policy (type-of incoming) nid
+                                  (data local) (data incoming) (data (old-node write))
+                                  lamport origin (node-field-stamps graph nid))
+         (let ((c (copy local)))
+           (setf (data c) merged-data)
+           (update-node c graph))
+         (values (loop for (slot . stamp) in stamps
+                       collect (list nid slot (car stamp) (cdr stamp)))
+                 conflicts)))
+      (t
+       ;; No policy, or an edge (edge merge is B3) -- overwrite (Branch A), stamp changed.
+       (let ((c (copy local)))
+         (setf (data c) (data incoming))
+         (update-node c graph))
+       (values (loop for slot in (authored-changed-slots write)
+                     collect (list nid slot lamport origin))
+               nil)))))
+
+(defun rehome-authored-op (graph op)
+  "Hub re-home of a device-pushed AUTHORED op: dedup by op-id, then apply through a
+JOURNALING transaction (so every other device pulls the result), MERGING each held-
+node update field-by-field inside the transaction body, and preserving the original
+op-id/origin/lamport on the re-journaled feed entry (via *PEER-REHOME-OP*, design
+§5).  The merge's per-field stamps + surfaced conflicts are applied AFTER the commit
+(once, not per OCC attempt).  Returns T if applied, NIL if a duplicate."
+  (if (op-applied-p graph (peer-op-op-id op))
+      nil
+      (let ((policy (merge-policy graph))
+            (lamport (peer-op-lamport op))
+            (origin (peer-op-origin op))
+            (op-id (peer-op-op-id op))
+            (stamp-updates '())
+            (conflicts '()))
+        (let ((*peer-rehome-op* (list op-id origin lamport))
+              (*graph* graph))
+          (with-transaction ((transaction-manager graph))
+            ;; Reset per OCC attempt -- only the committed attempt's values survive.
+            (setf stamp-updates '() conflicts '())
+            (dolist (w (peer-op-writes op))
+              (multiple-value-bind (stamps confs)
+                  (rehome-one-write graph policy w lamport origin)
+                (setf stamp-updates (nconc stamp-updates stamps)
+                      conflicts (nconc conflicts confs))))))
+        ;; Committed: apply the merge's per-field stamps + retain conflicts once.
+        (dolist (s stamp-updates)
+          (destructuring-bind (nid slot lam org) s
+            (set-node-field-stamp graph nid slot lam org)))
+        (dolist (c conflicts) (record-peer-conflict graph c))
+        ;; Advance the hub clock past the op it just re-homed (its next authored op
+        ;; is causally after it), matching the device pull-apply.
+        (peer-observe-lamport graph lamport)
+        t)))
+
 (defun peer-purge-node (graph node)
   "Hard-remove NODE from the device: drop it from every index/view (and the
 spatial index for a geometry vertex), then from its lhash table and the cache.

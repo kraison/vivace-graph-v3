@@ -1504,6 +1504,14 @@ crash orphans one."
 Stable across re-homing -- the hub never re-mints it (design §3 #2)."
   (uuid:uuid-to-byte-array (uuid:make-v4-uuid)))
 
+(defvar *peer-rehome-op* nil
+  "Bound to (OP-ID ORIGIN LAMPORT) while a hub re-homes a device-pushed authored op
+through a journaling transaction (peer-streaming REHOME-AUTHORED-OP, Branch B).  It
+tells FINALIZE-TX-PERSISTENCE to preserve the ORIGINAL op identity on the
+re-journaled feed entry (design §5) instead of minting a fresh one, and to skip the
+whole-diff field stamping (the re-home caller applies the merge's per-field stamps,
+which the diff would stamp with the wrong lamport for a field the local copy won).")
+
 ;;; Durable Lamport clock (PT-8).  The counter must be monotonic ACROSS restarts:
 ;;; if it reset to 0 after a crash, a replica's post-restart authored ops would get
 ;;; tiny stamps and silently lose every LWW race (safety data dropped).  So we
@@ -1631,20 +1639,30 @@ and it reads these patched bytes, never the .txn files)."
           ;; applied its own authored op so a re-homed bounce-back is deduped
           ;; (design §6).  A master journals plain tx bytes, unchanged.
           (when (peer-graph-p gr)
-            (let ((op-id (gen-op-id))
-                  (lamport (peer-next-lamport gr))
-                  (origin (or (origin-id gr) +peer-null-origin+)))
-              (write-sequence
-               (serialize-peer-meta origin op-id lamport +peer-op-authored+)
-               repl-stream)
-              (record-applied-op gr op-id lamport)
-              ;; B2b: stamp every field this locally-authored op changed with
-              ;; (lamport . origin) -- the LWW basis a later concurrent edit
-              ;; from another replica compares against.
-              (dolist (w (writes transaction))
-                (let ((nid (id (node w))))
-                  (dolist (slot (authored-changed-slots w))
-                    (set-node-field-stamp gr nid slot lamport origin))))))
+            (if *peer-rehome-op*
+                ;; B2d-2: a hub re-home preserves the ORIGINAL op's identity on the
+                ;; feed entry (design §5) so device E pulls it as the author's op and
+                ;; the author dedups its own bounce-back; the re-home caller applies
+                ;; the merge's per-field stamps, so finalize does not stamp here.
+                (destructuring-bind (rop-id rorigin rlamport) *peer-rehome-op*
+                  (write-sequence
+                   (serialize-peer-meta rorigin rop-id rlamport +peer-op-authored+)
+                   repl-stream)
+                  (record-applied-op gr rop-id rlamport))
+                (let ((op-id (gen-op-id))
+                      (lamport (peer-next-lamport gr))
+                      (origin (or (origin-id gr) +peer-null-origin+)))
+                  (write-sequence
+                   (serialize-peer-meta origin op-id lamport +peer-op-authored+)
+                   repl-stream)
+                  (record-applied-op gr op-id lamport)
+                  ;; B2b: stamp every field this locally-authored op changed with
+                  ;; (lamport . origin) -- the LWW basis a later concurrent edit
+                  ;; from another replica compares against.
+                  (dolist (w (writes transaction))
+                    (let ((nid (id (node w))))
+                      (dolist (slot (authored-changed-slots w))
+                        (set-node-field-stamp gr nid slot lamport origin)))))))
           (write-sequence (bytes transaction) repl-stream)
           (finish-output repl-stream))))))
 
