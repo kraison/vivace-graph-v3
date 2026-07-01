@@ -139,6 +139,17 @@
                  :documentation "Serializes LAMPORT-COUNTER read-modify-write across
                  the minter (local authoring) and the observer (received ops), which
                  on a hub run on different threads.  Always innermost.")
+   (field-stamps :accessor field-stamps :initarg :field-stamps :initform nil
+                 :documentation "Branch B per-field Lamport stamps (B2b): node-id ->
+                 alist (slot . (lamport . origin)), the (lamport,origin) of the op
+                 that last wrote each field on THIS replica -- the LWW comparison
+                 basis.  Behind the GET/SET-FIELD-STAMP API so the substrate (an
+                 in-memory map persisted on open/close for v1) can later become the
+                 heap-backed side store.  NIL until the peer branch inits it.")
+   (field-stamps-lock :accessor field-stamps-lock :initarg :field-stamps-lock
+                      :initform (make-recursive-lock "field-stamps")
+                      :documentation "Serializes FIELD-STAMPS mutation/read (the hub
+                      merges on many session threads).")
    (applied-op-ids :accessor applied-op-ids :initarg :applied-op-ids :initform nil
                    :documentation "Durable OP-ID -> lamport dedup index (WP-3), checked
                    before apply so a re-homed op bouncing back is not duplicated.  NIL

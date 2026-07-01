@@ -1632,12 +1632,19 @@ and it reads these patched bytes, never the .txn files)."
           ;; (design §6).  A master journals plain tx bytes, unchanged.
           (when (peer-graph-p gr)
             (let ((op-id (gen-op-id))
-                  (lamport (peer-next-lamport gr)))
+                  (lamport (peer-next-lamport gr))
+                  (origin (or (origin-id gr) +peer-null-origin+)))
               (write-sequence
-               (serialize-peer-meta (or (origin-id gr) +peer-null-origin+)
-                                    op-id lamport +peer-op-authored+)
+               (serialize-peer-meta origin op-id lamport +peer-op-authored+)
                repl-stream)
-              (record-applied-op gr op-id lamport)))
+              (record-applied-op gr op-id lamport)
+              ;; B2b: stamp every field this locally-authored op changed with
+              ;; (lamport . origin) -- the LWW basis a later concurrent edit
+              ;; from another replica compares against.
+              (dolist (w (writes transaction))
+                (let ((nid (id (node w))))
+                  (dolist (slot (authored-changed-slots w))
+                    (set-node-field-stamp gr nid slot lamport origin))))))
           (write-sequence (bytes transaction) repl-stream)
           (finish-output repl-stream))))))
 

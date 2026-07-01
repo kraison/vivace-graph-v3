@@ -67,6 +67,101 @@ NIL origin sorts lowest (an unstamped local field always loses a real op)."
     (let ((x (aref a i)) (y (aref b i)))
       (cond ((< x y) (return -1)) ((> x y) (return 1))))))
 
+;;; ---------------------------------------------------------------------------
+;;; B2b: the per-field (lamport . origin) stamp store.
+;;;
+;;; Behind this GET/SET API so the substrate can change.  v1 (C) is an in-memory
+;;; map node-id -> alist (slot . (lamport . origin)), persisted on open/close;
+;;; final target (B) is a heap-backed side store.  A crash between persists loses
+;;; recent stamps -> local fields read as unstamped -> the next op wins the LWW
+;;; (safe: the loser is retained via MVCC; :safety resolution barely uses stamps).
+;;; ---------------------------------------------------------------------------
+
+(defun ensure-field-stamps (graph)
+  (or (field-stamps graph)
+      (setf (field-stamps graph) (make-hash-table :test 'equalp))))
+
+(defun node-field-stamps (graph node-id)
+  "The alist slot -> (lamport . origin) of NODE-ID's stamps (a fresh copy; NIL if none)."
+  (and (field-stamps graph)
+       (with-recursive-lock-held ((field-stamps-lock graph))
+         (copy-alist (gethash node-id (field-stamps graph))))))
+
+(defun node-field-stamp (graph node-id slot)
+  "(values LAMPORT ORIGIN) for SLOT of NODE-ID; (0 NIL) if unstamped."
+  (let ((s (cdr (assoc slot (node-field-stamps graph node-id)))))
+    (if s (values (car s) (cdr s)) (values 0 nil))))
+
+(defun set-node-field-stamp (graph node-id slot lamport origin)
+  "Record that SLOT of NODE-ID was last written at (LAMPORT . ORIGIN) on this replica."
+  (with-recursive-lock-held ((field-stamps-lock graph))
+    (let* ((tbl (ensure-field-stamps graph))
+           (alist (gethash node-id tbl))
+           (pair (assoc slot alist)))
+      (if pair
+          (setf (cdr pair) (cons lamport origin))
+          (setf (gethash node-id tbl) (acons slot (cons lamport origin) alist)))))
+  (values lamport origin))
+
+(defun apply-field-stamp-updates (graph node-id stamp-updates)
+  "Persist MERGE-AUTHORED-FIELDS's STAMP-UPDATES (slot -> (lamport . origin)) for NODE-ID."
+  (dolist (u stamp-updates)
+    (set-node-field-stamp graph node-id (car u) (cadr u) (cddr u))))
+
+(defun remove-node-field-stamps (graph node-id)
+  "Drop all of NODE-ID's stamps (on purge/delete)."
+  (when (field-stamps graph)
+    (with-recursive-lock-held ((field-stamps-lock graph))
+      (remhash node-id (field-stamps graph)))))
+
+;;; Persistence (v1: a printed snapshot on open/close; ids/origins as hex so the
+;;; form is portable + human-legible).
+
+(defgeneric field-stamps-file (graph)
+  (:method (graph)
+    (make-pathname :name "field-stamps" :type "dat" :defaults (location graph))))
+
+(defun persist-field-stamps (graph)
+  (when (field-stamps graph)
+    (with-recursive-lock-held ((field-stamps-lock graph))
+      (with-open-file (s (field-stamps-file graph) :direction :output
+                         :if-exists :supersede :if-does-not-exist :create)
+        (with-standard-io-syntax
+          (let ((*package* (find-package :graph-db)))
+            (write
+             (loop for id being the hash-keys of (field-stamps graph) using (hash-value alist)
+                   collect (cons (peer-id->hex id)
+                                 (loop for (slot . stamp) in alist
+                                       collect (list slot (car stamp)
+                                                     (and (cdr stamp) (peer-id->hex (cdr stamp)))))))
+             :stream s))))))
+  graph)
+
+(defun load-field-stamps (graph)
+  (let ((tbl (make-hash-table :test 'equalp))
+        (file (field-stamps-file graph)))
+    (when (probe-file file)
+      (with-open-file (s file :direction :input)
+        (with-standard-io-syntax
+          (let ((*package* (find-package :graph-db)) (*read-eval* nil))
+            (dolist (entry (read s nil nil))
+              (setf (gethash (peer-hex->id (car entry)) tbl)
+                    (loop for (slot lamport origin-hex) in (cdr entry)
+                          collect (cons slot (cons lamport
+                                                   (and origin-hex (peer-hex->id origin-hex)))))))))))
+    (setf (field-stamps graph) tbl)))
+
+(defun authored-changed-slots (write)
+  "The slots an authored WRITE actually changed -- all of a create's data, or the
+diff of an update's new vs old.  Used to stamp locally-authored edits."
+  (etypecase write
+    (tx-delete '())                                     ; a delete stamps nothing
+    (tx-create (mapcar #'car (data (node write))))
+    (tx-update (let ((new (data (node write))) (old (data (old-node write))))
+                 (loop for (slot . val) in new
+                       unless (equalp val (cdr (assoc slot old)))
+                       collect slot)))))
+
 (defun merge-authored-fields (policy node-type node-id
                               local-data new-data old-data
                               incoming-lamport incoming-origin local-stamps)

@@ -158,6 +158,8 @@ to disk and remove it."
               ;; B1/PT-8: reload the durable Lamport clock so it never resets on
               ;; restart (0 for a fresh graph, the persisted value on reopen).
               (lamport-counter graph) (load-lamport-counter graph)
+              ;; B2b: recover per-field Lamport stamps (v1 in-memory snapshot).
+              (field-stamps graph) (load-field-stamps graph)
               ;; WP-3: durable applied-op-id dedup index -- op-id (16-byte uuid key)
               ;; -> lamport (uint64 value), the make-lhash defaults.
               (applied-op-ids graph)
@@ -279,6 +281,8 @@ CLOSE-GRAPH when finished."
               ;; B1/PT-8: recover the durable Lamport clock (monotonic across
               ;; restarts -- a reset would lose LWW races on post-restart writes).
               (lamport-counter graph) (load-lamport-counter graph)
+              ;; B2b: recover per-field Lamport stamps (v1 in-memory snapshot).
+              (field-stamps graph) (load-field-stamps graph)
               ;; WP-3: open the applied-op-id index (create it if this peer-graph
               ;; predates the index, so reopening an older graph upgrades cleanly).
               (applied-op-ids graph)
@@ -354,6 +358,8 @@ in place, forcing recovery on the next OPEN-GRAPH."
 
 (defmethod close-graph :after ((graph peer-graph) &key (snapshot-p t))
   (declare (ignore snapshot-p))
+  ;; B2b: snapshot the per-field Lamport stamps (v1 substrate persists on close).
+  (ignore-errors (persist-field-stamps graph))
   (when (and (slot-boundp graph 'applied-op-ids)
              (lhash-p (applied-op-ids graph)))
     (close-lhash (applied-op-ids graph))

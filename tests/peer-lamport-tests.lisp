@@ -53,3 +53,35 @@ close/reopen (never resets), jumps forward on OBSERVE, and never moves backward.
                (graph-db::peer-observe-lamport g 5)
                (is (= 11 (graph-db::lamport-counter g)) "a lower observe never moves it back"))
           (close-graph g :snapshot-p nil))))))
+
+(test field-stamps-track-and-recover
+  "A locally-authored edit stamps each changed field with (lamport . origin); an
+update advances the changed field's stamp but leaves an unchanged field's; the
+stamps survive close/reopen (B2b)."
+  (with-temp-directory (dir)
+    (let ((path (namestring dir)) vid)
+      (let ((g (make-graph *integration-graph-name* path
+                           :peer-role :device :origin-id *lamport-origin*
+                           :peer-host "localhost" :replication-port 0
+                           :buffer-pool-size 1000)))
+        (let ((*graph* g))
+          (setq vid (id (with-transaction () (make-g-person :name "A" :age 7)))) ; lamport 1
+          (is (= 1 (graph-db::node-field-stamp g vid :name)) "create stamps :name")
+          (is (= 1 (graph-db::node-field-stamp g vid :age))  "create stamps :age")
+          (multiple-value-bind (lam org) (graph-db::node-field-stamp g vid :name)
+            (declare (ignore lam))
+            (is (equalp org *lamport-origin*) "stamp origin is the graph origin"))
+          ;; update only :age -> its stamp advances, :name's does not
+          (with-transaction ()
+            (let ((v (copy (lookup-vertex vid)))) (setf (slot-value v 'age) 8) (save v))) ; lamport 2
+          (is (= 2 (graph-db::node-field-stamp g vid :age)) "update advances the changed field")
+          (is (= 1 (graph-db::node-field-stamp g vid :name)) "the unchanged field keeps its stamp"))
+        (close-graph g :snapshot-p nil))
+      (let ((g (open-graph *integration-graph-name* path
+                           :peer-role :device :origin-id *lamport-origin*
+                           :peer-host "localhost" :replication-port 0)))
+        (unwind-protect
+             (progn
+               (is (= 2 (graph-db::node-field-stamp g vid :age)) "reopen recovers :age stamp")
+               (is (= 1 (graph-db::node-field-stamp g vid :name)) "reopen recovers :name stamp"))
+          (close-graph g :snapshot-p nil))))))
