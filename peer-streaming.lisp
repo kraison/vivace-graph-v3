@@ -205,6 +205,88 @@ it on the device side."
   (write-packet (serialize-purge-packet ids) socket))
 
 ;;; ---------------------------------------------------------------------------
+;;; Hub: the cursor-resumed authored-op stream (WP-4.3, delta mode).
+;;;
+;;; Membership reconciliation (below) ships ENTERED nodes as state-creates and
+;;; PURGES departed ones, but does NOT re-ship a node the device already holds.
+;;; The edits to those HELD nodes flow here instead: the hub re-reads its own
+;;; replication feed (replication-*.log; a peer-graph journals every commit as
+;;; [peer-meta][tx-header][writes], WP-0/WP-2) from the device's pull-cursor and
+;;; forwards the in-scope authored writes.  This is the volume path -- it carries
+;;; O(changes-since-cursor), not O(working-set), on every reconnect.
+;;;
+;;; WRITE-LEVEL disclosure filter (design §7): an authored transaction may touch
+;;; several nodes; we forward only the writes whose node is HELD (in scope AND
+;;; already on the device).  That is the export-side analog of the slave's
+;;; RECONCILE-SLAVE-WRITES, keyed on scope membership.  Newly-entered nodes are
+;;; NOT streamed (a membership-create ships their current state, so replaying
+;;; their pre-entry history -- with stale MVCC epochs -- is avoided); departed
+;;; nodes are NOT streamed (a purge removes them).
+;;; ---------------------------------------------------------------------------
+
+(defun peer-tx-write-node-id (wpkt)
+  "The 16-byte node id of a serialized tx-write packet, read WITHOUT deserializing:
+the (new) node begins at offset 11 (tx-write header) and its uuid at +10."
+  (subseq wpkt 21 37))
+
+(defun patch-tx-header-vector (txh-vec write-count write-size)
+  "A copy of the tx-header packet TXH-VEC with WRITE-COUNT (offset 18) and
+WRITE-SIZE (offset 26) rewritten -- used to re-frame a header after the
+write-level disclosure filter drops some of its writes.  TX-ID (offset 10) and
+the packet size are unchanged."
+  (let ((v (copy-seq txh-vec)))
+    (serialize-uint64 v write-count 18)
+    (serialize-uint64 v write-size 26)
+    v))
+
+(defun stream-peer-authored-ops (socket graph held min-tx-id max-tx-id)
+  "Forward the hub's in-scope authored ops with tx-id in [MIN-TX-ID, MAX-TX-ID]
+to SOCKET.  HELD is an id-table of the node-ids the device holds AND still has in
+scope; only writes touching those are forwarded (write-level disclosure filter).
+Each surviving op is re-framed (peer-meta + patched tx-header + kept writes).
+Ops with no in-scope write are skipped.
+
+Reads the replication log tail concurrently with the hub appending to it; entries
+with tx-id <= MAX-TX-ID were committed before the pull snapshot and are complete,
+so any short/torn read is necessarily a later (tx-id > MAX) commit -- treated as
+end-of-stream.  The log is strictly tx-id-ordered (FINALIZE-TX-PERSISTENCE assigns
+the id and appends under the same manager lock), so we stop at the first tx-id >
+MAX."
+  (when (zerop (hash-table-count held))
+    (return-from stream-peer-authored-ops))    ; nothing held -> nothing to stream
+  (flet ((safe-read (in) (handler-case (read-stream-packet in) (error () nil))))
+    (dolist (log (applicable-replication-logs min-tx-id graph))
+      (with-open-file (in log :element-type '(unsigned-byte 8))
+        (loop
+          (let ((meta (safe-read in)))
+            (unless meta (return))                 ; EOF / torn -> next log
+            (let ((txh-vec (safe-read in)))
+              (unless txh-vec (return))
+              (let* ((txh (deserialize-tx-header-vector txh-vec))
+                     (tx-id (transaction-id txh)))
+                (when (> tx-id max-tx-id)
+                  (return-from stream-peer-authored-ops))
+                (let ((wpkts (loop repeat (write-count txh)
+                                   for w = (safe-read in)
+                                   while w collect w)))
+                  (when (and (>= tx-id min-tx-id)
+                             (= (length wpkts) (write-count txh)))
+                    (multiple-value-bind (origin op-id lamport op-class)
+                        (deserialize-peer-meta meta)
+                      (declare (ignore origin op-id lamport))
+                      (when (= op-class +peer-op-authored+)
+                        (let ((keep (remove-if-not
+                                     (lambda (w) (gethash (peer-tx-write-node-id w) held))
+                                     wpkts)))
+                          (when keep
+                            (write-packet meta socket)
+                            (write-packet (patch-tx-header-vector
+                                           txh-vec (length keep)
+                                           (reduce #'+ keep :key #'length))
+                                          socket)
+                            (dolist (w keep) (write-packet w socket))))))))))))))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Hub: handshake + authority-scoped pull.
 ;;; ---------------------------------------------------------------------------
 
@@ -236,45 +318,73 @@ version for the drain-and-update barrier signal (§14)."
       (setf (peer-device-last-pushed-schema-version device) dev-version)
       device)))
 
-(defun peer-pull-phase (graph socket device)
-  "Serve DEVICE one authority-scoped pull over SOCKET.  Under one read snapshot,
-compute the device's closed disclosable subgraph (SCOPE-NODE-SET, WP-5) and ship
-every in-scope node as a state-create (vertices BEFORE edges, so the device holds
-both endpoints before the edge that indexes on them -- the closed rule), then a
-purge for every manifest id no longer in scope (design §7).  Re-shipping the full
-in-scope set is the design-blessed every-connection full-diff v1 (design §13): it
-carries creates AND updates idempotently; the cursor-resumed authored-op stream
-(volume optimization) lands later.  PT-4: the per-device manifest advances ONLY
-to what the device acks -- so a dropped purge re-emits (fail-closed disclosure)."
-  (with-read-snapshot (graph)
-    (multiple-value-bind (vset eset)
-        (scope-node-set graph (peer-device-roots device) (peer-device-scope device)
-                        :edge-types (peer-device-edge-types device))
-      (let ((scope-ids (make-id-table)))
-        (flet ((mark (id node) (declare (ignore node)) (setf (gethash id scope-ids) t)))
-          (maphash #'mark vset)
-          (maphash #'mark eset))
-        (maphash (lambda (id node) (declare (ignore id))
-                   (write-node-as-create socket graph node))
-                 vset)
-        (maphash (lambda (id node) (declare (ignore id))
-                   (write-node-as-create socket graph node))
-                 eset)
-        (let ((purges (loop for id in (peer-device-manifest device)
-                            unless (gethash id scope-ids) collect id)))
-          (when purges
-            (write-purge-op socket graph purges))))))
-  (peer-write-plist (list :peer-control :pull-end) socket)
-  ;; Advance the manifest to exactly what the device ACKS holding (PT-4): never
-  ;; to hub intent.  Over-emitting a purge next time is harmless (idempotent);
-  ;; under-emitting would strand undisclosed data, so we only ever trust the ack.
-  (let ((ack (read-plist-packet socket)))
-    (with-recursive-lock-held ((peer-device-lock device))
-      (setf (peer-device-manifest device)
-            (peer-string->ids (or (getf ack :manifest-acked) "")))
-      (when (getf ack :pull-cursor)
-        (setf (peer-device-pull-cursor device) (getf ack :pull-cursor))))
-    ack))
+(defun peer-pull-phase (graph socket device &key full-resync-p (min-cursor 0))
+  "Serve DEVICE one authority-scoped pull over SOCKET, in DELTA mode.  Under one
+read snapshot, partition the device's closed disclosable subgraph (SCOPE-NODE-SET,
+WP-5) against the stored manifest:
+  - ENTERED (scope \\ manifest) -> ship as a state-create (vertices BEFORE edges,
+    the closed rule) with current state;
+  - HELD (scope ∩ manifest) -> NOT re-shipped; its edits since MIN-CURSOR stream
+    via STREAM-PEER-AUTHORED-OPS (the cursor-resumed authored-op feed);
+  - LEFT (manifest \\ scope) -> purge.
+The pull frontier T (the snapshot's highest visible tx-id) rides on the pull-end
+so the device can advance its pull-cursor to T even when no authored op touched a
+held node.  FULL-RESYNC-P treats the manifest as empty (everything ENTERED -> a
+full re-ship + purge of departed), the seed/recovery path.
+
+Manifest advances ONLY on the device ack (PT-4), and INCREMENTALLY: manifest :=
+(manifest ∪ acked-created) \\ acked-purged.  A dropped create isn't acked -> stays
+ENTERED -> re-emitted; a dropped purge isn't acked -> stays -> re-purged
+(fail-closed disclosure).  MVCC-epoch safety: a newly-ENTERED node ships current
+state and is never streamed, so its pre-entry history (with stale epochs) is never
+replayed onto the device."
+  (let ((frontier 0))
+    (with-read-snapshot (graph)
+      ;; A reader with start-tx-id S sees commits with commit-epoch < S; so the
+      ;; snapshot's frontier -- the highest tx-id it reflects -- is S-1.
+      (setf frontier (1- (start-tx-id *transaction*)))
+      (multiple-value-bind (vset eset)
+          (scope-node-set graph (peer-device-roots device) (peer-device-scope device)
+                          :edge-types (peer-device-edge-types device))
+        (let ((scope-ids (make-id-table))
+              (manifest (make-id-table))
+              (held (make-id-table)))
+          (flet ((mark (id node) (declare (ignore node)) (setf (gethash id scope-ids) t)))
+            (maphash #'mark vset)
+            (maphash #'mark eset))
+          (unless full-resync-p
+            (dolist (id (peer-device-manifest device)) (setf (gethash id manifest) t)))
+          (maphash (lambda (id v) (declare (ignore v))
+                     (when (gethash id manifest) (setf (gethash id held) t)))
+                   scope-ids)
+          ;; ENTERED -> membership-create, vertices before edges.
+          (maphash (lambda (id node)
+                     (unless (gethash id manifest) (write-node-as-create socket graph node)))
+                   vset)
+          (maphash (lambda (id node)
+                     (unless (gethash id manifest) (write-node-as-create socket graph node)))
+                   eset)
+          ;; HELD nodes' edits since the cursor.
+          (stream-peer-authored-ops socket graph held (1+ min-cursor) frontier)
+          ;; LEFT -> purge.
+          (let ((purges '()))
+            (maphash (lambda (id v) (declare (ignore v))
+                       (unless (gethash id scope-ids) (push id purges)))
+                     manifest)
+            (when purges (write-purge-op socket graph purges))))))
+    (peer-write-plist (list :peer-control :pull-end :cursor frontier) socket)
+    ;; Incremental manifest advance + pull-cursor, from the ack only (PT-4).
+    (let ((ack (read-plist-packet socket)))
+      (with-recursive-lock-held ((peer-device-lock device))
+        (let ((mset (make-id-table)))
+          (dolist (id (peer-device-manifest device)) (setf (gethash id mset) t))
+          (dolist (id (peer-string->ids (or (getf ack :created) ""))) (setf (gethash id mset) t))
+          (dolist (id (peer-string->ids (or (getf ack :purged) ""))) (remhash id mset))
+          (setf (peer-device-manifest device)
+                (loop for id being the hash-keys of mset collect id)))
+        (when (getf ack :pull-cursor)
+          (setf (peer-device-pull-cursor device) (getf ack :pull-cursor))))
+      ack)))
 
 (defun make-peer-session-handler (graph socket)
   "Return a thunk handling one device connection on SOCKET (hub side): announce,
@@ -286,9 +396,12 @@ distinct from it."
           (unwind-protect
                (progn
                  (peer-write-plist (peer-hub-handshake-plist graph) socket)
-                 (let ((device (peer-authenticate-device graph (read-plist-packet socket))))
+                 (let* ((auth (read-plist-packet socket))
+                        (device (peer-authenticate-device graph auth)))
                    (peer-write-plist (list :peer-control :auth-ok) socket)
-                   (peer-pull-phase graph socket device)))
+                   (peer-pull-phase graph socket device
+                                    :full-resync-p (and (getf auth :full-resync) t)
+                                    :min-cursor (or (getf auth :pull-cursor) 0))))
             (ignore-errors (usocket:socket-close socket)))
         (error (c)
           (log:error "peer hub session error: ~A" c))))))
@@ -400,30 +513,38 @@ Accumulates the ids it durably holds/removed for the pull ack; a :barrier op
 reports + resets that accumulator, a :shutdown op ends the thread."
   (let ((*graph* graph)
         (mailbox (peer-writer-mailbox graph))
-        (applied '())
-        (purged '()))
+        (created '())     ; state-create node-ids -> manifest additions this pull
+        (purged '()))     ; purge node-ids -> manifest removals this pull
     (loop
       (let ((op (receive-message mailbox :timeout 1)))
         (when op
           (ecase (peer-op-kind op)
             (:state-create
+             ;; A membership-create: a node ENTERING the device's scope.  Its id
+             ;; joins the manifest (reported at the barrier).
              (apply-peer-create-writes graph (peer-op-tx-id op) (peer-op-writes op))
              (dolist (w (peer-op-writes op))
-               (pushnew (id (node w)) applied :test #'equalp)))
+               (pushnew (id (node w)) created :test #'equalp)))
             (:authored
-             (when (apply-peer-authored-op graph op)
-               (dolist (w (peer-op-writes op))
-                 (pushnew (id (node w)) applied :test #'equalp))))
+             ;; An edit to a node the device already HOLDS: apply (op-id-deduped),
+             ;; but membership is unchanged -- it does NOT join CREATED.
+             (apply-peer-authored-op graph op))
             (:purge
              (apply-peer-purge graph (peer-op-ids op))
              (dolist (pid (peer-op-ids op))
                (push pid purged)
-               (setf applied (remove pid applied :test #'equalp))))
+               (setf created (remove pid created :test #'equalp))))
             (:barrier
+             ;; Advance the pull-cursor to the hub's frontier T (carried in TX-ID),
+             ;; so it moves even when no authored op touched a held node.  The
+             ;; device is read-only, so HIGHEST-TRANSACTION-ID *is* the pull-cursor.
+             (let ((frontier (peer-op-tx-id op)))
+               (when (and frontier (> frontier (load-highest-transaction-id graph)))
+                 (persist-highest-transaction-id frontier graph)))
              (send-message (peer-op-reply op)
-                           (list :applied (copy-list applied)
+                           (list :created (copy-list created)
                                  :purged (copy-list purged)))
-             (setf applied '() purged '()))
+             (setf created '() purged '()))
             (:shutdown
              (return))))))))
 
@@ -459,28 +580,32 @@ the writer (WP-8)."
                                            :ids (deserialize-purge-packet packet)))
        t)
       ((= type +plist-packet-type-code+)
-       (if (eq (getf (deserialize-plist-packet packet) :peer-control) :pull-end)
-           :pull-end
-           t))
+       (let ((pl (deserialize-plist-packet packet)))
+         ;; The pull-end control plist (it carries :CURSOR) is returned to the
+         ;; caller so it can advance the pull-cursor; any other control is ignored.
+         (if (eq (getf pl :peer-control) :pull-end) pl t)))
       (t
        (error "Unknown peer packet type ~A" type)))))
 
-(defun peer-device-auth-plist (graph)
-  "What a device sends to authenticate + drive a pull (cursors + same-major
-schema gate inputs)."
+(defun peer-device-auth-plist (graph &key full-resync)
+  "What a device sends to authenticate + drive a pull: origin, its PULL-CURSOR
+(the op-stream lower bound), the same-major schema gate inputs, and optionally
+:FULL-RESYNC to ask the hub to re-ship the whole scope (seed/recovery)."
   (list :origin-id (peer-id->hex (origin-id graph))
         :pull-cursor (load-highest-transaction-id graph)
         :push-ack 0
+        :full-resync (and full-resync t)
         :schema-major (first (peer-schema-version graph))
         :schema-minor (second (peer-schema-version graph))
         :replication-key (replication-key graph)))
 
-(defun peer-sync (graph &key (attempts 10))
+(defun peer-sync (graph &key (attempts 10) full-resync)
   "Device entry point: connect to the hub, handshake (same-major schema gate,
-WP-6/PT-6), receive one authority-scoped pull, apply it through the single writer
-(WP-8), and ACK exactly what the device now holds (PT-4).  One connection, one
-pull -- a resync is just another call.  Returns the ack result plist
-(:applied / :purged id lists)."
+WP-6/PT-6), receive one authority-scoped DELTA pull, apply it through the single
+writer (WP-8), advance the pull-cursor to the hub frontier T, and ACK the
+membership delta (PT-4: manifest advances incrementally, only on this ack).  One
+connection, one pull -- a resync is just another call; :FULL-RESYNC forces a full
+re-ship.  Returns the ack result plist (:created / :purged id lists)."
   (let ((*graph* graph)
         (socket nil))
     (unwind-protect
@@ -497,21 +622,24 @@ pull -- a resync is just another call.  Returns the ack result plist
                (unless (peer-schema-compatible-p hub-version my-version)
                  (error 'peer-schema-incompatible-error
                         :hub-version hub-version :device-version my-version))))
-           (peer-write-plist (peer-device-auth-plist graph) socket)
+           (peer-write-plist (peer-device-auth-plist graph :full-resync full-resync) socket)
            (let ((ctrl (read-plist-packet socket)))
              (unless (eq (getf ctrl :peer-control) :auth-ok)
                (error "peer auth rejected by hub: ~S" ctrl)))
-           (let ((mailbox (peer-writer-mailbox graph)))
-             (loop until (eq (peer-read-and-enqueue socket graph mailbox) :pull-end))
-             ;; Barrier: wait for the writer to drain, then ack what it durably
-             ;; holds.  manifest-acked is the COMPLETE set the device now holds in
-             ;; scope, so a dropped purge (the device still holds it) keeps it in
-             ;; the hub manifest and re-purges next time -- fail-closed (PT-4).
+           (let* ((mailbox (peer-writer-mailbox graph))
+                  ;; Drain the pull until the pull-end control plist (carries T).
+                  (end (loop for r = (peer-read-and-enqueue socket graph mailbox)
+                             when (consp r) return r))
+                  (frontier (or (getf end :cursor) 0)))
+             ;; Barrier: the writer drains, advances the pull-cursor to T, and
+             ;; reports the membership delta (created/purged) it durably applied.
              (let ((reply (make-mailbox)))
-               (send-message mailbox (make-peer-op :kind :barrier :reply reply))
+               (send-message mailbox (make-peer-op :kind :barrier :tx-id frontier
+                                                   :reply reply))
                (let ((result (receive-message reply :timeout 30)))
                  (peer-write-plist
-                  (list :manifest-acked (peer-ids->string (getf result :applied))
+                  (list :created (peer-ids->string (getf result :created))
+                        :purged  (peer-ids->string (getf result :purged))
                         :pull-cursor (load-highest-transaction-id graph))
                   socket)
                  result))))

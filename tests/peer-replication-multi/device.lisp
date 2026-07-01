@@ -146,7 +146,24 @@
                 (progn
                   (expect-finds '("Find-B1" "Find-S1") "p4")
                   (expect-vcount 5 "p4")))
-            (done-flag "p4"))
+            (done-flag "p4")
+
+            ;; ---- P5: node entering mid-stream (Find-S2) + 2nd op-stream edit ----
+            (unless (wait-flag "p5-ready") (check nil "hub never readied p5"))
+            (peer-sync g)
+            (check (member "Find-S2" (find-names) :test 'string=)
+                   "p5: new Find-S2 entered scope (shared survey)")
+            (check (string= "released" (find-status "Find-S1"))
+                   "p5: Find-S1 2nd edit via op-stream past advanced cursor (got ~S)"
+                   (find-status "Find-S1"))
+            (if a-p
+                (progn
+                  (expect-finds '("Find-A1" "Find-A2" "Find-S1" "Find-S2") "p5")
+                  (expect-vcount 7 "p5"))
+                (progn
+                  (expect-finds '("Find-B1" "Find-S1" "Find-S2") "p5")
+                  (expect-vcount 6 "p5")))
+            (done-flag "p5"))
           (close-graph g :snapshot-p nil)))
       (if (zerop *fails*)
           (progn (format t "~&DEVICE[~A]: PASS~%" *id*) (finish-output) (dexit 0))
@@ -154,5 +171,6 @@
                  (finish-output) (dexit 1))))
   (error (c)
     (format t "~&DEVICE[~A] ERROR: ~A~%" *id* c) (finish-output)
-    (ignore-errors (done-flag "p1") (done-flag "p2") (done-flag "p3") (done-flag "p4"))
+    (ignore-errors (done-flag "p1") (done-flag "p2") (done-flag "p3")
+                   (done-flag "p4") (done-flag "p5"))
     (dexit 1)))

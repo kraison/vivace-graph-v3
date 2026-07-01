@@ -122,7 +122,22 @@
           (format t "~&HUB: phase-4 committed (Find-A1 -> alpha)~%") (finish-output)
           (write-flag "p4-ready")
 
-          (unless (wait-both "p4") (format t "~&HUB: timed out on p4~%") (hexit 1)))
+          ;; PHASE 5: in ONE step, a node ENTERING mid-stream + a SECOND edit to a
+          ;; held node (both devices hold Find-S1; pull-cursor is now non-zero, so
+          ;; this exercises a second op-stream delivery past the advanced cursor).
+          (unless (wait-both "p4") (format t "~&HUB: timed out on p4~%") (hexit 1))
+          (with-transaction ()
+            (let ((ss (first (remove-if-not
+                              (lambda (x) (string= "Survey-S" (slot-value x 'name)))
+                              (map-vertices #'identity g :collect-p t :vertex-type 'm-survey))))
+                  (fs2 (make-m-find :name "Find-S2" :team "both" :status "open")))
+              (make-m-has-find :from ss :to fs2)))
+          (set-status (find-by-name "Find-S1") "released")
+          (format t "~&HUB: phase-5 committed (Find-S2 created; Find-S1 -> released)~%")
+          (finish-output)
+          (write-flag "p5-ready")
+
+          (unless (wait-both "p5") (format t "~&HUB: timed out on p5~%") (hexit 1)))
 
         (write-flag "hub-done")
         (close-graph g :snapshot-p nil)
@@ -131,5 +146,5 @@
   (error (c)
     (format t "~&HUB ERROR: ~A~%" c) (finish-output)
     (ignore-errors (write-flag "ready") (write-flag "p2-ready")
-                   (write-flag "p3-ready") (write-flag "p4-ready"))
+                   (write-flag "p3-ready") (write-flag "p4-ready") (write-flag "p5-ready"))
     (hexit 1)))
