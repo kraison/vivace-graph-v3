@@ -113,6 +113,9 @@
                :trivial-shell)
   :serial t
   :components ((:file "transaction-streaming")
+               ;; peer replication Branch B: the pure per-field conflict resolver
+               ;; (loaded before the transport that will call it).
+               (:file "peer-merge")
                ;; peer replication transport (hub/device pull); needs usocket and
                ;; the master/slave packet primitives in transaction-streaming.
                (:file "peer-streaming")
@@ -321,6 +324,7 @@
                (:file "spatial-intersect-tests")
                (:file "subset-replication-tests")
                (:file "peer-lamport-tests")
+               (:file "peer-merge-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")
