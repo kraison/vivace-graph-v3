@@ -327,6 +327,7 @@
                (:file "peer-merge-tests")
                (:file "peer-merge-apply-tests")
                (:file "peer-rehome-tests")
+               (:file "peer-conflict-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")

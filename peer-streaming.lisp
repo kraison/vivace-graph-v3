@@ -457,17 +457,8 @@ on the listener so accepted sockets are binary on CCL)."
   "The replica's live local vertex or edge with ID, or NIL."
   (or (lookup-vertex id :graph graph) (lookup-edge id :graph graph)))
 
-(defun record-peer-conflict (graph conflict)
-  "Retain a surfaced CONFLICT for the app review surface (B2: an in-memory list;
-B3: a durable enumeration API + MVCC loser retention)."
-  (with-recursive-lock-held ((peer-conflicts-lock graph))
-    (push conflict (peer-conflicts graph)))
-  conflict)
-
-(defun get-peer-conflicts (graph)
-  "A snapshot list of the surfaced conflicts retained on GRAPH."
-  (with-recursive-lock-held ((peer-conflicts-lock graph))
-    (copy-list (peer-conflicts graph))))
+;;; RECORD-PEER-CONFLICT / GET-PEER-CONFLICTS + the enumeration/resolution API now
+;;; live in peer-merge.lisp (the durable, idempotent B3 conflict store).
 
 (defun peer-merge-write (graph write lamport origin)
   "Resolve one incoming authored WRITE against the locally-held node.  Returns
@@ -548,7 +539,9 @@ ops."
         (dolist (s stamp-updates)
           (destructuring-bind (nid slot lam org) s
             (set-node-field-stamp graph nid slot lam org)))
-        (dolist (c conflicts) (record-peer-conflict graph c))
+        (dolist (c conflicts)
+          (setf (peer-conflict-op-id c) (peer-op-op-id op))
+          (record-peer-conflict graph c))
         (persist-peer-pull-cursor (peer-op-tx-id op) graph)
         (peer-observe-epoch graph (peer-op-tx-id op))
         (record-applied-op graph (peer-op-op-id op) lamport)
@@ -642,7 +635,9 @@ op-id/origin/lamport on the re-journaled feed entry (via *PEER-REHOME-OP*, desig
         (dolist (s stamp-updates)
           (destructuring-bind (nid slot lam org) s
             (set-node-field-stamp graph nid slot lam org)))
-        (dolist (c conflicts) (record-peer-conflict graph c))
+        (dolist (c conflicts)
+          (setf (peer-conflict-op-id c) op-id)
+          (record-peer-conflict graph c))
         ;; Advance the hub clock past the op it just re-homed (its next authored op
         ;; is causally after it), matching the device pull-apply.
         (peer-observe-lamport graph lamport)

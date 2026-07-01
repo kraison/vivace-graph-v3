@@ -46,8 +46,11 @@ required once any field is bucketed :safety."
 (defstruct (peer-conflict (:constructor make-peer-conflict))
   "A surfaced field conflict retained for the app's review surface: on SLOT
 (bucket BUCKET) of NODE-ID the merge KEPT KEPT-VALUE (authored by KEPT-ORIGIN) and
-set aside LOSER-VALUE (authored by LOSER-ORIGIN at LOSER-LAMPORT)."
-  node-id slot bucket kept-value kept-origin loser-value loser-origin loser-lamport)
+set aside LOSER-VALUE (authored by LOSER-ORIGIN at LOSER-LAMPORT).  OP-ID is the
+incoming op that surfaced it (set by the apply/re-home caller; the idempotency key
+with NODE-ID + SLOT).  RESOLVED-P is the app review-workflow flag (B3)."
+  node-id slot bucket kept-value kept-origin loser-value loser-origin loser-lamport
+  op-id (resolved-p nil))
 
 (defun %alist-val (slot alist) (cdr (assoc slot alist)))
 
@@ -234,3 +237,135 @@ Returns (values MERGED-DATA STAMP-UPDATES CONFLICTS):
                     (surface slot bucket
                              local local-origin incoming incoming-origin incoming-lamport)))))))))
       (values merged stamp-updates conflicts))))
+
+;;; ===========================================================================
+;;; B3: the durable conflict-record store + enumeration/resolution API.
+;;;
+;;; A surfaced conflict is retained for the app's REVIEW SURFACE -- the loser value +
+;;; origin + Lamport, not just the kept current state (design §11.E: accountability is
+;;; first-class, and this is what closes the B2 "loser doesn't converge via pull" gap
+;;; -- resolution is human review, read from here, not silent auto-convergence).
+;;;
+;;; Retention is DURABLE (survives close/reopen) and IDEMPOTENT (a re-applied op that
+;;; surfaces the same (node, slot, causing op-id) does not duplicate the record).  The
+;;; substrate mirrors the field-stamp store: an in-memory list persisted as a printed
+;;; snapshot; ids as hex, arbitrary field VALUES serialized to hex so any value type
+;;; (string / number / keyword / geometry struct) round-trips.
+;;; ===========================================================================
+
+(defun peer-bytes->hex (bytes)
+  "A byte vector as a lowercase hex string."
+  (with-output-to-string (s)
+    (loop for b across bytes do (format s "~2,'0x" b))))
+
+(defun peer-hex->bytes (hex)
+  "Inverse of PEER-BYTES->HEX."
+  (let ((v (make-byte-vector (floor (length hex) 2))))
+    (dotimes (i (length v) v)
+      (setf (aref v i)
+            (parse-integer hex :start (* 2 i) :end (+ 2 (* 2 i)) :radix 16)))))
+
+(defun peer-value->hex (value)
+  "Serialize an arbitrary conflict field VALUE to a hex string (handles every node
+value type, incl. geometry structs, via the engine serializer)."
+  (peer-bytes->hex (serialize value)))
+
+(defun peer-hex->value (hex)
+  "Inverse of PEER-VALUE->HEX."
+  (values (deserialize (peer-hex->bytes hex))))
+
+(defun peer-conflict-same-p (a b)
+  "The idempotency key: same node, slot, and causing op-id."
+  (and (equalp (peer-conflict-node-id a) (peer-conflict-node-id b))
+       (eql (peer-conflict-slot a) (peer-conflict-slot b))
+       (equalp (peer-conflict-op-id a) (peer-conflict-op-id b))))
+
+(defun record-peer-conflict (graph conflict)
+  "Retain CONFLICT for the app review surface -- idempotently (a re-applied op that
+surfaces the same (node, slot, op-id) does not duplicate it) and durably (persisted
+so the surface survives restart).  Returns CONFLICT."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (unless (find-if (lambda (c) (peer-conflict-same-p c conflict)) (peer-conflicts graph))
+      (push conflict (peer-conflicts graph))
+      (persist-peer-conflicts graph)))
+  conflict)
+
+(defun get-peer-conflicts (graph &key node-id slot (include-resolved t))
+  "A snapshot list of the retained conflicts (newest first), optionally filtered to
+one NODE-ID and/or SLOT, and -- with INCLUDE-RESOLVED nil -- to the open ones only."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (remove-if-not
+     (lambda (c)
+       (and (or (null node-id) (equalp node-id (peer-conflict-node-id c)))
+            (or (null slot) (eql slot (peer-conflict-slot c)))
+            (or include-resolved (not (peer-conflict-resolved-p c)))))
+     (copy-list (peer-conflicts graph)))))
+
+(defun count-peer-conflicts (graph &key (include-resolved nil))
+  "How many conflicts are retained (open ones by default)."
+  (length (get-peer-conflicts graph :include-resolved include-resolved)))
+
+(defun resolve-peer-conflict (graph conflict)
+  "Mark CONFLICT resolved (the app has adjudicated it) and persist.  Returns CONFLICT."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (setf (peer-conflict-resolved-p conflict) t)
+    (persist-peer-conflicts graph))
+  conflict)
+
+(defun clear-resolved-peer-conflicts (graph)
+  "Drop the resolved conflicts from the retained set and persist."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (setf (peer-conflicts graph)
+          (remove-if #'peer-conflict-resolved-p (peer-conflicts graph)))
+    (persist-peer-conflicts graph)))
+
+;;; Persistence (a printed snapshot; ids as hex, values serialized to hex).
+
+(defgeneric peer-conflicts-file (graph)
+  (:method (graph)
+    (make-pathname :name "conflicts" :type "dat" :defaults (location graph))))
+
+(defun peer-conflict->printable (c)
+  (list :node (peer-id->hex (peer-conflict-node-id c))
+        :slot (peer-conflict-slot c)
+        :bucket (peer-conflict-bucket c)
+        :kept (peer-value->hex (peer-conflict-kept-value c))
+        :kept-origin (and (peer-conflict-kept-origin c)
+                          (peer-id->hex (peer-conflict-kept-origin c)))
+        :loser (peer-value->hex (peer-conflict-loser-value c))
+        :loser-origin (and (peer-conflict-loser-origin c)
+                           (peer-id->hex (peer-conflict-loser-origin c)))
+        :loser-lamport (peer-conflict-loser-lamport c)
+        :op-id (and (peer-conflict-op-id c) (peer-id->hex (peer-conflict-op-id c)))
+        :resolved (peer-conflict-resolved-p c)))
+
+(defun printable->peer-conflict (pl)
+  (make-peer-conflict
+   :node-id (peer-hex->id (getf pl :node))
+   :slot (getf pl :slot)
+   :bucket (getf pl :bucket)
+   :kept-value (peer-hex->value (getf pl :kept))
+   :kept-origin (and (getf pl :kept-origin) (peer-hex->id (getf pl :kept-origin)))
+   :loser-value (peer-hex->value (getf pl :loser))
+   :loser-origin (and (getf pl :loser-origin) (peer-hex->id (getf pl :loser-origin)))
+   :loser-lamport (getf pl :loser-lamport)
+   :op-id (and (getf pl :op-id) (peer-hex->id (getf pl :op-id)))
+   :resolved-p (getf pl :resolved)))
+
+(defun persist-peer-conflicts (graph)
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (with-open-file (s (peer-conflicts-file graph) :direction :output
+                       :if-exists :supersede :if-does-not-exist :create)
+      (with-standard-io-syntax
+        (let ((*package* (find-package :graph-db)))
+          (write (mapcar #'peer-conflict->printable (peer-conflicts graph)) :stream s)))))
+  graph)
+
+(defun load-peer-conflicts (graph)
+  (let ((file (peer-conflicts-file graph)))
+    (setf (peer-conflicts graph)
+          (when (probe-file file)
+            (with-open-file (s file :direction :input)
+              (with-standard-io-syntax
+                (let ((*package* (find-package :graph-db)) (*read-eval* nil))
+                  (mapcar #'printable->peer-conflict (read s nil nil)))))))))
