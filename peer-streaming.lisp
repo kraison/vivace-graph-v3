@@ -573,9 +573,29 @@ of (node-id slot lamport origin)."
          (local (peer-local-node nid graph)))
     (cond
       ((typep write 'tx-delete)
-       (when local (delete-node local graph))
-       (remove-node-field-stamps graph nid)
-       (values nil nil))
+       ;; "Still live at the hub" = present AND not already soft-deleted (a purged/
+       ;; removed edge is still returned by lookup, deleted-p T).
+       (let ((live (and local (not (deleted-p local)))))
+         (cond
+           ;; B3-2: a device removing a safety-bearing edge that is STILL LIVE at the hub
+           ;; SURFACES (direction-gated: only this re-home path, only when live) and the
+           ;; edge is KEPT -- a safety relationship is never dropped from the authoritative
+           ;; record without operator sign-off.  A hub-originated removal reaches devices on
+           ;; the pull path (peer-merge-write applies deletes verbatim, no surface), so
+           ;; authoritative deletions still propagate cleanly.
+           ((and live policy (typep incoming 'edge)
+                 (eq :safety-edge (merge-policy-edge-bucket policy (type-of incoming))))
+            (values nil
+                    (list (make-peer-conflict
+                           :node-id nid :slot :presence :bucket :safety-edge
+                           :kept-value (string-downcase (symbol-name (type-of local)))
+                           :kept-origin nil
+                           :loser-value "removed"
+                           :loser-origin origin :loser-lamport lamport))))
+           (t
+            (when live (delete-node local graph))
+            (remove-node-field-stamps graph nid)
+            (values nil nil)))))
       ((null local)
        ;; New to the hub -- recreate with the incoming state, stamp every field.
        (let ((n (make-instance (type-of incoming)

@@ -31,17 +31,28 @@
   "The app-supplied conflict contract the Branch B resolver dispatches through.
 FIELD-BUCKET-FN is (NODE-TYPE SLOT) -> bucket keyword (default :lww).
 SAFETY-MERGE-FN is (SLOT LOCAL INCOMING LOCAL-NEWER-P) -> (values WINNER SURFACE-P),
-required once any field is bucketed :safety."
+required once any field is bucketed :safety.
+EDGE-BUCKET-FN is (EDGE-TYPE) -> bucket keyword (default :structural), consulted on an
+authored EDGE DELETE at re-home; :safety-edge means a still-live safety-bearing edge's
+removal SURFACES + is KEPT (B3-2)."
   (field-bucket-fn (lambda (type slot) (declare (ignore type slot)) :lww)
                    :type function)
-  (safety-merge-fn nil))
+  (safety-merge-fn nil)
+  (edge-bucket-fn (lambda (edge-type) (declare (ignore edge-type)) :structural)
+                  :type function))
 
-(defun make-merge-policy (&key field-bucket safety-merge)
-  "Build a MERGE-POLICY from the app's FIELD-BUCKET and SAFETY-MERGE functions."
+(defun make-merge-policy (&key field-bucket safety-merge edge-bucket)
+  "Build a MERGE-POLICY from the app's FIELD-BUCKET, SAFETY-MERGE and EDGE-BUCKET fns."
   (%make-merge-policy
    :field-bucket-fn (or field-bucket
                         (lambda (type slot) (declare (ignore type slot)) :lww))
-   :safety-merge-fn safety-merge))
+   :safety-merge-fn safety-merge
+   :edge-bucket-fn (or edge-bucket
+                       (lambda (edge-type) (declare (ignore edge-type)) :structural))))
+
+(defun merge-policy-edge-bucket (policy edge-type)
+  "The bucket the app assigns EDGE-TYPE (default :structural)."
+  (funcall (merge-policy-edge-bucket-fn policy) edge-type))
 
 (defstruct (peer-conflict (:constructor make-peer-conflict))
   "A surfaced field conflict retained for the app's review surface: on SLOT

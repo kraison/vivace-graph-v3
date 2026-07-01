@@ -120,3 +120,84 @@ hub with the incoming state and re-journals it under the op-id."
         (is (= 3 (slot-value v 'age))))
       (is (= 7 (graph-db::node-field-stamp g newid :name)) "create stamps the fields")
       (is (id-in opid (feed-op-ids g)) "the created node re-journals under the op-id"))))
+
+;;; --- B3-2: safety-bearing edge-removal surfacing (re-home path) ---------------
+;;;
+;;; g-knows is treated as a safety-bearing edge, g-likes as structural.  A device's
+;;; removal of a still-live safety-bearing edge SURFACES + is KEPT; a structural edge
+;;; (or a safety edge the hub already removed) applies with no surface.
+
+(defparameter *edge-policy*
+  (graph-db::make-merge-policy
+   :field-bucket #'apply-field-bucket :safety-merge #'test-safety-merge
+   :edge-bucket (lambda (etype) (if (eq etype 'g-knows) :safety-edge :structural))))
+
+(defmacro with-edge-hub ((g) &body body)
+  "A hub peer-graph whose merge-policy buckets g-knows :safety-edge."
+  `(with-temp-directory (dir)
+     (let ((,g (make-graph *integration-graph-name* (namestring dir)
+                           :peer-role :hub :origin-id *rehome-hub-origin*
+                           :replication-port 0 :replication-key "k"
+                           :merge-policy *edge-policy* :buffer-pool-size 1000)))
+       (unwind-protect (let ((*graph* ,g)) ,@body)
+         (close-graph ,g :snapshot-p nil)))))
+
+(defun make-edge-delete-op (edge origin lamport)
+  "An authored op that deletes EDGE (its id + type are all the re-home delete path reads)."
+  (graph-db::make-peer-op
+   :kind :authored :op-id (graph-db::gen-op-id) :origin origin :lamport lamport :tx-id 50
+   :writes (list (make-instance 'graph-db::tx-delete :node edge :old-node edge))))
+
+(defun ecount (g) (length (map-edges #'identity g :collect-p t)))
+
+(test rehome-safety-edge-removal-surfaces-and-keeps
+  "A device removing a still-live safety-bearing edge SURFACES a conflict and the edge
+is KEPT (a safety linkage is never dropped from the authoritative record silently)."
+  (with-edge-hub (g)
+    (let (eid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A" :age 1))
+              (b (make-g-person :name "B" :age 2)))
+          (setq eid (id (make-g-knows :from a :to b :since 2020)))))
+      (is (= 1 (ecount g)) "the safety edge exists")
+      (let ((op (make-edge-delete-op (lookup-edge eid) *merge-hub-origin* 10)))
+        (is (graph-db::rehome-authored-op g op) "the delete re-homes")
+        (is (= 1 (ecount g)) "the safety-bearing edge is KEPT (still live)")
+        (let ((cs (graph-db::get-peer-conflicts g)))
+          (is (= 1 (length cs)) "a conflict is surfaced")
+          (let ((c (first cs)))
+            (is (eq :safety-edge (graph-db::peer-conflict-bucket c)))
+            (is (equal "removed" (graph-db::peer-conflict-loser-value c)))
+            (is (equalp eid (graph-db::peer-conflict-node-id c)) "keyed on the edge id")
+            (is (equalp *merge-hub-origin* (graph-db::peer-conflict-loser-origin c))
+                "the removal's author is recorded")))))))
+
+(test rehome-structural-edge-removal-applies
+  "A non-safety-bearing edge removal applies with no surface (plain remove-wins)."
+  (with-edge-hub (g)
+    (let (eid)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A" :age 1))
+              (b (make-g-person :name "B" :age 2)))
+          (setq eid (id (make-g-likes :from a :to b)))))
+      (let ((op (make-edge-delete-op (lookup-edge eid) *merge-hub-origin* 10)))
+        (is (graph-db::rehome-authored-op g op) "the delete re-homes")
+        (is (= 0 (ecount g)) "the structural edge is removed")
+        (is (null (graph-db::get-peer-conflicts g)) "no conflict for a structural edge")))))
+
+(test rehome-safety-edge-removal-when-hub-already-removed-applies
+  "When the hub has ALREADY removed the safety edge, a device's removal converges
+silently (no surface) -- the still-live gate is what makes it a conflict."
+  (with-edge-hub (g)
+    (let (eid edge)
+      (with-transaction ()
+        (let ((a (make-g-person :name "A" :age 1))
+              (b (make-g-person :name "B" :age 2)))
+          (setq eid (id (make-g-knows :from a :to b :since 2020)))))
+      (setq edge (lookup-edge eid))                 ; capture before the hub removes it
+      (with-transaction () (mark-deleted (lookup-edge eid)))
+      (is (= 0 (ecount g)) "the hub already removed it")
+      (let ((op (make-edge-delete-op edge *merge-hub-origin* 10)))
+        (is (graph-db::rehome-authored-op g op) "the delete re-homes")
+        (is (null (graph-db::get-peer-conflicts g))
+            "no surface when the edge is already gone at the hub")))))
