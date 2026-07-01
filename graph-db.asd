@@ -325,6 +325,7 @@
                (:file "subset-replication-tests")
                (:file "peer-lamport-tests")
                (:file "peer-merge-tests")
+               (:file "peer-merge-apply-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")

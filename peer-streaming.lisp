@@ -435,10 +435,65 @@ on the listener so accepted sockets are binary on CCL)."
 
 (defstruct (peer-op (:constructor make-peer-op))
   kind        ; :state-create :authored :purge :barrier :shutdown
-  op-id lamport tx-id
+  op-id origin lamport tx-id
   writes      ; list of tx-write (state-create / authored)
   ids         ; list of node-ids (purge)
   reply)      ; reply mailbox (barrier)
+
+;;; ---------------------------------------------------------------------------
+;;; Branch B: apply an authored op THROUGH the merge resolver (B2d).
+;;;
+;;; When an incoming authored update touches a node this replica already holds and
+;;; a MERGE-POLICY is set, resolve the divergence field-by-field (peer-merge.lisp)
+;;; instead of overwriting.  This runs on the DEVICE pull-apply here and, later, on
+;;; the hub push re-home -- conflicts are symmetric.  With no policy it is a plain
+;;; overwrite (Branch A behaviour).
+;;; ---------------------------------------------------------------------------
+
+(defun peer-local-node (id graph)
+  "The replica's live local vertex or edge with ID, or NIL."
+  (or (lookup-vertex id :graph graph) (lookup-edge id :graph graph)))
+
+(defun record-peer-conflict (graph conflict)
+  "Retain a surfaced CONFLICT for the app review surface (B2: an in-memory list;
+B3: a durable enumeration API + MVCC loser retention)."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (push conflict (peer-conflicts graph)))
+  conflict)
+
+(defun get-peer-conflicts (graph)
+  "A snapshot list of the surfaced conflicts retained on GRAPH."
+  (with-recursive-lock-held ((peer-conflicts-lock graph))
+    (copy-list (peer-conflicts graph))))
+
+(defun peer-merge-write (graph write lamport origin)
+  "Resolve one incoming authored WRITE against the locally-held node.  Returns
+(values FINAL-WRITE STAMP-UPDATES CONFLICTS): FINAL-WRITE is the tx-write to apply
+(the incoming write, or -- for a divergent vertex update -- a merged tx-update off
+the local current version); STAMP-UPDATES a list of (node-id slot lamport origin);
+CONFLICTS a list of PEER-CONFLICT.  A create/delete/edge, or an update with no
+policy or no local copy, applies verbatim and stamps every field with the incoming
+(lamport, origin); a vertex update to a held node is merged field-by-field."
+  (let* ((policy (merge-policy graph))
+         (new (node write))
+         (nid (id new))
+         (local (and policy (typep write 'tx-update) (not (typep write 'tx-delete))
+                     (vertex-p new) (peer-local-node nid graph))))
+    (if (null local)
+        (values write
+                (loop for (slot . nil) in (data new) collect (list nid slot lamport origin))
+                nil)
+        (multiple-value-bind (merged-data stamps conflicts)
+            (merge-authored-fields policy (type-of new) nid
+                                   (data local) (data new) (data (old-node write))
+                                   lamport origin (node-field-stamps graph nid))
+          (let ((merged (copy new)))
+            (setf (data merged) merged-data
+                  (bytes merged) (serialize merged-data))
+            (values (make-instance 'tx-update :node merged :old-node local)
+                    (loop for (slot . stamp) in stamps
+                          collect (list nid slot (car stamp) (cdr stamp)))
+                    conflicts))))))
 
 (defun apply-peer-create-writes (graph tx-id writes)
   "Apply state-sync create WRITES on the device with no cursor advance (state-sync
@@ -465,16 +520,33 @@ ops."
       nil
       (let ((*commit-epoch* (peer-op-tx-id op))
             (*add-to-indexes-unless-present-p* t)
-            (writes (peer-op-writes op)))
-        (apply-tx-writes writes graph)
-        (apply-tx-writes-to-views writes graph)
-        (apply-tx-writes-to-spatial-index writes graph)
-        (reap-old-versions writes graph)
+            (lamport (peer-op-lamport op))
+            (origin (peer-op-origin op))
+            (final-writes '())
+            (stamp-updates '())
+            (conflicts '()))
+        ;; B2d: resolve each write through the merge policy (a no-op overwrite when
+        ;; no policy is set or the node isn't held / not a vertex update).
+        (dolist (w (peer-op-writes op))
+          (multiple-value-bind (fw stamps confs) (peer-merge-write graph w lamport origin)
+            (push fw final-writes)
+            (setf stamp-updates (nconc stamp-updates stamps))
+            (setf conflicts (nconc conflicts confs))))
+        (setf final-writes (nreverse final-writes))
+        (apply-tx-writes final-writes graph)
+        (apply-tx-writes-to-views final-writes graph)
+        (apply-tx-writes-to-spatial-index final-writes graph)
+        (reap-old-versions final-writes graph)
+        ;; Persist the per-field stamps of the fields that took a new value, and
+        ;; retain any surfaced conflicts.
+        (dolist (s stamp-updates)
+          (destructuring-bind (nid slot lam org) s
+            (set-node-field-stamp graph nid slot lam org)))
+        (dolist (c conflicts) (record-peer-conflict graph c))
         (persist-highest-transaction-id (peer-op-tx-id op) graph)
-        (record-applied-op graph (peer-op-op-id op) (peer-op-lamport op))
-        ;; B1/PT-8: advance our Lamport clock past the stamp we just applied, so
-        ;; anything we author next is causally after it.
-        (peer-observe-lamport graph (peer-op-lamport op))
+        (record-applied-op graph (peer-op-op-id op) lamport)
+        ;; B1/PT-8: advance our Lamport clock past the stamp we just applied.
+        (peer-observe-lamport graph lamport)
         t)))
 
 (defun peer-purge-node (graph node)
@@ -568,14 +640,13 @@ the writer (WP-8)."
       ((= type +peer-meta-type-code+)
        (multiple-value-bind (origin op-id lamport op-class)
            (deserialize-peer-meta packet)
-         (declare (ignore origin))
          (let* ((txh (deserialize-tx-header-vector (read-packet socket)))
                 (writes (loop repeat (write-count txh)
                               collect (deserialize-tx-write-vector (read-packet socket)))))
            (send-message
             mailbox
             (make-peer-op :kind (if (= op-class +peer-op-authored+) :authored :state-create)
-                          :op-id op-id :lamport lamport
+                          :op-id op-id :origin origin :lamport lamport
                           :tx-id (transaction-id txh) :writes writes))
            t)))
       ((= type +peer-purge-type-code+)

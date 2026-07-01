@@ -150,6 +150,17 @@
                       :initform (make-recursive-lock "field-stamps")
                       :documentation "Serializes FIELD-STAMPS mutation/read (the hub
                       merges on many session threads).")
+   (merge-policy :accessor merge-policy :initarg :merge-policy :initform nil
+                 :documentation "Branch B: the app-supplied MERGE-POLICY (field-bucket
+                 + safety-merge), consulted when an applied authored op diverges from
+                 a locally-held node.  Mirrors EXPORT-PREDICATE -- domain (bucketing +
+                 safety semantics) in the app, mechanism in the engine.  NIL = no
+                 merge (an incoming edit just overwrites, i.e. Branch A behaviour).")
+   (peer-conflicts :accessor peer-conflicts :initarg :peer-conflicts :initform nil
+                   :documentation "Branch B: surfaced field conflicts retained for the
+                   app review surface (a list of PEER-CONFLICT for now; B3 makes it a
+                   durable enumeration API + MVCC loser retention).")
+   (peer-conflicts-lock :accessor peer-conflicts-lock :initform (make-recursive-lock "peer-conflicts"))
    (applied-op-ids :accessor applied-op-ids :initarg :applied-op-ids :initform nil
                    :documentation "Durable OP-ID -> lamport dedup index (WP-3), checked
                    before apply so a re-homed op bouncing back is not duplicated.  NIL
