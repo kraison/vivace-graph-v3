@@ -543,7 +543,7 @@ ops."
           (destructuring-bind (nid slot lam org) s
             (set-node-field-stamp graph nid slot lam org)))
         (dolist (c conflicts) (record-peer-conflict graph c))
-        (persist-highest-transaction-id (peer-op-tx-id op) graph)
+        (persist-peer-pull-cursor (peer-op-tx-id op) graph)
         (record-applied-op graph (peer-op-op-id op) lamport)
         ;; B1/PT-8: advance our Lamport clock past the stamp we just applied.
         (peer-observe-lamport graph lamport)
@@ -703,11 +703,12 @@ reports + resets that accumulator, a :shutdown op ends the thread."
                (setf created (remove pid created :test #'equalp))))
             (:barrier
              ;; Advance the pull-cursor to the hub's frontier T (carried in TX-ID),
-             ;; so it moves even when no authored op touched a held node.  The
-             ;; device is read-only, so HIGHEST-TRANSACTION-ID *is* the pull-cursor.
+             ;; so it moves even when no authored op touched a held node.  Kept
+             ;; separate from HIGHEST-TRANSACTION-ID (the device's own feed-seq) so a
+             ;; Branch B device that authors locally does not conflate the two spaces.
              (let ((frontier (peer-op-tx-id op)))
-               (when (and frontier (> frontier (load-highest-transaction-id graph)))
-                 (persist-highest-transaction-id frontier graph)))
+               (when (and frontier (> frontier (load-peer-pull-cursor graph)))
+                 (persist-peer-pull-cursor frontier graph)))
              (send-message (peer-op-reply op)
                            (list :created (copy-list created)
                                  :purged (copy-list purged)))
@@ -758,7 +759,7 @@ the writer (WP-8)."
 (the op-stream lower bound), the same-major schema gate inputs, and optionally
 :FULL-RESYNC to ask the hub to re-ship the whole scope (seed/recovery)."
   (list :origin-id (peer-id->hex (origin-id graph))
-        :pull-cursor (load-highest-transaction-id graph)
+        :pull-cursor (load-peer-pull-cursor graph)
         :push-ack 0
         :full-resync (and full-resync t)
         :schema-major (first (peer-schema-version graph))
@@ -806,7 +807,7 @@ re-ship.  Returns the ack result plist (:created / :purged id lists)."
                  (peer-write-plist
                   (list :created (peer-ids->string (getf result :created))
                         :purged  (peer-ids->string (getf result :purged))
-                        :pull-cursor (load-highest-transaction-id graph))
+                        :pull-cursor (load-peer-pull-cursor graph))
                   socket)
                  result))))
       (when socket (ignore-errors (usocket:socket-close socket))))))

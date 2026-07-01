@@ -54,6 +54,37 @@ close/reopen (never resets), jumps forward on OBSERVE, and never moves backward.
                (is (= 11 (graph-db::lamport-counter g)) "a lower observe never moves it back"))
           (close-graph g :snapshot-p nil))))))
 
+(test pull-cursor-is-separate-from-own-feed-seq
+  "A device's pull-cursor (highest HUB feed-seq applied) is a durable scalar DISTINCT
+from HIGHEST-TRANSACTION-ID (its own feed-seq): local authoring advances the latter
+but never the pull-cursor; an applied hub frontier advances the pull-cursor but not
+the feed-seq; both survive close/reopen.  Guards the B2d-2b conflation fix -- a
+Branch B device writes, so the two number spaces must not share one scalar."
+  (with-temp-directory (dir)
+    (let ((path (namestring dir)))
+      (let ((g (make-graph *integration-graph-name* path
+                           :peer-role :device :origin-id *lamport-origin*
+                           :peer-host "localhost" :replication-port 0
+                           :buffer-pool-size 1000)))
+        (let ((*graph* g))
+          (is (= 0 (graph-db::load-peer-pull-cursor g)) "fresh pull-cursor is 0")
+          (dotimes (i 3) (with-transaction () (make-g-person :name "d")))  ; own feed-seq -> 3
+          (is (= 0 (graph-db::load-peer-pull-cursor g))
+              "local authoring never moves the pull-cursor")
+          (is (> (graph-db::load-highest-transaction-id g) 0)
+              "but it advances the device's own feed-seq")
+          (graph-db::persist-peer-pull-cursor 42 g)                        ; a pull's hub frontier
+          (is (= 42 (graph-db::load-peer-pull-cursor g)) "pull-cursor advances to the frontier")
+          (is (< (graph-db::load-highest-transaction-id g) 42)
+              "the device's own feed-seq is unaffected by the pull-cursor"))
+        (close-graph g :snapshot-p nil))
+      (let ((g (open-graph *integration-graph-name* path
+                           :peer-role :device :origin-id *lamport-origin*
+                           :peer-host "localhost" :replication-port 0)))
+        (unwind-protect
+             (is (= 42 (graph-db::load-peer-pull-cursor g)) "the pull-cursor survives reopen")
+          (close-graph g :snapshot-p nil))))))
+
 (test field-stamps-track-and-recover
   "A locally-authored edit stamps each changed field with (lamport . origin); an
 update advances the changed field's stamp but leaves an unchanged field's; the

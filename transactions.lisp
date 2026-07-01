@@ -1544,6 +1544,38 @@ which the diff would stamp with the wrong lamport for a field the local copy won
                 0))
           0))))
 
+;;; Device pull-cursor (Branch B).  Kept SEPARATE from HIGHEST-TRANSACTION-ID: the
+;;; latter is the graph's OWN feed-seq (advanced + persisted on every local commit,
+;;; APPLY-TRANSACTION), and a Branch B device authors locally, so overloading it as
+;;; the pull-cursor would conflate the device's own feed-seq (device tx-id space)
+;;; with the highest HUB feed-seq it has applied (hub tx-id space) -- corrupting both
+;;; the pull position and the device's tx-id-counter restore on open.  A read-only
+;;; Branch A device never writes, so the two coincided; once a device writes they do
+;;; not.  So the pull-cursor gets its own durable scalar.
+(defgeneric peer-pull-cursor-file (graph)
+  (:method (graph)
+    (make-pathname :name "pull-cursor" :type "dat" :defaults (location graph))))
+
+(defgeneric persist-peer-pull-cursor (cursor graph)
+  (:method (cursor (graph peer-graph))
+    (let ((serialized (make-byte-vector 8)))
+      (serialize-uint64 serialized cursor 0)
+      (with-open-file (stream (peer-pull-cursor-file graph)
+                              :direction :output :element-type '(unsigned-byte 8)
+                              :if-does-not-exist :create :if-exists :overwrite)
+        (write-sequence serialized stream))
+      cursor))
+  (:method (cursor (graph graph)) (declare (ignore cursor)) nil))
+
+(defgeneric load-peer-pull-cursor (graph)
+  (:method (graph)
+    (let ((file (peer-pull-cursor-file graph))
+          (serialized (make-byte-vector 8)))
+      (if (probe-file file)
+          (with-open-file (stream file :direction :input :element-type '(unsigned-byte 8))
+            (if (= 8 (read-sequence serialized stream)) (deserialize-uint64 serialized 0) 0))
+          0))))
+
 (defun peer-next-lamport (graph)
   "Advance and return GRAPH's Lamport clock, persisting the new value (PT-8).
 Called under the replication-log lock while journaling an authored op; the
