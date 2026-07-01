@@ -132,7 +132,13 @@
    (lamport-counter :accessor lamport-counter :initarg :lamport-counter :initform 0
                     :documentation "Durable, monotonic logical clock for conflict
                     ordering (Branch B).  Advanced on every authored op and to
-                    MAX(local,received)+1 on receipt.  Reserved/unused in Branch A.")
+                    MAX(local,received)+1 on receipt (PT-8).  Loaded on open, persisted
+                    on every advance, so a crash cannot reset it and lose LWW races.")
+   (lamport-lock :accessor lamport-lock :initarg :lamport-lock
+                 :initform (make-recursive-lock "lamport clock")
+                 :documentation "Serializes LAMPORT-COUNTER read-modify-write across
+                 the minter (local authoring) and the observer (received ops), which
+                 on a hub run on different threads.  Always innermost.")
    (applied-op-ids :accessor applied-op-ids :initarg :applied-op-ids :initform nil
                    :documentation "Durable OP-ID -> lamport dedup index (WP-3), checked
                    before apply so a re-homed op bouncing back is not duplicated.  NIL

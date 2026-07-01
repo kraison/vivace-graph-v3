@@ -155,6 +155,9 @@ to disk and remove it."
               (peer-host graph) peer-host
               (export-predicate graph) export-predicate
               (device-registry graph) device-registry
+              ;; B1/PT-8: reload the durable Lamport clock so it never resets on
+              ;; restart (0 for a fresh graph, the persisted value on reopen).
+              (lamport-counter graph) (load-lamport-counter graph)
               ;; WP-3: durable applied-op-id dedup index -- op-id (16-byte uuid key)
               ;; -> lamport (uint64 value), the make-lhash defaults.
               (applied-op-ids graph)
@@ -273,6 +276,9 @@ CLOSE-GRAPH when finished."
               (peer-host graph) peer-host
               (export-predicate graph) export-predicate
               (device-registry graph) device-registry
+              ;; B1/PT-8: recover the durable Lamport clock (monotonic across
+              ;; restarts -- a reset would lose LWW races on post-restart writes).
+              (lamport-counter graph) (load-lamport-counter graph)
               ;; WP-3: open the applied-op-id index (create it if this peer-graph
               ;; predates the index, so reopening an older graph upgrades cleanly).
               (applied-op-ids graph)

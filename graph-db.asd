@@ -320,6 +320,7 @@
                (:file "spatial-query-tests")
                (:file "spatial-intersect-tests")
                (:file "subset-replication-tests")
+               (:file "peer-lamport-tests")
                (:file "view-tests")
                (:file "query-tests")
                (:file "prolog-mutation-tests")

@@ -472,6 +472,9 @@ ops."
         (reap-old-versions writes graph)
         (persist-highest-transaction-id (peer-op-tx-id op) graph)
         (record-applied-op graph (peer-op-op-id op) (peer-op-lamport op))
+        ;; B1/PT-8: advance our Lamport clock past the stamp we just applied, so
+        ;; anything we author next is causally after it.
+        (peer-observe-lamport graph (peer-op-lamport op))
         t)))
 
 (defun peer-purge-node (graph node)

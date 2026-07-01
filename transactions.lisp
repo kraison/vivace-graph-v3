@@ -1504,12 +1504,58 @@ crash orphans one."
 Stable across re-homing -- the hub never re-mints it (design §3 #2)."
   (uuid:uuid-to-byte-array (uuid:make-v4-uuid)))
 
+;;; Durable Lamport clock (PT-8).  The counter must be monotonic ACROSS restarts:
+;;; if it reset to 0 after a crash, a replica's post-restart authored ops would get
+;;; tiny stamps and silently lose every LWW race (safety data dropped).  So we
+;;; persist it on every advance and reload it on open.  Wall-clock skew is
+;;; irrelevant -- Lamport is logical -- a real win for GPS/EW-denied field devices.
+
+(defgeneric lamport-counter-file (graph)
+  (:method (graph)
+    (make-pathname :name "lamport" :type "dat" :defaults (location graph))))
+
+(defgeneric persist-lamport-counter (graph)
+  (:method ((graph peer-graph))
+    (let ((serialized (make-byte-vector 8)))
+      (serialize-uint64 serialized (lamport-counter graph) 0)
+      (with-open-file (stream (lamport-counter-file graph)
+                              :direction :output :element-type '(unsigned-byte 8)
+                              :if-does-not-exist :create :if-exists :overwrite)
+        (write-sequence serialized stream))
+      (lamport-counter graph)))
+  (:method ((graph graph)) nil))
+
+(defgeneric load-lamport-counter (graph)
+  (:method (graph)
+    (let ((file (lamport-counter-file graph))
+          (serialized (make-byte-vector 8)))
+      (if (probe-file file)
+          (with-open-file (stream file :direction :input :element-type '(unsigned-byte 8))
+            (if (= 8 (read-sequence serialized stream))
+                (deserialize-uint64 serialized 0)
+                0))
+          0))))
+
 (defun peer-next-lamport (graph)
-  "Advance and return GRAPH's logical (Lamport) clock.  Called under the
-replication-log lock, so assignment is serialized + monotonic.  NOTE (PT-8): the
-counter is in-memory in Branch A (lamport is reserved/unconsumed until Branch B);
-persist + recover-monotonic before Branch B's merge relies on it."
-  (incf (lamport-counter graph)))
+  "Advance and return GRAPH's Lamport clock, persisting the new value (PT-8).
+Called under the replication-log lock while journaling an authored op; the
+lamport-lock (innermost) makes the read-modify-write atomic against a concurrent
+PEER-OBSERVE-LAMPORT on another thread."
+  (with-recursive-lock-held ((lamport-lock graph))
+    (prog1 (incf (lamport-counter graph))
+      (persist-lamport-counter graph))))
+
+(defun peer-observe-lamport (graph received)
+  "Advance GRAPH's Lamport clock to at least RECEIVED (a stamp carried by an
+applied op), so the replica's next mint is causally after everything it has seen
+(PT-8: on receipt, advance to MAX(local,received); the +1 happens at the next
+mint).  Persists if it moved.  A NIL/zero RECEIVED is a no-op."
+  (when (and received (> received 0) (typep graph 'peer-graph))
+    (with-recursive-lock-held ((lamport-lock graph))
+      (when (> received (lamport-counter graph))
+        (setf (lamport-counter graph) received)
+        (persist-lamport-counter graph))))
+  graph)
 
 (defun serialize-peer-meta (origin-id op-id lamport op-class)
   "Build the 51-byte peer-meta packet (see layout above)."
