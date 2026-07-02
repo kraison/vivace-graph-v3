@@ -52,6 +52,8 @@
            #:start-replication
            #:stop-replication
            #:stop-buffer-pool
+           #:set-buffer-pool-size
+           #:*buffer-pool-size*
 
            #:start-rest
            #:stop-rest
