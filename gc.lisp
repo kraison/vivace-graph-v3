@@ -43,6 +43,20 @@ indexes (ve-index-in, ve-index-out, vev-index) of GRAPH."
 (defun map-type-index-list-addresses (fn graph)
   "Call FN with the heap address of the index lists of each type index
 table index (edge-index, vertex-index) of GRAPH."
+  #+ecl
+  ;; Lazy type-index (#46): the ECL cache is sparse (only touched types are
+  ;; materialized), so maphashing it would miss the index-lists of types not yet
+  ;; referenced this session and free their still-live nodes.  Enumerate every
+  ;; ASSIGNED type-id instead -- ids are dense from 0 (0 = generic) up to the
+  ;; schema's next-*-id -- materializing each via GET-TYPE-INDEX-LIST.
+  (let ((schema (schema graph)))
+    (flet ((map-idx (idx next-id)
+             (dotimes (tid next-id)
+               (let ((il (get-type-index-list idx tid)))
+                 (when il (map-index-list-addresses fn il))))))
+      (map-idx (edge-index graph) (schema-next-edge-id schema))
+      (map-idx (vertex-index graph) (schema-next-vertex-id schema))))
+  #-ecl
   (let ((edge-table (type-index-cache (edge-index graph)))
         (vertex-table (type-index-cache (vertex-index graph))))
     (flet ((map-table (fn table)
