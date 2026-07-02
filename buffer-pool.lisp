@@ -100,11 +100,15 @@
                            (- 1000000 (cdr stat)))
                  (dotimes (i (- 1000000 (cdr stat)))
                    (make-pcons-buffer)))
+                ;; ECL builds vertices/edges as their subclass directly and never
+                ;; pops these pools (#47), so refilling them there is dead weight.
+                #-ecl
                 (:edge
                  (log:info "BUFFER-POOL: Refreshing edge buffers (~D)"
                            (- 100000 (cdr stat)))
                  (dotimes (i (- 100000 (cdr stat)))
                    (make-edge-buffer)))
+                #-ecl
                 (:vertex
                  (log:info "BUFFER-POOL: Refreshing vertex buffers (~D)"
                            (- 100000 (cdr stat)))
@@ -283,8 +287,10 @@
     (setf (gethash num *buffer-pool*)
           (list nil)))
   (dotimes (i buffer-pool-size)
-    (make-vertex-buffer)
-    (make-edge-buffer)
+    ;; ECL constructs vertices/edges as their subclass directly (#47) and never
+    ;; pops these pools, so pre-filling them on ECL is pure dead weight.
+    #-ecl (make-vertex-buffer)
+    #-ecl (make-edge-buffer)
     (make-byte-vector-8-buffer)
     (make-byte-vector-18-buffer)
     (make-byte-vector-24-buffer)

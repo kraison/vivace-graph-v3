@@ -15,8 +15,17 @@
 
 (defun %make-vertex (&key id type-id revision deleted-p data-pointer data bytes
                      written-p heap-written-p type-idx-written-p views-written-p
-                     commit-epoch prev-pointer)
-  (let ((vertex (get-vertex-buffer)))
+                     commit-epoch prev-pointer (class 'vertex))
+  ;; ECL ONLY: construct the target CLASS directly, because ECL's CHANGE-CLASS
+  ;; retains memory on every call -- a base+change-class per node read leaked
+  ;; ~unboundedly (#47).  This gives up the node buffer pool on ECL (a perf
+  ;; trade), which is fine: the pooled base instances only ever existed to be
+  ;; CHANGE-CLASSed.  SBCL/CCL/LispWorks have no such leak, so they KEEP the
+  ;; pooled base buffer + CHANGE-CLASS path unchanged (the pool is a real perf
+  ;; win there).  *INITIALIZING-NODE* is bound as CHANGE-NODE-CLASS does, so
+  ;; persistent-slot init leaves the (empty) data alist alone.
+  (let ((vertex #+ecl (let ((*initializing-node* t)) (make-instance class))
+                #-ecl (get-vertex-buffer)))
     (cond (id
            (setf (id vertex) id))
           ((equalp +null-key+ (id vertex))
@@ -38,6 +47,9 @@
     (when data-pointer (setf (data-pointer vertex) data-pointer))
     (when data (setf (data vertex) data))
     (when bytes (setf (bytes vertex) bytes))
+    ;; Non-ECL: promote the pooled base VERTEX to its subclass (unchanged
+    ;; behaviour; no leak on these impls).  On ECL VERTEX is already CLASS.
+    #-ecl (change-node-class vertex class)
     vertex))
 
 (defun serialize-vertex-head (mf v offset)
@@ -55,7 +67,8 @@
                          (let ((type-meta (lookup-node-type-by-id
                                            type-id :vertex)))
                            (node-type-name type-meta))))
-           (v (%make-vertex :deleted-p deleted-p
+           (v (%make-vertex :class subclass
+                            :deleted-p deleted-p
                             :written-p written-p
                             :heap-written-p heap-written-p
                             :type-idx-written-p type-idx-written-p
@@ -65,7 +78,7 @@
                             :data-pointer pointer
                             :commit-epoch commit-epoch
                             :prev-pointer prev-pointer)))
-      (change-node-class v subclass))))
+      v)))
 
 (defun make-vertex-table (location &key (key-test 'uuid-array-equal)
                                      (base-buckets (expt 2 17)))
@@ -121,7 +134,8 @@ the id on a duplicate-key collision."
                              'vertex
                              (node-type-name type-meta)))
                (bytes (when data (serialize data)))
-               (v (%make-vertex :id id ;; (or id (gen-vertex-id))
+               (v (%make-vertex :class subclass
+                                :id id ;; (or id (gen-vertex-id))
                                 :type-id (if (eq type-meta :generic)
                                              0
                                              (node-type-id type-meta))
@@ -130,7 +144,6 @@ the id on a duplicate-key collision."
                                 :written-p nil
                                 :bytes bytes
                                 :data data)))
-          (change-node-class v subclass)
           (setf (bytes v) bytes)
           (handler-case
               (create-node v graph)
@@ -187,46 +200,46 @@ per-type instead of using the untyped scan.)"
                    (lambda (node) (ensure-node-bytes node graph) (funcall user-fn node)))
                  fn)))
     (with-read-pin (graph)        ; retain whatever versions this scan observes
-    (flet ((scan-type-id (type-id)
-             (let ((index-list (get-type-index-list (vertex-index graph) type-id)))
-               (when index-list
-                 (map-index-list
-                  (lambda (id)
-                    (let ((vertex (lookup-vertex id :graph graph)))
-                      ;; vertex can be nil if it appears in the type-index before
-                      ;; lhash-insert completes (commit race); skip it.
-                      (when (and vertex
-                                 (written-p vertex)
-                                 (or include-deleted-p (not (deleted-p vertex))))
-                        (if collect-p
-                            (push (funcall fn vertex) result)
-                            (funcall fn vertex)))))
-                  index-list)))))
-      (let ((requested (append (when vertex-type (list vertex-type))
-                               include-vertex-types)))
-        (if requested
-            (let ((type-ids (resolve-node-type-ids
-                             requested :vertex
-                             :include-subclasses-p include-subclasses-p
-                             :graph graph))
-                  (excluded (when exclude-vertex-types
-                              (resolve-node-type-ids
-                               exclude-vertex-types :vertex
+      (flet ((scan-type-id (type-id)
+               (let ((index-list (get-type-index-list (vertex-index graph) type-id)))
+                 (when index-list
+                   (map-index-list
+                    (lambda (id)
+                      (let ((vertex (lookup-vertex id :graph graph)))
+                        ;; vertex can be nil if it appears in the type-index before
+                        ;; lhash-insert completes (commit race); skip it.
+                        (when (and vertex
+                                   (written-p vertex)
+                                   (or include-deleted-p (not (deleted-p vertex))))
+                          (if collect-p
+                              (push (funcall fn vertex) result)
+                              (funcall fn vertex)))))
+                    index-list)))))
+        (let ((requested (append (when vertex-type (list vertex-type))
+                                 include-vertex-types)))
+          (if requested
+              (let ((type-ids (resolve-node-type-ids
+                               requested :vertex
                                :include-subclasses-p include-subclasses-p
-                               :graph graph))))
-              (dolist (tid type-ids)
-                (unless (member tid excluded)
-                  (scan-type-id tid))))
-            ;; fully untyped: live lhash scan (see NOTE)
-            (map-lhash #'(lambda (pair)
-                           (let ((vertex (cdr pair)))
-                             (when (and (written-p vertex)
-                                        (or include-deleted-p (not (deleted-p vertex))))
-                               (setf (id vertex) (car pair))
-                               (if collect-p
-                                   (push (funcall fn vertex) result)
-                                   (funcall fn vertex)))))
-                       (vertex-table graph))))))
+                               :graph graph))
+                    (excluded (when exclude-vertex-types
+                                (resolve-node-type-ids
+                                 exclude-vertex-types :vertex
+                                 :include-subclasses-p include-subclasses-p
+                                 :graph graph))))
+                (dolist (tid type-ids)
+                  (unless (member tid excluded)
+                    (scan-type-id tid))))
+              ;; fully untyped: live lhash scan (see NOTE)
+              (map-lhash #'(lambda (pair)
+                             (let ((vertex (cdr pair)))
+                               (when (and (written-p vertex)
+                                          (or include-deleted-p (not (deleted-p vertex))))
+                                 (setf (id vertex) (car pair))
+                                 (if collect-p
+                                     (push (funcall fn vertex) result)
+                                     (funcall fn vertex)))))
+                         (vertex-table graph))))))
     (when collect-p (nreverse result))))
 
 (defmethod compact-vertices ((graph graph))

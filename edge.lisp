@@ -28,8 +28,12 @@
 (defun %make-edge (&key id type-id revision deleted-p data-pointer data bytes from
                      to weight written-p heap-written-p type-idx-written-p
                      ve-written-p vev-written-p views-written-p
-                     commit-epoch prev-pointer)
-  (let ((edge (get-edge-buffer)))
+                     commit-epoch prev-pointer (class 'edge))
+  ;; ECL ONLY: construct the target CLASS directly (ECL's CHANGE-CLASS leaks per
+  ;; call -- #47), giving up the node buffer pool on ECL.  SBCL/CCL/LispWorks
+  ;; keep the pooled base EDGE + CHANGE-CLASS path (no leak, pool is a perf win).
+  (let ((edge #+ecl (let ((*initializing-node* t)) (make-instance class))
+              #-ecl (get-edge-buffer)))
     (cond (id
            (setf (id edge) id))
           ((equalp +null-key+ (id edge))
@@ -53,6 +57,9 @@
     (when data-pointer (setf (data-pointer edge) data-pointer))
     (when data (setf (data edge) data))
     (when bytes (setf (bytes edge) bytes))
+    ;; Non-ECL: promote the pooled base EDGE to its subclass (unchanged; no leak
+    ;; on these impls).  On ECL EDGE is already CLASS.
+    #-ecl (change-node-class edge class)
     edge))
 
 (defun serialize-edge-head (mf e offset)
@@ -79,6 +86,7 @@
                                            type-id :edge)))
                            (node-type-name type-meta))))
            (e (%make-edge
+               :class subclass
                :deleted-p deleted-p
                :written-p written-p
                :heap-written-p heap-written-p
@@ -104,7 +112,7 @@
                            (setq int (dpb (get-byte mf (incf offset))
                                           (byte 8 (* i 8)) int)))
                          (ieee-floats:decode-float64 int)))))
-      (change-node-class e subclass))))
+      e)))
 
 (defun make-edge-table (location &key (key-test 'uuid-array-equal)
                                    (base-buckets (expt 2 18)))
@@ -216,6 +224,7 @@ regenerates the id on a duplicate-key collision."
                              (node-type-name type-meta)))
                (bytes (when data (serialize data)))
                (e (%make-edge
+                   :class subclass
                    :id id ;; (or id (gen-edge-id))
                    :type-id (if (eq type-meta :generic)
                                 0
@@ -228,7 +237,6 @@ regenerates the id on a duplicate-key collision."
                    :weight weight
                    :bytes bytes
                    :data data)))
-          (change-node-class e subclass)
           (setf (bytes e) bytes)
           (handler-case
               (create-node e graph)
@@ -303,8 +311,8 @@ regenerates the id on a duplicate-key collision."
            index-list))))))
 
 (defun map-edges (fn graph &key collect-p edge-type include-edge-types vertex
-                  direction include-deleted-p to-vertex from-vertex
-                  exclude-edge-types (include-subclasses-p t))
+                             direction include-deleted-p to-vertex from-vertex
+                             exclude-edge-types (include-subclasses-p t))
   "Call FN on edges of GRAPH.
 
 Narrow the set with :EDGE-TYPE (a single type name or numeric type-id) and/or
@@ -349,56 +357,56 @@ typed/adjacency scans skip the 0 sentinel, as they always have.)"
                                               :include-subclasses-p include-subclasses-p
                                               :graph graph)
                        (list-edge-types graph))))
-    (with-read-pin (graph)        ; retain whatever versions this scan observes
-    (flet ((emit (edge)
-             (when (and edge (written-p edge)
-                        (or include-deleted-p (active-edge-p edge)))
-               (if collect-p (push (funcall fn edge) result) (funcall fn edge))))
-           (keep-type (tid) (and (plusp tid) (not (member tid excluded)))))
-      (cond
-        ;; a specific endpoint pair -> vev-index per type-id
-        ((and to-vertex from-vertex)
-         (dolist (tid type-ids)
-           (when (keep-type tid)
-             (let* ((vev-key (make-vev-key :in-id (id to-vertex)
-                                           :out-id (id from-vertex)
-                                           :type-id tid))
-                    (il (lookup-vev-index-list vev-key graph)))
-               (when il
-                 (map-index-list
-                  (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
-        ;; a vertex's adjacent edges -> ve-index (in/out) per type-id
-        (vertex
-         (dolist (tid type-ids)
-           (when (keep-type tid)
-             (let* ((ve-key (make-ve-key :id (id vertex) :type-id tid))
-                    (il (cond ((eq direction :out)
-                               (lookup-ve-out-index-list ve-key graph))
-                              ((eq direction :in)
-                               (lookup-ve-in-index-list ve-key graph))
-                              (t (error "Unknown direction: ~S" direction)))))
-               (when il
-                 (map-index-list
-                  (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
-        ;; typed, no adjacency -> type-index per type-id
-        (requested
-         (dolist (tid type-ids)
-           (when (keep-type tid)
-             (let ((il (get-type-index-list (edge-index graph) tid)))
-               (when il
-                 (map-index-list
-                  (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
-        ;; fully untyped -> live lhash scan (see NOTE); per-edge exclude
-        (t
-         (map-lhash
-          #'(lambda (pair)
-              (let ((edge (cdr pair)))
-                (when (and edge (written-p edge)
-                           (or include-deleted-p (active-edge-p edge))
-                           (not (member (type-id edge) excluded)))
-                  (setf (id edge) (car pair))
-                  (if collect-p (push (funcall fn edge) result) (funcall fn edge)))))
-          (edge-table graph))))))
+    (with-read-pin (graph) ; retain whatever versions this scan observes
+      (flet ((emit (edge)
+               (when (and edge (written-p edge)
+                          (or include-deleted-p (active-edge-p edge)))
+                 (if collect-p (push (funcall fn edge) result) (funcall fn edge))))
+             (keep-type (tid) (and (plusp tid) (not (member tid excluded)))))
+        (cond
+          ;; a specific endpoint pair -> vev-index per type-id
+          ((and to-vertex from-vertex)
+           (dolist (tid type-ids)
+             (when (keep-type tid)
+               (let* ((vev-key (make-vev-key :in-id (id to-vertex)
+                                             :out-id (id from-vertex)
+                                             :type-id tid))
+                      (il (lookup-vev-index-list vev-key graph)))
+                 (when il
+                   (map-index-list
+                    (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
+          ;; a vertex's adjacent edges -> ve-index (in/out) per type-id
+          (vertex
+           (dolist (tid type-ids)
+             (when (keep-type tid)
+               (let* ((ve-key (make-ve-key :id (id vertex) :type-id tid))
+                      (il (cond ((eq direction :out)
+                                 (lookup-ve-out-index-list ve-key graph))
+                                ((eq direction :in)
+                                 (lookup-ve-in-index-list ve-key graph))
+                                (t (error "Unknown direction: ~S" direction)))))
+                 (when il
+                   (map-index-list
+                    (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
+          ;; typed, no adjacency -> type-index per type-id
+          (requested
+           (dolist (tid type-ids)
+             (when (keep-type tid)
+               (let ((il (get-type-index-list (edge-index graph) tid)))
+                 (when il
+                   (map-index-list
+                    (lambda (eid) (emit (lookup-edge eid :graph graph))) il))))))
+          ;; fully untyped -> live lhash scan (see NOTE); per-edge exclude
+          (t
+           (map-lhash
+            #'(lambda (pair)
+                (let ((edge (cdr pair)))
+                  (when (and edge (written-p edge)
+                             (or include-deleted-p (active-edge-p edge))
+                             (not (member (type-id edge) excluded)))
+                    (setf (id edge) (car pair))
+                    (if collect-p (push (funcall fn edge) result) (funcall fn edge)))))
+            (edge-table graph))))))
     (when collect-p (nreverse result))))
 
 (defmethod outgoing-edges ((vertex vertex) &key (graph *graph*) edge-type
